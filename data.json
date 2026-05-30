@@ -1,0 +1,89 @@
+{
+  "meta": {
+    "game": "Planet Zoo",
+    "schema_version": 1,
+    "scope": "vertical-slice",
+    "mode": "challenge",
+    "notes": "Phase 0 contract. IDs are stable integers and must never be reused. Names must match exactly between the APWorld (Track B) and the hooking client (Track A). See ARCHIPELAGO_PLAN.md for field semantics. Item count (20) equals location count (20), as Archipelago requires.",
+    "id_ranges": {
+      "items": "1000-1999",
+      "locations": "2000-2999"
+    }
+  },
+
+  "species": [
+    { "key": "plains_zebra",      "name": "Plains Zebra",            "gate": "start" },
+    { "key": "grey_wolf",         "name": "Grey Wolf",               "gate": "start" },
+    { "key": "american_bison",    "name": "American Bison",          "gate": "start" },
+    { "key": "bengal_tiger",      "name": "Bengal Tiger",            "gate": "climate_tropical" },
+    { "key": "african_elephant",  "name": "African Elephant",        "gate": "climate_tropical" },
+    { "key": "nile_hippo",        "name": "Nile Hippopotamus",       "gate": "climate_tropical + water_tools" },
+    { "key": "saltwater_croc",    "name": "Saltwater Crocodile",     "gate": "water_tools + permit_saltwater_croc" },
+    { "key": "snow_leopard",      "name": "Snow Leopard",            "gate": "climate_cold" },
+    { "key": "lowland_gorilla",   "name": "Western Lowland Gorilla", "gate": "research_centre + permit_lowland_gorilla" },
+    { "key": "giant_panda",       "name": "Giant Panda",             "gate": "conservation_program + permit_giant_panda", "flagship": true }
+  ],
+
+  "items": [
+    { "id": 1000, "name": "Research Centre",                 "classification": "progression", "effect_type": "facility_unlock", "effect_args": { "facility_key": "research_centre" } },
+    { "id": 1001, "name": "Climate Control: Tropical",       "classification": "progression", "effect_type": "tool_unlock",     "effect_args": { "tool_key": "climate_tropical" } },
+    { "id": 1002, "name": "Climate Control: Cold",           "classification": "progression", "effect_type": "tool_unlock",     "effect_args": { "tool_key": "climate_cold" } },
+    { "id": 1003, "name": "Water Habitat Tools",             "classification": "progression", "effect_type": "tool_unlock",     "effect_args": { "tool_key": "water_tools" } },
+    { "id": 1004, "name": "Veterinary Surgery",              "classification": "progression", "effect_type": "facility_unlock", "effect_args": { "facility_key": "vet_surgery" } },
+    { "id": 1005, "name": "Conservation Program",            "classification": "progression", "effect_type": "program_unlock",  "effect_args": { "program_key": "conservation" } },
+    { "id": 1006, "name": "Permit: Saltwater Crocodile",     "classification": "progression", "effect_type": "species_unlock",  "effect_args": { "species_key": "saltwater_croc" } },
+    { "id": 1007, "name": "Permit: Western Lowland Gorilla", "classification": "progression", "effect_type": "species_unlock",  "effect_args": { "species_key": "lowland_gorilla" } },
+    { "id": 1008, "name": "Permit: Giant Panda",             "classification": "progression", "effect_type": "species_unlock",  "effect_args": { "species_key": "giant_panda" } },
+
+    { "id": 1009, "name": "Cash Injection (Large)",          "classification": "useful",      "effect_type": "cash",            "effect_args": { "amount": 50000 } },
+    { "id": 1010, "name": "Cash Injection (Large)",          "classification": "useful",      "effect_type": "cash",            "effect_args": { "amount": 50000 } },
+    { "id": 1011, "name": "Conservation Credits Grant",      "classification": "useful",      "effect_type": "cc",              "effect_args": { "amount": 5000 } },
+    { "id": 1012, "name": "Keeper Training Level",           "classification": "useful",      "effect_type": "staff_training",  "effect_args": { "levels": 1 } },
+    { "id": 1013, "name": "Marketing Campaign",              "classification": "useful",      "effect_type": "marketing",       "effect_args": { "campaign": "standard" } },
+
+    { "id": 1014, "name": "Petty Cash",                      "classification": "filler",      "effect_type": "cash",            "effect_args": { "amount": 10000 } },
+    { "id": 1015, "name": "Petty Cash",                      "classification": "filler",      "effect_type": "cash",            "effect_args": { "amount": 10000 } },
+    { "id": 1016, "name": "Petty Cash",                      "classification": "filler",      "effect_type": "cash",            "effect_args": { "amount": 10000 } },
+    { "id": 1017, "name": "Conservation Credits (Small)",    "classification": "filler",      "effect_type": "cc",              "effect_args": { "amount": 1000 } },
+    { "id": 1018, "name": "Conservation Credits (Small)",    "classification": "filler",      "effect_type": "cc",              "effect_args": { "amount": 1000 } },
+    { "id": 1019, "name": "Enrichment Item Pack",            "classification": "filler",      "effect_type": "enrichment_pack", "effect_args": {} }
+  ],
+
+  "locations": [
+    { "id": 2000, "name": "Research: Welfare - Plains Zebra",            "trigger_type": "research_complete", "trigger_args": { "research_key": "welfare_plains_zebra" } },
+    { "id": 2001, "name": "Research: Welfare - Grey Wolf",               "trigger_type": "research_complete", "trigger_args": { "research_key": "welfare_grey_wolf" } },
+    { "id": 2002, "name": "Research: Welfare - American Bison",          "trigger_type": "research_complete", "trigger_args": { "research_key": "welfare_american_bison" } },
+    { "id": 2003, "name": "Research: Welfare - Bengal Tiger",            "trigger_type": "research_complete", "trigger_args": { "research_key": "welfare_bengal_tiger" } },
+    { "id": 2004, "name": "Research: Welfare - African Elephant",        "trigger_type": "research_complete", "trigger_args": { "research_key": "welfare_african_elephant" } },
+    { "id": 2005, "name": "Research: Welfare - Nile Hippopotamus",       "trigger_type": "research_complete", "trigger_args": { "research_key": "welfare_nile_hippo" } },
+    { "id": 2006, "name": "Research: Welfare - Saltwater Crocodile",     "trigger_type": "research_complete", "trigger_args": { "research_key": "welfare_saltwater_croc" } },
+    { "id": 2007, "name": "Research: Welfare - Snow Leopard",            "trigger_type": "research_complete", "trigger_args": { "research_key": "welfare_snow_leopard" } },
+    { "id": 2008, "name": "Research: Welfare - Western Lowland Gorilla", "trigger_type": "research_complete", "trigger_args": { "research_key": "welfare_lowland_gorilla" } },
+    { "id": 2009, "name": "Research: Welfare - Giant Panda",             "trigger_type": "research_complete", "trigger_args": { "research_key": "welfare_giant_panda" } },
+    { "id": 2010, "name": "Research: Enrichment - Generalist Toys",      "trigger_type": "research_complete", "trigger_args": { "research_key": "enrichment_generalist" } },
+    { "id": 2011, "name": "Research: Habitat - Advanced Barriers",       "trigger_type": "research_complete", "trigger_args": { "research_key": "habitat_advanced_barriers" } },
+
+    { "id": 2012, "name": "First Breeding - Plains Zebra",               "trigger_type": "first_breed", "trigger_args": { "species_key": "plains_zebra" } },
+    { "id": 2013, "name": "First Breeding - Grey Wolf",                  "trigger_type": "first_breed", "trigger_args": { "species_key": "grey_wolf" } },
+    { "id": 2014, "name": "First Breeding - Bengal Tiger",               "trigger_type": "first_breed", "trigger_args": { "species_key": "bengal_tiger" } },
+    { "id": 2015, "name": "First Breeding - Western Lowland Gorilla",    "trigger_type": "first_breed", "trigger_args": { "species_key": "lowland_gorilla" } },
+    { "id": 2016, "name": "First Breeding - Giant Panda",                "trigger_type": "first_breed", "trigger_args": { "species_key": "giant_panda" } },
+
+    { "id": 2017, "name": "Milestone - Zoo Rating 2 Stars",             "trigger_type": "milestone", "trigger_args": { "metric": "zoo_rating", "threshold": 2 } },
+    { "id": 2018, "name": "Milestone - 1000 Guests",                    "trigger_type": "milestone", "trigger_args": { "metric": "guest_count", "threshold": 1000 } },
+    { "id": 2019, "name": "Milestone - First Conservation Release",     "trigger_type": "milestone", "trigger_args": { "metric": "conservation_release", "threshold": 1 } }
+  ],
+
+  "slot_data": {
+    "goal": {
+      "type": "chain",
+      "args": {
+        "required_research": ["welfare_giant_panda"],
+        "required_breed": ["giant_panda"]
+      }
+    },
+    "death_link": false,
+    "escape_link": false,
+    "options_echo": {}
+  }
+}

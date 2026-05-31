@@ -1,0 +1,14 @@
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+
+# Vendored Archipelago checkout (clone separately; see pz_ap_client/README.md)
+vendor/
+
+# Client runtime state (idempotency high-water marks)
+.client_state/
+
+# AP / OS noise
+*.log
+.DS_Store

@@ -1,0 +1,15 @@
+# Track A hooking client runtime deps (subset of Archipelago's, minus the GUI).
+# Archipelago itself is vendored via: git clone --depth 1 https://github.com/ArchipelagoMW/Archipelago.git vendor/Archipelago
+pymem==1.14.0
+websockets
+PyYAML
+colorama
+pathspec
+jellyfish
+jinja2
+schema
+platformdirs
+certifi
+orjson
+typing_extensions
+bsdiff4

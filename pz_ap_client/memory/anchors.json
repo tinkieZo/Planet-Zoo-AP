@@ -1,0 +1,55 @@
+{
+  "process_name": "PlanetZoo.exe",
+  "_doc": "Filled in by the A2 Cheat-Engine spike. See docs/A2_SPIKE_PLAYBOOK.md. Prefer kind='signature' with a rip-relative resolve over kind='module_offset' so the client survives Frontier patches. 'signature'/'offsets' left null/empty = not yet found; AnchorTable.resolve() returns None for those and the client keeps running on the A1 console.",
+
+  "anchors": {
+    "cash": {
+      "kind": "signature", "type": "double", "signature": null,
+      "rip": null, "offsets": [],
+      "notes": "Challenge-mode cash balance. Spike step 4 (write path). Likely a double. Test write with a small +amount and confirm the HUD updates."
+    },
+    "conservation_credits": {
+      "kind": "signature", "type": "double", "signature": null,
+      "rip": null, "offsets": [],
+      "notes": "CC balance. Spike step 4."
+    },
+    "zoo_rating": {
+      "kind": "signature", "type": "float", "signature": null,
+      "rip": null, "offsets": [],
+      "notes": "Zoo rating in stars (0..5). Used by the 'milestone:zoo_rating' trigger. Read-only for us."
+    },
+    "guest_count": {
+      "kind": "signature", "type": "i32", "signature": null,
+      "rip": null, "offsets": [],
+      "notes": "Current guest count. Used by 'milestone:guest_count'. Read-only."
+    },
+    "conservation_release_count": {
+      "kind": "signature", "type": "i32", "signature": null,
+      "rip": null, "offsets": [],
+      "notes": "Cumulative animals released to the wild. Used by 'milestone:conservation_release'. Read-only."
+    },
+
+    "research_state_base": {
+      "kind": "signature", "type": "i64", "signature": null,
+      "rip": null, "offsets": [],
+      "notes": "Base address of the research-completion table/array. Per-research completion is read at research_state_base + entity_offsets.research[<research_key>]. Resolve a stable base, then map each research_key's slot in the spike."
+    },
+    "species_roster_base": {
+      "kind": "signature", "type": "i64", "signature": null,
+      "rip": null, "offsets": [],
+      "notes": "Base of the owned-species / permit table. Used both to flip a permit (species_unlock effect) and to confirm a species is acquirable."
+    },
+    "birth_event_counter": {
+      "kind": "signature", "type": "i32", "signature": null,
+      "rip": null, "offsets": [],
+      "notes": "HIGHEST-RISK anchor. Either a global monotonically-increasing birth counter, or per-species birth counts under species_roster_base. The poll loop diffs this to fire 'first_breed' checks. Spike step 2 must determine which and document it here."
+    }
+  },
+
+  "entity_offsets": {
+    "_doc": "Per-key offsets the spike discovers, added to the relevant *_base anchor. research[<research_key>] -> offset into research_state_base; species[<species_key>] -> offset into species_roster_base (permit flag write); species_birth[<species_key>] -> offset into species_roster_base for that species' birth count (poll diff -> first_breed). Keys must match data.json.",
+    "research": {},
+    "species": {},
+    "species_birth": {}
+  }
+}

@@ -1,48 +1,53 @@
 {
   "process_name": "PlanetZoo.exe",
-  "_doc": "Filled in by the A2 Cheat-Engine spike. See docs/A2_SPIKE_PLAYBOOK.md. Prefer kind='signature' with a rip-relative resolve over kind='module_offset' so the client survives Frontier patches. 'signature'/'offsets' left null/empty = not yet found; AnchorTable.resolve() returns None for those and the client keeps running on the A1 console.",
+  "_doc": "Filled in by the A2 Cheat-Engine spike. See docs/A2_SPIKE_PLAYBOOK.md. Prefer kind='signature' with a rip-relative resolve over kind='module_offset' so the client survives Frontier patches. 'signature'/'offsets' left null/empty = not yet found; AnchorTable.resolve() returns None for those and the client keeps running on the A1 console. SPIKE FINDING (restart tests): pointer chains ARE restart-stable if derived correctly. cash, conservation_credits, guest_count all survived multiple full restarts and are committed below. METHODOLOGY THAT WORKS: (1) over-generate candidate chains and restart-filter (tools/validate_anchors.py); (2) crucially, pointer_scan the stable CONTAINER object (field_addr - field_offset) at DEPTH 3, not the volatile field at depth 2 - a shallow field scan gave guest 0/23 survivors, but a deep container scan found 2/40 through the proven-stable MASTER ROOT base+0x2944690 / base+0x29446A0 (adjacent globals reaching multiple managers). Build the field chain by ADDING the field offset to the container chain's LAST offset, not appending. CE AOB signatures remain the gold standard for surviving Frontier PATCHES (vs restarts) - a recommended pre-ship hardening pass (see docs/A2_CE_SIGNATURE_GUIDE.md) - but are not required for restart-robustness. species_roster_base is the remaining structural anchor; re-derive it the same way.",
 
   "anchors": {
     "cash": {
-      "kind": "signature", "type": "double", "signature": null,
-      "rip": null, "offsets": [],
-      "notes": "Challenge-mode cash balance. Spike step 4 (write path). Likely a double. Test write with a small +amount and confirm the HUD updates."
+      "kind": "module_offset", "type": "i64", "signature": null,
+      "rip": null, "offsets": [43271824, 24, 3832, 232], "scale": 100,
+      "module_only": true,
+      "notes": "Challenge cash balance, i64 CENTS (HUD $X.YZ = X*100+YZ); scale=100 <-> data.json whole dollars. Cash at container+0xE8 (CC sibling at +0x2F8, delta 0x210). Chain base+0x2944690 -> 0x18 -> 0xEF8 -> 0xE8. RESTART-VALIDATED: survived a full game close/reopen+reload (2 of 9 candidate chains survived; this is one). Backup chain that also survived: base+0x29446A0 -> 0x20 -> 0x590 -> 0xE8. NOTE: most pointer chains here do NOT survive restart - prefer AOB signature (CE) if this ever breaks on a patch."
     },
     "conservation_credits": {
-      "kind": "signature", "type": "double", "signature": null,
-      "rip": null, "offsets": [],
-      "notes": "CC balance. Spike step 4."
+      "kind": "module_offset", "type": "i64", "signature": null,
+      "rip": null, "offsets": [43271824, 24, 3832, 760], "scale": 1,
+      "module_only": true,
+      "notes": "CC balance, i64, whole credits (NOT cents -> scale=1). Sibling of cash in the SAME finance container: same chain as cash with last offset 0x2F8 instead of 0xE8 (delta 0x210). Chain base+0x2944690 -> 0x18 -> 0xEF8 -> 0x2F8. RESTART-VALIDATED (resolves to CC=316 after full restart). Backup: base+0x29446A0 -> 0x20 -> 0x590 -> 0x2F8."
     },
     "zoo_rating": {
-      "kind": "signature", "type": "float", "signature": null,
-      "rip": null, "offsets": [],
-      "notes": "Zoo rating in stars (0..5). Used by the 'milestone:zoo_rating' trigger. Read-only for us."
+      "kind": "module_offset", "type": "float", "signature": null,
+      "rip": null, "offsets": [43271840, 32, 1936, 320], "scale": 0.2,
+      "module_only": true,
+      "notes": "Zoo Reputation in stars (0..5). Read-only (milestone:zoo_rating threshold 2). *** LOCATED + UI-CONFIRMED 2026-06-01. *** The displayed headline 'Zoo Reputation' = clamp01 float at rating_mgr+0x140 (x5 = stars), so scale=0.2 (raw/0.2 -> stars). rating_mgr = *(PARK+0x138). UI-CONFIRMED against the Zoo Reputation panel: +0x140=0.329 -> 1.64 ~= displayed 1.5 (headline); +0x110=0.430 -> 2.15 ~= Conservation 2.0; +0x138=0.005 -> Education 0. Other block floats: +0x118 animal?, +0x13C=0.80 inspector-feedback (internal, NOT the displayed Reputation - that was the initial wrong pick). Decoded from native getters FUN_1466DF480(conservation +0x110)/FUN_1466DFB90(education +0x138)/FUN_1466E09D0(inspector +0x13C): all `rax=*(rdi+0x138); movss xmm1,[rax+OFF]; clamp01`. PARK manager found by scanning for *(obj+0x168)==exchange_mgr (RE'd exchange_mgr=*(PARK+0x168)); PARK=0x8A83028 this session. PARK is EMBEDDED: PARK=*(*(base+0x29446A0)+0x20)+0x658, so folded read chain to rating_mgr+0x140 = base+0x29446A0 ->0x20 ->0x790(=0x658+0x138, deref) ->+0x140. Goes through the SAME proven-stable master root 0x29446A0 as guest_count (shares the ->0x20 first hop) => EXPECTED restart-stable. PENDING: restart re-validation (validate_anchors.py; re-derive via memscan ptrscan if it moves)."
     },
     "guest_count": {
-      "kind": "signature", "type": "i32", "signature": null,
-      "rip": null, "offsets": [],
-      "notes": "Current guest count. Used by 'milestone:guest_count'. Read-only."
+      "kind": "module_offset", "type": "i32", "signature": null,
+      "rip": null, "offsets": [43271840, 32, 408, 2096], "scale": 1,
+      "module_only": true,
+      "notes": "Current guests in zoo (i32). Read-only (milestone:guest_count threshold 1000). RESTART-VALIDATED. Chain base+0x29446A0 -> 0x20 -> 0x198 -> 0x830 (guest field at stats-container+0x830; verified via CE 'find what accesses' = mov rdx,[rcx+830], container=[rdi+0x80]). KEY: a shallow depth-2 scan gave 0/23 survivors, but a DEPTH-3 scan of the CONTAINER (guest_addr-0x830) found chains through the SAME proven-stable root 0x2944690/0x29446A0 as cash - 2/40 survived a restart. Backup chain: base+0x2944690 -> 0x18 -> 0x568 -> 0x830. Lesson: scan the container deep, not the volatile field shallow."
     },
     "conservation_release_count": {
       "kind": "signature", "type": "i32", "signature": null,
       "rip": null, "offsets": [],
-      "notes": "Cumulative animals released to the wild. Used by 'milestone:conservation_release'. Read-only."
+      "notes": "Cumulative animals released to the wild ('milestone:conservation_release', threshold 1). NOT a data anchor - the A2 spike conclusively ruled out a stable cumulative integer (the master-root stats subtree, 2 levels deep, only flips transient per-release flags + decrements population). SOLVED via CODE HOOK instead: pz_ap_client/memory/releases.py ReleaseDetector software-detours the release-specific executor ReleaseAnimalIntoWild @0x145D84690 (RVA 0x5D84690, found via the script-binding map) and counts releases; MemoryTriggerSource._poll_milestones routes metric=='conservation_release' to ReleaseDetector.count() instead of this anchor. So this anchor stays unfilled by design; leave kind/offsets null. LIVE-VALIDATED (idle 0; one release -> count 1)."
     },
 
     "research_state_base": {
-      "kind": "signature", "type": "i64", "signature": null,
-      "rip": null, "offsets": [],
-      "notes": "Base address of the research-completion table/array. Per-research completion is read at research_state_base + entity_offsets.research[<research_key>]. Resolve a stable base, then map each research_key's slot in the spike."
+      "kind": "zoo_deref", "type": "i64", "signature": null,
+      "rip": null, "offsets": [808],
+      "notes": "SUPERSEDED 2026-06-01: research_complete is now handled by pz_ap_client/memory/research.py (ResearchReader), NOT this anchor. The old [zoo]+0x328 block turned out to be the UNLOCKED-ITEMS CATALOG, not research state. The REAL research state = the research-system items hashmap: research_system = *(*(*(base+0x2944690)+0x18)+0x350); items map @ research_system+0xF8 {+8 count,+0x10 cap,+0x18 buckets}, open-addressing bitmap + stride-0x58 records. Record: +0x10 u32 = SPECIES HANDLE (same namespace as permit listing handles), +0x0C level, +0x3C category(7=animal), +0x49 STATUS (4=ResearchedAndCompleted). welfare_<species> complete <=> all cat-7 records for the handle with level<10 are status 4 (advanced=level 10, optional). MemoryTriggerSource._poll_research uses ResearchReader.is_welfare_complete (welfare_<species> keys; generic enrichment_generalist/habitat_advanced_barriers not yet mapped). This anchor stays unfilled by design (resolve() doesn't handle zoo_deref). LIVE-VALIDATED: zebra complete, warthog(mid)/panda(unstarted) not. [OLD NOTE BELOW IS WRONG, kept for history:] SPIKE-DECODED: the research-state block = *(zoo + 0x328) (offset 808). zoo = the insert hook's param_1 (births capture it as r13); re-deref each read so it survives block reallocation. The block is an array of 0x10-byte records: +0x0 i32 max-level, +0x4 u32 research_id (content index), +0x8 i32 current-level, +0xC i32 -1 sentinel. research_complete(key) <=> the record whose +0x4==research_id(key) has current(+0x8) >= max(+0x0). Reference: warthog welfare research_id = 0x41A1. REMAINING: map each AP research_key -> research_id (content-def table RE, or complete each owned species' welfare chain + diff via tools/mgr_diff.py). research_ids are sequential content indices grouped into per-species runs."
     },
     "species_roster_base": {
-      "kind": "signature", "type": "i64", "signature": null,
-      "rip": null, "offsets": [],
-      "notes": "Base of the owned-species / permit table. Used both to flip a permit (species_unlock effect) and to confirm a species is acquirable."
+      "kind": "module_offset", "type": "i32", "signature": null,
+      "rip": null, "offsets": [], "scale": 1,
+      "module_only": true,
+      "notes": "PER-SPECIES POPULATION table (species_birth source). MECHANISM CONFIRMED: a live warthog birth bumped the species count IN-PLACE 3->4 at roster_obj+0x530 (zebra at +0x630). species_birth[plains_zebra]=0x630 is verified. BUT NO RESTART-STABLE POINTER CHAIN EXISTS: exhaustively tested - shallow chains, depth-3 deep scans (85 candidates across 4 birth+fingerprint-CONFIRMED roster objects), the master-root hub (coincidental matches), and value-intersection (the object REALLOCATES on buy/sell). 0 of 85 deep chains survived a restart. The roster is a dynamically-managed record reachable only through the animal system at runtime (like guest's [rcx+0x830]-from-a-call, but with no stable container). PATHS (design decision - NONE is trivially automatic): (a) STRUCTURAL-SIGNATURE scan on attach - records carry vtable-like pointers (e.g. +0x18/+0x20) and an embedded UTF-16 string (~+0x38), but the vtables are in an ASLR'd game DLL (0x7FFC...), so the client must resolve the DLL base at runtime, compute the vtable addr, then heap-scan + match a species-ID; needs a focused recon to confirm a consistent vtable + species-ID field. NOTE the value-scan+fingerprint finder is NOT automatic - it needed buy/sell/birth narrowing (fingerprint alone ~20k hits), so it can't run unattended on launch. (b) Manual /pz_check fallback for first_breed (playbook-sanctioned; player-actioned per breed, not per launch). (c) keep hunting for a master-root-reachable per-species count. PERMIT/UNLOCK: MUST be physically enforced by the client (no honor/soft systems allowed). Gated species = saltwater_croc, lowland_gorilla, giant_panda. Mechanism to find: the per-species MARKET AVAILABILITY / purchasable flag - client sets gated species unavailable until the species_unlock item arrives, then flips it available (the 'control the animal market' approach). OPEN INVESTIGATION: vanilla shows all base species available, so there's no obvious 0->1 change signal to scan; leads to try: (a) the Animal Market / trade-center data structure (find the available-species list/flags), (b) whether croc/gorilla/panda are gated by research/CC/DLC giving a contrast, (c) write-test candidate bools and watch a species disappear from the market. Same class of hard dynamic-state problem as the roster/births."
     },
     "birth_event_counter": {
       "kind": "signature", "type": "i32", "signature": null,
       "rip": null, "offsets": [],
-      "notes": "HIGHEST-RISK anchor. Either a global monotonically-increasing birth counter, or per-species birth counts under species_roster_base. The poll loop diffs this to fire 'first_breed' checks. Spike step 2 must determine which and document it here."
+      "notes": "DETECTION = CODE HOOK (injection PROVEN feasible, see tools/hook_poc.py). The per-species count increments IN-PLACE on birth (confirmed warthog 3->4->5->6 at roster_obj+0x530, zebra +0x630) but the roster has NO data handle (0/85 static chains survive restart; fingerprint 11k; 26 confirmed objects share NO vtable 1/26). PROOF-OF-CONCEPT DONE: tools/inject_poc.py (allocate RWX + remote-thread shellcode wrote 0xDEADBEEF) and tools/hook_poc.py (detour on the stable guest-count READ instr module+0x640123B: suspend process, 5-byte jmp to a trampoline within +/-2GB that bumps a counter + runs original + jmps back; hit-counter climbed ~120/sec live, game kept running, clean restore). NEXT (A3): find+AOB-signature the SPECIES count-INCREMENT instruction (birth path; `add/sub [reg+species_off]`), detour records (species_off -> species_key via the offset map zebra 0x630/warthog 0x530) into a scratch region the client polls each tick. Same technique for permits (hook the purchasable/market check). Note code RVAs are stable across restarts (same exe version); re-AOB per Frontier patch."
     }
   },
 
@@ -50,6 +55,6 @@
     "_doc": "Per-key offsets the spike discovers, added to the relevant *_base anchor. research[<research_key>] -> offset into research_state_base; species[<species_key>] -> offset into species_roster_base (permit flag write); species_birth[<species_key>] -> offset into species_roster_base for that species' birth count (poll diff -> first_breed). Keys must match data.json.",
     "research": {},
     "species": {},
-    "species_birth": {}
+    "species_birth": { "plains_zebra": 1584 }
   }
 }

@@ -18,9 +18,12 @@ runs harmlessly against an incomplete table during the spike.
 from __future__ import annotations
 
 import logging
-from typing import Callable, Dict, List, Optional
+from typing import Callable, List
 
 from .anchors import AnchorTable
+from .births import BirthDetector
+from .releases import ReleaseDetector
+from .research import ResearchReader
 from .scanner import MemoryScanner
 
 logger = logging.getLogger("PZClient")
@@ -40,10 +43,17 @@ class MemoryTriggerSource:
         self.anchors = anchors
         self.game_data = game_data
         self.report_check = report_check
-        # Baseline for first_breed counter diffing, captured on first good read.
-        self._birth_baseline: Optional[int] = None
-        # Per-species baseline if births are tracked per species.
-        self._species_birth_baseline: Dict[str, int] = {}
+        # A3 research_complete: reads the research-system items map via a stable master-root
+        # chain (research record +0x10 = species handle, +0x49 = status; see research.py).
+        self.research = ResearchReader(scanner)
+        # A3 birth detection: software-detour on the add-animal insert + life-stage classification
+        # (newborn vs bought); species attributed via entity+0x50 reverse-mapped through the
+        # research handle table (shared reader). See births.py / the A2 spike.
+        self.births = BirthDetector(scanner, research=self.research)
+        self._bred_species: set = set()  # species_keys observed born (cumulative)
+        # A3 conservation_release: software-detour on the release-to-wild executor that
+        # counts releases (no stable game counter exists — see releases.py / the A2 spike).
+        self.releases = ReleaseDetector(scanner)
 
     def poll(self, already_checked: set) -> List[int]:
         """One detection tick. Returns the list of newly-reported location ids."""
@@ -60,13 +70,19 @@ class MemoryTriggerSource:
     # -- research --------------------------------------------------------------
 
     def _poll_research(self, already: set) -> List[int]:
+        """Detect completed research via ResearchReader (research-system items map).
+        Each data.json research_key is dispatched through is_research_complete:
+        welfare_<species> -> leveled animal-research rule; mapped non-welfare keys (e.g.
+        mechanic research) -> their item's status == 4. Unmapped keys never fire."""
         out = []
+        snap = self.research._snapshot()  # read the research map once per tick
+        if snap is None:
+            return out
         for loc in self.game_data.locations_by_trigger("research_complete"):
             if loc.id in already:
                 continue
-            key = loc.trigger_args.get("research_key")
-            val = self.anchors.read_entity(self.scanner, "research_state_base", "research", key)
-            if val:  # nonzero = complete (TODO spike: confirm sentinel)
+            key = loc.trigger_args.get("research_key") or ""
+            if self.research.is_research_complete(key, snap):
                 logger.info("Detected research complete: %s", key)
                 out.append(loc.id)
         return out
@@ -74,25 +90,29 @@ class MemoryTriggerSource:
     # -- first breed -----------------------------------------------------------
 
     def _poll_first_breed(self, already: set) -> List[int]:
-        # Strategy depends on what the spike finds for birth_event_counter:
-        # a global counter (we can't attribute species without more work) vs a
-        # per-species count under species_roster_base. Prefer per-species.
+        """Detect births via the add-animal insert detour + newborn classification
+        (BirthDetector), then fire the first_breed location for each bred species.
+
+        The detector resolves each inserted animal and reports the species_key only
+        when it's a newborn (life-stage 0), so market purchases never trigger this.
+        We accumulate bred species and match them to first_breed locations.
+        """
+        for key in self.births.poll():
+            self._bred_species.add(key)
+        if not self._bred_species:
+            return []
         out = []
-        per_species_available = bool(self.anchors.entity_offsets.get("species_birth"))
         for loc in self.game_data.locations_by_trigger("first_breed"):
             if loc.id in already:
                 continue
-            key = loc.trigger_args.get("species_key")
-            if per_species_available:
-                count = self.anchors.read_entity(self.scanner, "species_roster_base",
-                                                 "species_birth", key)
-                if count is None:
-                    continue
-                baseline = self._species_birth_baseline.setdefault(key, count)
-                if count > baseline:
-                    logger.info("Detected first breed: %s (count %s)", key, count)
-                    out.append(loc.id)
+            if loc.trigger_args.get("species_key") in self._bred_species:
+                out.append(loc.id)
         return out
+
+    def close(self) -> None:
+        """Restore the code-patch detours (call on disconnect / shutdown)."""
+        self.births.shutdown()
+        self.releases.shutdown()
 
     # -- milestones ------------------------------------------------------------
 
@@ -103,10 +123,17 @@ class MemoryTriggerSource:
                 continue
             metric = loc.trigger_args.get("metric")
             threshold = loc.trigger_args.get("threshold")
-            anchor_name = _MILESTONE_ANCHOR.get(metric)
-            if anchor_name is None:
-                continue
-            val = self.anchors.read(self.scanner, anchor_name)
+            if metric == "conservation_release":
+                # No stable game counter exists (A2 spike); the release-detour counts
+                # releases observed this session. Threshold is 1, and AP checks are
+                # sticky, so a single observed release is sufficient. (For a higher
+                # threshold, persist a cross-session running total in client state.)
+                val = self.releases.count()
+            else:
+                anchor_name = _MILESTONE_ANCHOR.get(metric)
+                if anchor_name is None:
+                    continue
+                val = self.anchors.read(self.scanner, anchor_name)
             if val is not None and val >= threshold:
                 logger.info("Detected milestone %s >= %s (=%s)", metric, threshold, val)
                 out.append(loc.id)

@@ -14,7 +14,7 @@ from __future__ import annotations
 import json
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, Iterable, List, Optional
 
 # Effect types the client knows how to apply (see ARCHIPELAGO_PLAN.md).
 EFFECT_TYPES = {
@@ -63,6 +63,13 @@ class Species:
     gate: str
     flagship: bool = False
 
+    @property
+    def gate_tokens(self) -> tuple:
+        """The gate expression split into required tokens (``"a + b"`` -> ``("a","b")``).
+        Tokens are unlock identifiers: ``start`` (always), ``permit_<species>`` (a species
+        permit), a tool key (e.g. ``water_tools``), or a facility key (e.g. ``research_centre``)."""
+        return tuple(t.strip() for t in self.gate.split("+") if t.strip())
+
 
 class DataError(Exception):
     """Raised when ``data.json`` violates the contract."""
@@ -100,6 +107,59 @@ class GameData:
 
     def locations_by_trigger(self, trigger_type: str) -> List[Location]:
         return [l for l in self.locations if l.trigger_type == trigger_type]
+
+    # -- species purchase-gating (the PermitGate substitutes a purchase-block for any
+    #    species gate token it can enforce: a species permit, or a tool we can't gate
+    #    natively like water_tools). Facility tokens (research_centre/workshop) are NOT
+    #    enforced here — they have their own gates — so this stays a no-op for them. ----
+
+    def tool_keys(self) -> set:
+        """All tool keys that have a ``tool_unlock`` item (e.g. ``{"water_tools"}``)."""
+        return {i.effect_args.get("tool_key") for i in self.items
+                if i.effect_type == "tool_unlock" and i.effect_args.get("tool_key")}
+
+    def species_purchase_tokens(self, s: "Species") -> tuple:
+        """The gate tokens of ``s`` that the purchase-block enforces: species permits
+        (``permit_*``) and tool tokens (a ``tool_unlock`` key). Excludes facility/``start``
+        tokens. Empty -> the species is never purchase-blocked."""
+        tk = self.tool_keys()
+        return tuple(t for t in s.gate_tokens if t.startswith("permit_") or t in tk)
+
+    def satisfied_purchase_tokens(self, received_item_ids: Iterable[int]) -> set:
+        """Given received item IDs, the set of purchase-relevant gate tokens now satisfied:
+        ``permit_<species>`` from each received ``species_unlock``, and each received
+        ``tool_unlock``'s tool key."""
+        tokens = set()
+        for iid in received_item_ids:
+            it = self.item_by_id.get(iid)
+            if it is None:
+                continue
+            if it.effect_type == "species_unlock":
+                k = it.effect_args.get("species_key")
+                if k:
+                    tokens.add("permit_" + k)
+            elif it.effect_type == "tool_unlock":
+                k = it.effect_args.get("tool_key")
+                if k:
+                    tokens.add(k)
+        return tokens
+
+    def purchase_universe(self) -> set:
+        """Species keys the purchase-block could ever block (those with a purchase token)."""
+        return {s.key for s in self.species if self.species_purchase_tokens(s)}
+
+    def purchase_blocked_species(self, received_item_ids: Iterable[int]) -> set:
+        """Species keys whose purchase the gate should block now: any species with a
+        purchase token that is not yet satisfied by the received items. AND-semantics —
+        e.g. saltwater_croc (``water_tools + permit_saltwater_croc``) stays blocked until
+        BOTH arrive; nile_hippo (``water_tools``) until water_tools arrives."""
+        sat = self.satisfied_purchase_tokens(received_item_ids)
+        blocked = set()
+        for s in self.species:
+            ptoks = self.species_purchase_tokens(s)
+            if ptoks and not all(t in sat for t in ptoks):
+                blocked.add(s.key)
+        return blocked
 
 
 def _require(cond: bool, msg: str) -> None:

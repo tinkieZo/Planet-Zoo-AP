@@ -21,13 +21,14 @@ this client only consumes the shared [`data.json`](../data.json) contract.
 
 ## Run
 
-Setup (from project root):
+Setup (from project root). **Requires Python 3.11.9–3.13** — Archipelago's `ModuleUpdate`
+hard-rejects 3.10, so build the venv with a 3.11+ interpreter:
 ```powershell
-python -m venv .venv
-.\.venv\Scripts\python.exe -m pip install pymem websockets PyYAML colorama `
-    pathspec jellyfish jinja2 schema platformdirs certifi orjson typing_extensions bsdiff4
+py -3.11 -m venv .venv
+.\.venv\Scripts\python.exe -m pip install -r requirements-clientA.txt
 git clone --depth 1 https://github.com/ArchipelagoMW/Archipelago.git vendor/Archipelago
 ```
+To build a distributable exe instead, see [`docs/PACKAGING.md`](../docs/PACKAGING.md).
 
 **A1 — console mode (no game).** Connect to an AP server and drive checks by hand:
 ```powershell

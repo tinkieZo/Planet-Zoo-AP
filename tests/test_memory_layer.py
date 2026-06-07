@@ -49,28 +49,45 @@ def main() -> None:
                 "conservation_release_count", "research_state_base",
                 "species_roster_base", "birth_event_counter"}
     _check(expected <= set(table.anchors), "all expected anchors present")
-    _check(set(table.unfilled()) == set(table.anchors), "all anchors unfilled in shipped table")
+    # As the A2 spike fills anchors, unfilled() shrinks. Invariant: unfilled() lists
+    # exactly the anchors that report filled=False; the rest report filled=True.
+    _check(all(not table.anchors[n].filled for n in table.unfilled()),
+           "unfilled() lists exactly the not-yet-resolvable anchors")
+    _check(all(table.anchors[n].filled for n in set(table.anchors) - set(table.unfilled())),
+           "anchors not in unfilled() report filled=True")
     _check("research" in table.entity_offsets and "species_birth" in table.entity_offsets,
            "entity_offset groups parsed")
 
-    # --- resolve / read are safe when not attached + unfilled ---------------
+    # --- resolve / read are safe when not attached --------------------------
     scanner = MemoryScanner(table.process_name)
     _check(not scanner.attached, "scanner not attached initially")
-    _check(table.anchors["cash"].resolve(scanner) is None, "unresolved anchor -> None")
-    _check(table.read(scanner, "cash") is None, "read of unresolved anchor -> None")
+    # resolve() guards on attachment first, so even a filled anchor -> None here.
+    _check(table.anchors["cash"].resolve(scanner) is None, "resolve -> None when not attached")
+    _check(table.read(scanner, "cash") is None, "read -> None when not attached")
+    # Any still-unfilled anchor must resolve to None even once attached.
+    _unfilled = table.unfilled()
+    if _unfilled:
+        _check(not table.anchors[_unfilled[0]].filled, "unfilled anchor reports filled=False")
 
     # --- applier on unfilled table: cumulative stalls (False), no crash -----
+    # This is a game-free test. If a real game IS running on a dev box, attaching
+    # to it and applying a (now-filled) cash item would mutate the player's live
+    # save, so skip the live-write assertions when a game is actually attachable.
     applier = MemoryEffectApplier(scanner, table)
     gd = pz_data.load()
     cash_item = gd.item_by_id[1009]
-    # attach() will fail (game not running) -> _ensure_attached False -> apply False.
-    _check(applier.apply(cash_item) is False, "cash apply returns False when no game/anchor")
+    _game_running = MemoryScanner(table.process_name).attach()
+    if _game_running:
+        print("SKIP - apply/trigger live-write checks (a game process is attached)")
+    else:
+        # attach() fails (no game) -> _ensure_attached False -> apply False.
+        _check(applier.apply(cash_item) is False, "cash apply returns False when no game/anchor")
 
-    # --- trigger source polls harmlessly with nothing attached --------------
-    fired = []
-    ts = MemoryTriggerSource(scanner, table, gd, report_check=fired.append)
-    result = ts.poll(already_checked=set())
-    _check(result == [] and fired == [], "trigger poll no-ops when not attached")
+        # --- trigger source polls harmlessly with nothing attached ----------
+        fired = []
+        ts = MemoryTriggerSource(scanner, table, gd, report_check=fired.append)
+        result = ts.poll(already_checked=set())
+        _check(result == [] and fired == [], "trigger poll no-ops when not attached")
 
     print("\nALL MEMORY-LAYER TESTS PASSED")
 

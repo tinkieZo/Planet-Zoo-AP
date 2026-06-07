@@ -180,6 +180,13 @@ class MemoryScanner:
     def read_i64(self, addr: int) -> int:
         return struct.unpack("<q", self.read_bytes(addr, 8))[0]
 
+    def read_qword(self, addr: int) -> Optional[int]:
+        """Read an unsigned 8-byte qword, returning None on a failed/invalid read (for pointer walks)."""
+        try:
+            return struct.unpack("<Q", self.read_bytes(addr, 8))[0]
+        except Exception:
+            return None
+
     def read_double(self, addr: int) -> float:
         return struct.unpack("<d", self.read_bytes(addr, 8))[0]
 

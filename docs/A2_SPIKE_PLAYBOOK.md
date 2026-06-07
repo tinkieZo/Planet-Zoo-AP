@@ -16,14 +16,14 @@ the happy path.
 
 ---
 
-## Preferred path: `tools/memscan.py` (Claude drives, you play)
+## Preferred path: `tools/memscan.py`
 
 You don't have to run Cheat Engine by hand. [`tools/memscan.py`](../tools/memscan.py)
 reproduces CE's scan loop over `pymem`, so the division of labour is:
 
 - **You:** play the game, perform the action (spend cash, breed an animal), and
   read the on-screen number back ("cash is 60,000 now").
-- **Claude / the tool:** attach, scan, narrow, pointer-scan for a stable chain,
+- **the tool:** attach, scan, narrow, pointer-scan for a stable chain,
   test-write, and save the anchor into `anchors.json`.
 
 ```
@@ -113,9 +113,33 @@ population deltas). → Record as `birth_event_counter`; then extend
 birth, First Scan "unknown initial value"; after birth, "increased value" scans.
 Cross-check by breeding a second species and watching which counters move.
 
-> If neither shape is findable in a reasonable timebox, **escalate** — this is
-> the gate the whole plan flagged. Fallback options: OCR the birth notification,
-> or treat `first_breed` as a manual `/pz_check` for the slice.
+> **SPIKE OUTCOME (Option A, confirmed).** There is ONE per-species roster object
+> holding every species' population at fixed offsets (zebra `+0x630`, and a live
+> warthog birth confirmed the count bumps **in-place** at its species offset
+> `+0x530`). So `species_birth[<key>]` is a fixed offset into that object and the
+> mechanism works. **The hard part is locating the roster object on attach:** it
+> has NO restart-stable static pointer chain (0/85 deep candidates survived a
+> restart) and it reallocates on buy/sell, so neither a `module_offset` chain nor
+> the value-scan+fingerprint finder works unattended.
+>
+> **Manual `/pz_check` for `first_breed` is NOT an option** (no per-event player
+> actions allowed) and there is no mod API. Data-anchoring the roster was
+> EXHAUSTED (0/85 static chains survive restart; fingerprint 11k; 26 confirmed
+> roster objects share no vtable, 1/26) — it cannot be located on attach via data.
+>
+> **SOLUTION — CODE HOOK (injection PROVEN feasible).** PoCs in `tools/`:
+> `inject_poc.py` (allocate RWX + run shellcode via a remote thread — wrote a
+> sentinel) and `hook_poc.py` (detour the stable guest-count READ at
+> `module+0x640123B`: suspend process → 5-byte `jmp` to a trampoline within ±2GB
+> that bumps a counter, runs the original instruction, jumps back → the counter
+> climbed ~120/sec live, game kept running, original bytes restored cleanly).
+> **A3 plan for births:** AOB-signature the per-species count-INCREMENT
+> instruction (the birth write `add/sub [reg+species_off]`), detour records the
+> event (species_off → species_key via the offset map: zebra `0x630`, warthog
+> `0x530`) into a scratch region the client polls each tick. Code RVAs are stable
+> across restarts (same exe version); re-AOB per Frontier patch. The same hook
+> technique is the likely route for **permits** (hook the purchasable/market
+> check). `birth_event_counter` (Option B global counter) is now obsolete.
 
 ---
 

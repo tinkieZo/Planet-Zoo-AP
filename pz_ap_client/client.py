@@ -160,6 +160,12 @@ class PZContext(CommonContext):
         self._goal_location_ids: List[int] = []
         # Optional memory layer (A2/A3); set by enable_memory().
         self.trigger_source: "Optional[MemoryTriggerSource]" = None
+        self.permit_gate = None  # PermitGate (memory mode); enforces species_unlock
+        self.facility_gate = None  # FacilityGate (memory mode); enforces facility_unlock placement
+        self.research_gate = None  # ResearchGate (memory mode); enforces research_centre/workshop
+        self.presence_gate = None  # PresenceGate (memory mode); native greyed-button UX for those
+        self.terrain_gate = None  # TerrainGate (memory mode); native terrain-tool greying (water_tools)
+        self._preflight_done = False  # run the signatures self-check once on first attach (fail-loud)
         self.poll_interval: float = 1.0
         self._poll_task: "Optional[asyncio.Task]" = None
         # Strong refs to fire-and-forget tasks so the event loop's weak
@@ -182,11 +188,60 @@ class PZContext(CommonContext):
         from .memory.anchors import AnchorTable
         from .memory.applier import MemoryEffectApplier
         from .memory.triggers import MemoryTriggerSource
+        from .memory.permits import PermitGate
+        from .memory.facilities import FacilityGate
+        from .memory.research import ResearchGate, FACILITY_RESEARCH_CATEGORY
+        from .memory.presence import PresenceGate
+        from .memory.terrain import TerrainGate
 
         anchors = AnchorTable.load()
         scanner = MemoryScanner(anchors.process_name)
-        self.applier = MemoryEffectApplier(scanner, anchors)
+        # Permit gate: memory-enforced per-species purchase block. The gated universe
+        # = every species that has a species_unlock item; received permits unblock them.
+        self.permit_gate = PermitGate(scanner)
+        # Purchase-block universe = every species whose gate has a token we enforce by
+        # purchase-block: a species permit (species_unlock), OR a tool we can't gate
+        # natively (water_tools — its in-game tool button lives in the data-driven Cobra
+        # UI we can't reach; see docs/OVERNIGHT_2026-06-03.md). Facility tokens
+        # (research_centre/workshop) are NOT in here — they have their own gates.
+        self.permit_gate.set_gated(self.game_data.purchase_universe())
+        # All facility_unlock keys in this seed, split by enforcement mechanism:
+        #   research_centre / workshop -> ResearchGate (research-start block by category)
+        #   everything else            -> FacilityGate (building-placement block)
+        all_fac = {i.effect_args.get("facility_key") for i in self.game_data.items
+                   if i.effect_type == "facility_unlock" and i.effect_args.get("facility_key")}
+        research_fac = all_fac & set(FACILITY_RESEARCH_CATEGORY)
+        placement_fac = all_fac - research_fac
+        # Trigger source owns the ReleaseDetector (release-gate) + a ResearchReader the gate reuses.
         self.trigger_source = MemoryTriggerSource(scanner, anchors, self.game_data, self.report_check)
+        # Facility (placement) gate — only the non-research facilities (trade_centre, vet_surgery).
+        self.facility_gate = FacilityGate(scanner)
+        self.facility_gate.set_gated(placement_fac)
+        # Research gate — research_centre / workshop, enforced by the research-start hook (hard
+        # enforcement: no progress/completion, resets in-progress). The PresenceGate adds the
+        # native greyed-button UX (the facility reads as not-built) on the same gated set.
+        self.research_gate = ResearchGate(reader=self.trigger_source.research)
+        self.research_gate.set_gated(research_fac)
+        self.presence_gate = PresenceGate(scanner)
+        self.presence_gate.set_gated(research_fac)
+        # Terrain-tool gate — native greying of the terrain-edit menu tools (water_tools), by patching
+        # the BuildCategories Lua bytecode. The real enforcement of the tool item (vs the PermitGate
+        # purchase-block proxy, which stays as belt-and-suspenders for the water-gated species).
+        self.terrain_gate = TerrainGate(scanner)
+        self.terrain_gate.set_gated(self.game_data.tool_keys())
+        self.applier = MemoryEffectApplier(scanner, anchors, permit_gate=self.permit_gate,
+                                           release_gate=self.trigger_source.releases,
+                                           facility_gate=self.facility_gate,
+                                           research_gate=self.research_gate)
+        # Static seed facts for the conservation gate: is it a gated program here, and/or
+        # do we need its release counter for a milestone? (Don't install the blocking hook
+        # in a seed that neither gates conservation nor counts releases.)
+        self._conservation_gated = any(
+            i.effect_type == "program_unlock" and i.effect_args.get("program_key") == "conservation"
+            for i in self.game_data.items)
+        self._conservation_counted = any(
+            l.trigger_type == "milestone" and (l.trigger_args or {}).get("metric") == "conservation_release"
+            for l in self.game_data.locations)
         self.poll_interval = poll_interval
         unfilled = anchors.unfilled()
         if unfilled:
@@ -200,7 +255,14 @@ class PZContext(CommonContext):
             try:
                 if self.trigger_source is not None and self.slot is not None:
                     self.trigger_source.poll(self.effective_checked)
+                    self._run_preflight()  # once, on first attach: self-check every patch-sensitive site
                     self._apply_new_items()  # retry anything that stalled (e.g. game not ready)
+                    self._reconcile_permits()  # keep the purchase gate = full received-permit set
+                    self._reconcile_conservation()  # keep the release gate = (conservation program received?)
+                    self._reconcile_facilities()  # keep the placement gate = full received-facility set
+                    self._reconcile_research()  # keep the research gate = (research facilities received?)
+                    self._reconcile_presence()  # keep the native greyed-button UX in sync
+                    self._reconcile_terrain()  # keep the native terrain-tool greying = received tool set
             except Exception:
                 logger.exception("poll loop tick failed")
             await asyncio.sleep(self.poll_interval)
@@ -300,6 +362,147 @@ class PZContext(CommonContext):
                 logger.info("Pausing item application at #%s (%s); will retry", idx, item.name)
                 break
             self.state.set(seed, self.slot, idx + 1)
+        # Re-derive the purchase gate authoritatively right after applying, so a tool/permit
+        # just received takes effect immediately (not only on the next poll tick), and any
+        # transient over-unblock from a per-item unlock() is corrected within this call.
+        self._reconcile_permits()
+
+    def _reconcile_permits(self) -> None:
+        """Drive the purchase gate from the COMPLETE set of received items, evaluating each
+        species' FULL gate expression (AND-semantics over its purchase tokens). A species is
+        unblocked only when every purchase token in its gate is satisfied — so nile_hippo
+        unblocks on water_tools, and saltwater_croc only on water_tools AND its permit.
+        Authoritative + idempotent (restart-correct; doesn't rely on the item high-water mark);
+        the gate re-syncs only on change."""
+        if self.permit_gate is None:
+            return
+        received_ids = [ni.item for ni in self.items_received]
+        blocked = self.game_data.purchase_blocked_species(received_ids)
+        satisfied = self.game_data.purchase_universe() - blocked
+        try:
+            self.permit_gate.reconcile(satisfied)
+        except Exception:
+            logger.exception("permit reconcile failed")
+
+    def _reconcile_conservation(self) -> None:
+        """Drive the release-to-wild gate from the received set, authoritatively (so it's
+        correct across restarts, like permits). Locked until the Conservation Program
+        (program_unlock) item is received. Skip entirely in a seed that neither gates
+        conservation nor needs the release counter — so we never block a player whose
+        seed has no conservation feature."""
+        if self.trigger_source is None or not (self._conservation_gated or self._conservation_counted):
+            return
+        unlocked = not self._conservation_gated or any(
+            (it := self.game_data.item_by_id.get(ni.item)) is not None
+            and it.effect_type == "program_unlock"
+            and it.effect_args.get("program_key") == "conservation"
+            for ni in self.items_received)
+        try:
+            self.trigger_source.releases.set_locked(not unlocked)
+        except Exception:
+            logger.exception("conservation reconcile failed")
+
+    def _reconcile_facilities(self) -> None:
+        """Drive the placement gate from the COMPLETE set of received facility items.
+        Authoritative + idempotent (restart-correct), like the permit reconcile."""
+        if self.facility_gate is None:
+            return
+        received = set()
+        for net_item in self.items_received:
+            it = self.game_data.item_by_id.get(net_item.item)
+            if it is not None and it.effect_type == "facility_unlock":
+                key = it.effect_args.get("facility_key")
+                if key:
+                    received.add(key)
+        try:
+            self.facility_gate.reconcile(received)
+        except Exception:
+            logger.exception("facility reconcile failed")
+
+    def _reconcile_research(self) -> None:
+        """Drive the research-start gate from the COMPLETE set of received research facilities
+        (research_centre -> animal research, workshop -> mechanic research). Authoritative +
+        idempotent (restart-correct): research is blocked from starting until the facility item
+        is received. No-op if the seed gates no research facilities."""
+        if self.research_gate is None or not self.research_gate.gated_facilities:
+            return
+        received = set()
+        for net_item in self.items_received:
+            it = self.game_data.item_by_id.get(net_item.item)
+            if it is not None and it.effect_type == "facility_unlock":
+                key = it.effect_args.get("facility_key")
+                if key:
+                    received.add(key)
+        try:
+            self.research_gate.reconcile(received)
+        except Exception:
+            logger.exception("research reconcile failed")
+
+    def _reconcile_presence(self) -> None:
+        """Drive the native greyed-button presence gate from the COMPLETE set of received research
+        facilities — the UX twin of _reconcile_research (research_centre greys the research button,
+        workshop disables mechanic research). Authoritative + idempotent; no-op if no research
+        facilities are gated this seed."""
+        if self.presence_gate is None or not self.presence_gate.gated_facilities:
+            return
+        received = set()
+        for net_item in self.items_received:
+            it = self.game_data.item_by_id.get(net_item.item)
+            if it is not None and it.effect_type == "facility_unlock":
+                key = it.effect_args.get("facility_key")
+                if key:
+                    received.add(key)
+        try:
+            self.presence_gate.reconcile(received)
+        except Exception:
+            logger.exception("presence reconcile failed")
+
+    def _run_preflight(self) -> None:
+        """Once, on first successful attach: run the signatures self-check and log a health report.
+        Fail-loud — if a Frontier patch shifted/changed any hook, anchor, or the terrain bytecode, this
+        names exactly what broke so re-RE is targeted. Best-effort; never raises into the poll loop."""
+        if self._preflight_done or self.trigger_source is None:
+            return
+        scanner = self.trigger_source.scanner
+        if not getattr(scanner, "attached", False):
+            return  # wait until attached (the game is running + a zoo loaded)
+        self._preflight_done = True
+        try:
+            from .memory import signatures as sig
+            from .memory.anchors import AnchorTable
+            try:
+                at = AnchorTable.load()
+            except Exception:
+                at = None
+            results = sig.run_selfcheck(scanner, at)
+            bad = [r for r in results if r.status not in ("ok", "relocated")]
+            reloc = [r for r in results if r.status == "relocated"]
+            ok = len(results) - len(bad)
+            logger.info("preflight self-check: %d/%d sites OK", ok, len(results))
+            for r in reloc:
+                logger.warning("preflight: %s AUTO-RELOCATED (%s) — game likely patched; verify", r.name, r.detail)
+            for r in bad:
+                logger.error("preflight: %s [%s] %s — gate/detection for it may be unreliable", r.name, r.status, r.detail)
+        except Exception as e:
+            logger.warning("preflight self-check skipped (%s)", e)
+
+    def _reconcile_terrain(self) -> None:
+        """Drive the native terrain-tool gate from the COMPLETE set of received tool items: each gated
+        terrain tool (e.g. water_tools) is greyed in the terrain-edit menu until its item arrives, then
+        force-enabled. Authoritative + idempotent (restart-correct); no-op if the seed gates no tools."""
+        if self.terrain_gate is None or not self.terrain_gate.gated_tools:
+            return
+        received = set()
+        for net_item in self.items_received:
+            it = self.game_data.item_by_id.get(net_item.item)
+            if it is not None and it.effect_type == "tool_unlock":
+                key = it.effect_args.get("tool_key")
+                if key:
+                    received.add(key)
+        try:
+            self.terrain_gate.reconcile(received)
+        except Exception:
+            logger.exception("terrain reconcile failed")
 
     # -- goal detection --------------------------------------------------------
 
@@ -349,6 +552,13 @@ def main(args=None):
         ctx.run_cli()
 
         await ctx.exit_event.wait()
+        # Restore every installed code patch / detour on the way out (trigger birth-detour, the
+        # permit / placement / research-start hooks, and the presence-fill detour).
+        for gate, method in ((ctx.trigger_source, "close"), (ctx.permit_gate, "shutdown"),
+                             (ctx.facility_gate, "shutdown"), (ctx.research_gate, "shutdown"),
+                             (ctx.presence_gate, "shutdown"), (ctx.terrain_gate, "shutdown")):
+            if gate is not None:
+                getattr(gate, method)()
         await ctx.shutdown()
 
     parser = get_base_parser(description="Planet Zoo Archipelago hooking client (Track A).")

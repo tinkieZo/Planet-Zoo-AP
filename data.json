@@ -15,21 +15,21 @@
     { "key": "plains_zebra",      "name": "Plains Zebra",            "gate": "start" },
     { "key": "grey_wolf",         "name": "Grey Wolf",               "gate": "start" },
     { "key": "american_bison",    "name": "American Bison",          "gate": "start" },
-    { "key": "bengal_tiger",      "name": "Bengal Tiger",            "gate": "climate_tropical" },
-    { "key": "african_elephant",  "name": "African Elephant",        "gate": "climate_tropical" },
-    { "key": "nile_hippo",        "name": "Nile Hippopotamus",       "gate": "climate_tropical + water_tools" },
+    { "key": "bengal_tiger",      "name": "Bengal Tiger",            "gate": "permit_bengal_tiger" },
+    { "key": "african_elephant",  "name": "African Elephant",        "gate": "start" },
+    { "key": "nile_hippo",        "name": "Nile Hippopotamus",       "gate": "water_tools" },
     { "key": "saltwater_croc",    "name": "Saltwater Crocodile",     "gate": "water_tools + permit_saltwater_croc" },
-    { "key": "snow_leopard",      "name": "Snow Leopard",            "gate": "climate_cold" },
+    { "key": "snow_leopard",      "name": "Snow Leopard",            "gate": "permit_snow_leopard" },
     { "key": "lowland_gorilla",   "name": "Western Lowland Gorilla", "gate": "research_centre + permit_lowland_gorilla" },
     { "key": "giant_panda",       "name": "Giant Panda",             "gate": "conservation_program + permit_giant_panda", "flagship": true }
   ],
 
   "items": [
     { "id": 1000, "name": "Research Centre",                 "classification": "progression", "effect_type": "facility_unlock", "effect_args": { "facility_key": "research_centre" } },
-    { "id": 1001, "name": "Climate Control: Tropical",       "classification": "progression", "effect_type": "tool_unlock",     "effect_args": { "tool_key": "climate_tropical" } },
-    { "id": 1002, "name": "Climate Control: Cold",           "classification": "progression", "effect_type": "tool_unlock",     "effect_args": { "tool_key": "climate_cold" } },
+    { "id": 1001, "name": "Workshop",                        "classification": "progression", "effect_type": "facility_unlock", "effect_args": { "facility_key": "workshop" } },
+    { "id": 1002, "name": "Permit: Snow Leopard",            "classification": "progression", "effect_type": "species_unlock",  "effect_args": { "species_key": "snow_leopard" } },
     { "id": 1003, "name": "Water Habitat Tools",             "classification": "progression", "effect_type": "tool_unlock",     "effect_args": { "tool_key": "water_tools" } },
-    { "id": 1004, "name": "Veterinary Surgery",              "classification": "progression", "effect_type": "facility_unlock", "effect_args": { "facility_key": "vet_surgery" } },
+    { "id": 1004, "name": "Permit: Bengal Tiger",            "classification": "progression", "effect_type": "species_unlock",  "effect_args": { "species_key": "bengal_tiger" } },
     { "id": 1005, "name": "Conservation Program",            "classification": "progression", "effect_type": "program_unlock",  "effect_args": { "program_key": "conservation" } },
     { "id": 1006, "name": "Permit: Saltwater Crocodile",     "classification": "progression", "effect_type": "species_unlock",  "effect_args": { "species_key": "saltwater_croc" } },
     { "id": 1007, "name": "Permit: Western Lowland Gorilla", "classification": "progression", "effect_type": "species_unlock",  "effect_args": { "species_key": "lowland_gorilla" } },
@@ -37,16 +37,16 @@
 
     { "id": 1009, "name": "Cash Injection (Large)",          "classification": "useful",      "effect_type": "cash",            "effect_args": { "amount": 50000 } },
     { "id": 1010, "name": "Cash Injection (Large)",          "classification": "useful",      "effect_type": "cash",            "effect_args": { "amount": 50000 } },
-    { "id": 1011, "name": "Conservation Credits Grant",      "classification": "useful",      "effect_type": "cc",              "effect_args": { "amount": 5000 } },
-    { "id": 1012, "name": "Keeper Training Level",           "classification": "useful",      "effect_type": "staff_training",  "effect_args": { "levels": 1 } },
-    { "id": 1013, "name": "Marketing Campaign",              "classification": "useful",      "effect_type": "marketing",       "effect_args": { "campaign": "standard" } },
+    { "id": 1011, "name": "Conservation Credits (Large)",    "classification": "useful",      "effect_type": "cc",              "effect_args": { "amount": 5000 } },
+    { "id": 1012, "name": "Cash Injection (Medium)",         "classification": "useful",      "effect_type": "cash",            "effect_args": { "amount": 25000 } },
+    { "id": 1013, "name": "Cash Injection (Medium)",         "classification": "useful",      "effect_type": "cash",            "effect_args": { "amount": 25000 } },
 
-    { "id": 1014, "name": "Petty Cash",                      "classification": "filler",      "effect_type": "cash",            "effect_args": { "amount": 10000 } },
-    { "id": 1015, "name": "Petty Cash",                      "classification": "filler",      "effect_type": "cash",            "effect_args": { "amount": 10000 } },
-    { "id": 1016, "name": "Petty Cash",                      "classification": "filler",      "effect_type": "cash",            "effect_args": { "amount": 10000 } },
+    { "id": 1014, "name": "Cash Injection (Small)",          "classification": "filler",      "effect_type": "cash",            "effect_args": { "amount": 10000 } },
+    { "id": 1015, "name": "Cash Injection (Small)",          "classification": "filler",      "effect_type": "cash",            "effect_args": { "amount": 10000 } },
+    { "id": 1016, "name": "Cash Injection (Small)",          "classification": "filler",      "effect_type": "cash",            "effect_args": { "amount": 10000 } },
     { "id": 1017, "name": "Conservation Credits (Small)",    "classification": "filler",      "effect_type": "cc",              "effect_args": { "amount": 1000 } },
     { "id": 1018, "name": "Conservation Credits (Small)",    "classification": "filler",      "effect_type": "cc",              "effect_args": { "amount": 1000 } },
-    { "id": 1019, "name": "Enrichment Item Pack",            "classification": "filler",      "effect_type": "enrichment_pack", "effect_args": {} }
+    { "id": 1019, "name": "Conservation Credits (Medium)",   "classification": "filler",      "effect_type": "cc",              "effect_args": { "amount": 2000 } }
   ],
 
   "locations": [
@@ -60,7 +60,7 @@
     { "id": 2007, "name": "Research: Welfare - Snow Leopard",            "trigger_type": "research_complete", "trigger_args": { "research_key": "welfare_snow_leopard" } },
     { "id": 2008, "name": "Research: Welfare - Western Lowland Gorilla", "trigger_type": "research_complete", "trigger_args": { "research_key": "welfare_lowland_gorilla" } },
     { "id": 2009, "name": "Research: Welfare - Giant Panda",             "trigger_type": "research_complete", "trigger_args": { "research_key": "welfare_giant_panda" } },
-    { "id": 2010, "name": "Research: Enrichment - Generalist Toys",      "trigger_type": "research_complete", "trigger_args": { "research_key": "enrichment_generalist" } },
+    { "id": 2010, "name": "Research: Mechanic - Drink Shops",            "trigger_type": "research_complete", "trigger_args": { "research_key": "drink_shops" } },
     { "id": 2011, "name": "Research: Habitat - Advanced Barriers",       "trigger_type": "research_complete", "trigger_args": { "research_key": "habitat_advanced_barriers" } },
 
     { "id": 2012, "name": "First Breeding - Plains Zebra",               "trigger_type": "first_breed", "trigger_args": { "species_key": "plains_zebra" } },

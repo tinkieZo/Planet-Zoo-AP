@@ -41,7 +41,7 @@ from typing import Callable, Dict, List, Optional, Tuple
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from pz_ap_client.memory.scanner import MemoryScanner  # noqa: E402
+from pz_ap_client.memory.scanner import MemoryScanner, MemoryAccessError  # noqa: E402
 from pz_ap_client.memory.anchors import DEFAULT_ANCHORS_PATH  # noqa: E402
 
 # ---------------------------------------------------------------------------
@@ -203,51 +203,46 @@ class Session:
 # pointer scan (find a static module_base + offsets path to target)
 # ---------------------------------------------------------------------------
 
-@dataclass
-class _PtrScanCtx:
-    """Shared state for the pointer-scan recursion (keeps arg lists small)."""
-    scanner: MemoryScanner
-    regions: List[Tuple[int, int]]
-    mod_lo: int
-    mod_hi: int
-    max_offset: int
-    max_depth: int
-    max_results: int
-    results: List[List[int]] = field(default_factory=list)
-
-    @property
-    def full(self) -> bool:
-        return len(self.results) >= self.max_results
+try:
+    import numpy as _np
+except Exception:  # pragma: no cover - numpy optional
+    _np = None  # type: ignore[assignment]
 
 
-def _scan_pointers(scanner: MemoryScanner, regions: List[Tuple[int, int]],
-                   addr_lo: int, addr_hi: int) -> List[Tuple[int, int]]:
-    """Return [(pointer_location, value)] for 8-aligned values in [addr_lo, addr_hi]."""
-    found: List[Tuple[int, int]] = []
+def _scan_pointers_to(scanner: MemoryScanner, regions: List[Tuple[int, int]],
+                      targets: "object", max_offset: int) -> List[Tuple[int, int, int]]:
+    """One memory pass: return ``[(ptr_location, matched_target, offset)]`` for every
+    8-aligned slot whose value ``v`` satisfies ``t - max_offset <= v <= t`` for some
+    ``t`` in the sorted ``targets`` array (``offset = t - v``).
+
+    Vectorised across the *whole* frontier at once: for each value we take the
+    nearest target at-or-above it (one ``searchsorted``) and keep it if within
+    ``max_offset``. This is what bounds the scan to ``max_depth + 1`` passes rather
+    than one pass per candidate pointer."""
+    tmin = int(targets[0]) - max_offset
+    tmax = int(targets[-1])
+    out: List[Tuple[int, int, int]] = []
     for base, size in regions:
         try:
             buf = scanner.read_bytes(base, size)
         except Exception:
             continue
-        for i in range(0, len(buf) - 8, 8):
-            val = int.from_bytes(buf[i:i + 8], "little")
-            if addr_lo <= val <= addr_hi:
-                found.append((base + i, val))
-    return found
-
-
-def _collect_chains(ctx: _PtrScanCtx, target_addr: int, suffix: List[int], depth: int) -> None:
-    """Recursively gather static pointer chains reaching ``target_addr`` into ctx.results."""
-    if ctx.full:
-        return
-    for ploc, pval in _scan_pointers(ctx.scanner, ctx.regions, target_addr - ctx.max_offset, target_addr):
-        chain = [target_addr - pval] + suffix
-        if ctx.mod_lo <= ploc < ctx.mod_hi:
-            ctx.results.append([ploc - ctx.mod_lo] + chain)  # static base offset + chain
-        elif depth < ctx.max_depth:
-            _collect_chains(ctx, ploc, chain, depth + 1)
-        if ctx.full:
-            return
+        usable = len(buf) - (len(buf) % 8)
+        if usable < 8:
+            continue
+        arr = _np.frombuffer(buf, dtype="<u8", count=usable // 8)
+        # Cheap prefilter to the frontier's overall value span before the join.
+        cand = _np.nonzero((arr >= tmin) & (arr <= tmax))[0]
+        if cand.size == 0:
+            continue
+        vvals = arr[cand]
+        pos = _np.searchsorted(targets, vvals, side="left")  # first target >= value
+        tvals = targets[pos]                                 # tvals >= vvals
+        good = (tvals - vvals) <= max_offset
+        gi = cand[good]
+        for loc_i, t, v in zip(gi.tolist(), tvals[good].tolist(), vvals[good].tolist()):
+            out.append((base + loc_i * 8, t, t - v))
+    return out
 
 
 def _dedupe_chains(chains: List[List[int]]) -> List[List[int]]:
@@ -261,30 +256,72 @@ def _dedupe_chains(chains: List[List[int]]) -> List[List[int]]:
     return uniq
 
 
-def pointer_scan(scanner: MemoryScanner, target: int, max_offset: int = 0x1000,
-                 max_depth: int = 2, max_results: int = 20) -> List[List[int]]:
-    """Find pointer paths [off0, off1, ...] such that walking from module_base
-    (deref each offset except the last, which is added) reaches `target`.
+@dataclass
+class _BfsState:
+    """Mutable accumulators shared across BFS levels of a pointer scan."""
+    mod_lo: int
+    mod_hi: int
+    max_offset: int
+    max_results: int
+    max_frontier: int
+    results: List[List[int]] = field(default_factory=list)
+    seen: set = field(default_factory=set)
 
-    Breadth-limited: scans writable regions for 8-byte values pointing into
-    [target-max_offset, target]. A pointer that itself lives in the main module
-    yields a static chain. Otherwise we recurse on that pointer's address.
+    @property
+    def done(self) -> bool:
+        return len(self.results) >= self.max_results
+
+
+def _expand_frontier(scanner: MemoryScanner, regions: List[Tuple[int, int]],
+                     frontier: List[int], suffix_of: Dict[int, List[int]],
+                     st: _BfsState) -> Dict[int, List[int]]:
+    """Resolve one BFS level: a single ``_scan_pointers_to`` pass for the whole
+    frontier. Static (in-module) pointers close a chain into ``st.results``; every
+    other pointer location becomes a sub-target in the returned next-level map."""
+    targets = _np.array(sorted(frontier), dtype="<u8")
+    next_suffix: Dict[int, List[int]] = {}
+    for ploc, taddr, off in _scan_pointers_to(scanner, regions, targets, st.max_offset):
+        chain = [off] + suffix_of[taddr]
+        if st.mod_lo <= ploc < st.mod_hi:
+            st.results.append([ploc - st.mod_lo] + chain)
+            if st.done:
+                break
+        elif ploc not in st.seen and len(next_suffix) < st.max_frontier:
+            st.seen.add(ploc)
+            next_suffix[ploc] = chain
+    return next_suffix
+
+
+def pointer_scan(scanner: MemoryScanner, target: int, max_offset: int = 0x1000,
+                 max_depth: int = 2, max_results: int = 20,
+                 max_frontier: int = 4000) -> List[List[int]]:
+    """Find pointer paths [off0, off1, ...] such that walking from module_base
+    (deref each offset except the last, which is added) reaches ``target``.
+
+    Level-by-level BFS: at each depth the *entire* frontier of sub-targets is
+    resolved in a single vectorised memory pass (``_expand_frontier`` /
+    ``_scan_pointers_to``). A pointer that lives in the main module closes a static
+    chain; any other pointer's location becomes a sub-target one level deeper.
+    Total cost is ``max_depth + 1`` passes, independent of how many candidate
+    pointers exist. ``max_frontier`` caps per-level breadth.
     """
     assert scanner.pm is not None and scanner.module_base is not None
     assert scanner.pm.process_handle is not None
-    mod_base = scanner.module_base
-    mod_size = scanner.module_size or 0x4000000
-    ctx = _PtrScanCtx(
-        scanner=scanner,
-        regions=iter_regions(scanner.pm.process_handle, writable_only=True),
-        mod_lo=mod_base,
-        mod_hi=mod_base + mod_size,
-        max_offset=max_offset,
-        max_depth=max_depth,
-        max_results=max_results,
-    )
-    _collect_chains(ctx, target, [], 0)
-    return _dedupe_chains(ctx.results)
+    if _np is None:
+        raise MemoryAccessError("pointer_scan requires numpy (pip install numpy)")
+    mod_lo = scanner.module_base
+    mod_hi = mod_lo + (scanner.module_size or 0x4000000)
+    regions = iter_regions(scanner.pm.process_handle, writable_only=True)
+
+    st = _BfsState(mod_lo, mod_hi, max_offset, max_results, max_frontier, seen={target})
+    suffix_of = {target: []}          # sub-target addr -> offsets suffix reaching `target`
+    frontier = [target]
+    for _depth in range(max_depth + 1):
+        if not frontier or st.done:
+            break
+        suffix_of = _expand_frontier(scanner, regions, frontier, suffix_of, st)
+        frontier = list(suffix_of.keys())
+    return _dedupe_chains(st.results)
 
 
 # ---------------------------------------------------------------------------

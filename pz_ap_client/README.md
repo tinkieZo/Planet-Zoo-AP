@@ -52,10 +52,12 @@ addresses, pointer-scans for a stable chain, test-writes, and saves anchors):
 ```
 
 ## Tests (no game, no server)
+Whole suite under one runner (needs the 3.11 venv + `pip install pytest`):
 ```powershell
-.\.venv\Scripts\python.exe -m tests.test_client_offline   # A1 + A3 + goal
-.\.venv\Scripts\python.exe -m tests.test_memory_layer     # scanner + anchors
+.\.venv\Scripts\python.exe -m pytest
 ```
+`pytest.ini` scopes collection to `tests/` (never the vendored Archipelago tree). Each file also
+still runs standalone as a script, e.g. `.\.venv\Scripts\python.exe tests\test_client_offline.py`.
 
 ## Status
 - **A1 (client shell + console):** done, tested offline.

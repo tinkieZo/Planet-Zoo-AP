@@ -290,5 +290,10 @@ def main() -> None:
     print("\nALL A3-MODULE TESTS PASSED")
 
 
+def test_a3_modules() -> None:
+    """pytest entry point — runs the A3-module checks (each asserts via _check)."""
+    main()
+
+
 if __name__ == "__main__":
     main()

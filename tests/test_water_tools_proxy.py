@@ -12,6 +12,7 @@ Run:  python -m tests.test_water_tools_proxy
 """
 from __future__ import annotations
 
+import asyncio
 import os
 import sys
 from pathlib import Path
@@ -42,9 +43,11 @@ def test_purchase_tokens(gd) -> None:
            f"bengal_tiger tokens = (permit_bengal_tiger,) (got {toks('bengal_tiger')})")
     _check(toks("african_elephant") == (),
            f"african_elephant (start) has NO purchase tokens (got {toks('african_elephant')})")
-    # compound facility gate: research_centre is NOT purchase-enforced (its own gate handles it)
     _check(toks("lowland_gorilla") == ("permit_lowland_gorilla",),
-           f"lowland_gorilla tokens exclude research_centre (got {toks('lowland_gorilla')})")
+           f"lowland_gorilla tokens = (permit_lowland_gorilla,) (got {toks('lowland_gorilla')})")
+    # compound gate: a non-purchase token (conservation_program) is NOT purchase-enforced — its own gate handles it
+    _check(toks("giant_panda") == ("permit_giant_panda",),
+           f"giant_panda tokens exclude conservation_program (got {toks('giant_panda')})")
 
 
 def test_blocked_sets(gd) -> None:
@@ -100,23 +103,36 @@ def test_client_reconcile(gd) -> None:
             self.last_reconcile = set(unlocked)
             return True
 
-    ctx = PZContext(None, None)
-    ctx.permit_gate = FakeGate()
-    ctx.permit_gate.set_gated(gd.purchase_universe())
+    async def _run():
+        # PZContext (AP CommonContext) schedules a keep-alive task on construction, so it must be
+        # built inside a running event loop; cancel that task afterward so the loop closes cleanly.
+        ctx = PZContext(None, None)
+        try:
+            ctx.permit_gate = FakeGate()
+            ctx.permit_gate.set_gated(gd.purchase_universe())
 
-    def received(ids):
-        ctx.items_received = [NetworkItem(i, 9000 + n, 1, 0) for n, i in enumerate(ids)]
-        ctx._reconcile_permits()
-        # blocked = universe - satisfied(reconcile arg)
-        return ctx.permit_gate.gated - ctx.permit_gate.last_reconcile
+            def received(ids):
+                ctx.items_received = [NetworkItem(i, 9000 + n, 1, 0) for n, i in enumerate(ids)]
+                ctx._reconcile_permits()
+                # blocked = universe - satisfied(reconcile arg)
+                return ctx.permit_gate.gated - ctx.permit_gate.last_reconcile
 
-    _check("nile_hippo" in received([]) and "saltwater_croc" in received([]),
-           "client reconcile: nothing received -> aquatic species blocked")
-    _check("nile_hippo" not in received([1003]), "client reconcile: water_tools frees nile_hippo")
-    _check("saltwater_croc" in received([1003]),
-           "client reconcile: water_tools alone keeps saltwater_croc blocked")
-    _check("saltwater_croc" not in received([1003, 1006]),
-           "client reconcile: water_tools + permit frees saltwater_croc")
+            _check("nile_hippo" in received([]) and "saltwater_croc" in received([]),
+                   "client reconcile: nothing received -> aquatic species blocked")
+            _check("nile_hippo" not in received([1003]), "client reconcile: water_tools frees nile_hippo")
+            _check("saltwater_croc" in received([1003]),
+                   "client reconcile: water_tools alone keeps saltwater_croc blocked")
+            _check("saltwater_croc" not in received([1003, 1006]),
+                   "client reconcile: water_tools + permit frees saltwater_croc")
+        finally:
+            task = ctx.keep_alive_task
+            if task is not None:
+                task.cancel()
+                # Drain the cancelled keep-alive task; return_exceptions swallows its own
+                # CancelledError as a result without masking a cancellation of THIS coroutine.
+                await asyncio.gather(task, return_exceptions=True)
+
+    asyncio.run(_run())
 
 
 def test_tool_unlock_applies(gd) -> None:

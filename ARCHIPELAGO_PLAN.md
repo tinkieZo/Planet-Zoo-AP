@@ -46,7 +46,7 @@ That makes the seam between the two work tracks narrow and stable: it's just `da
 ## Vertical-slice scope (agreed in Phase 0)
 
 - **Mode:** Challenge, fixed starting save.
-- **10 species:** 3 ungated starters (sphere 0) + 7 gated behind climate/water/permits.
+- **10 species:** 4 ungated starters (sphere 0) + 6 gated behind water tools / permits / conservation.
 - **20 locations:** 12 research + 5 first-breed + 3 milestones.
 - **20 items:** 9 progression + 5 useful + 6 filler. (Item count == location count, as AP requires.)
 - **No traps** in the slice.
@@ -103,25 +103,36 @@ Sent by the APWorld to the client at connect:
 
 ## Suggested logic graph (Track B owns final rules)
 
-Non-binding starting point — Person 2 finalizes in the APWorld.
+Mirrors the gates encoded in `data.json` (Track B owns the final access rules in the APWorld).
 
 ```
 Start (sphere 0)
-├── ungated species: Plains Zebra, Grey Wolf, American Bison
-│     → their Research:Welfare + First-Breeding locations reachable immediately
+├── ungated species: Plains Zebra, Grey Wolf, American Bison, African Elephant
+│     → acquired + bred immediately; their First-Breeding locations are reachable now
+│     (welfare RESEARCH for ANY species still needs the Research Centre — see below)
 │
-├── [Research Centre] item  → opens ALL Research:Welfare + Research:Enrichment/Habitat locations
-├── [Climate Control: Tropical] → Bengal Tiger, African Elephant region
-├── [Water Habitat Tools] (+Tropical) → Nile Hippopotamus
-├── [Water Habitat Tools] + [Permit: Saltwater Crocodile] → Crocodile
-├── [Climate Control: Cold] → Snow Leopard
-├── [Permit: Western Lowland Gorilla] (+Research Centre) → Gorilla
-├── [Permit: Giant Panda] + [Conservation Program] → Giant Panda (flagship)
-├── [Veterinary Surgery] → makes First-Breeding checks reliable (soft gate)
-└── [Conservation Program] → "First Conservation Release" milestone
+├── [Research Centre]  → ALL per-species Research:Welfare locations (animal research, category 7)
+├── [Workshop]         → both mechanic-research locations: Drink Shops + Advanced Barriers (category 3)
+├── [Permit: Bengal Tiger]                                → Bengal Tiger
+├── [Water Habitat Tools]                                 → Nile Hippopotamus
+├── [Water Habitat Tools] + [Permit: Saltwater Crocodile] → Saltwater Crocodile
+├── [Permit: Snow Leopard]                                → Snow Leopard
+├── [Permit: Western Lowland Gorilla]                     → Western Lowland Gorilla
+├── [Conservation Program] + [Permit: Giant Panda]        → Giant Panda (flagship)
+└── [Conservation Program]                                → "First Conservation Release" milestone
 ```
 
-Keep rules **conservative** — players will break optimistic assumptions.
+Notes: **all research is facility-gated** — no `Research:*` location is sphere 0. The Research
+Centre gates the per-species welfare research (animal, cat 7); the Workshop gates the *mechanic*
+research — **both** Drink Shops **and** Advanced Barriers (cat 3), despite the latter's "Habitat"
+display name. A species' **First-Breeding** location inherits that species' acquisition gate (you
+can only breed what you can build); the **Zoo Rating** and **Guests** milestones are ungated economy
+goals. The flagship **Giant Panda** is intentionally double-gated — its permit **plus** the
+**Conservation Program** (the conservation-icon animal, and the hub of the release milestone). Every
+other gated species is **permit-only** (the Lowland Gorilla's redundant Research-Centre gate was
+dropped, since the Research Centre is already a de-facto early item — all welfare research needs it).
+Climate-control gating was dropped — gated species use **permits** (plus water tools / conservation).
+Keep rules **conservative**: players will break optimistic assumptions.
 
 ---
 

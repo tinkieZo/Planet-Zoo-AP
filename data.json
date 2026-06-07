@@ -20,7 +20,7 @@
     { "key": "nile_hippo",        "name": "Nile Hippopotamus",       "gate": "water_tools" },
     { "key": "saltwater_croc",    "name": "Saltwater Crocodile",     "gate": "water_tools + permit_saltwater_croc" },
     { "key": "snow_leopard",      "name": "Snow Leopard",            "gate": "permit_snow_leopard" },
-    { "key": "lowland_gorilla",   "name": "Western Lowland Gorilla", "gate": "research_centre + permit_lowland_gorilla" },
+    { "key": "lowland_gorilla",   "name": "Western Lowland Gorilla", "gate": "permit_lowland_gorilla" },
     { "key": "giant_panda",       "name": "Giant Panda",             "gate": "conservation_program + permit_giant_panda", "flagship": true }
   ],
 

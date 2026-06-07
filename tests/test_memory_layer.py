@@ -92,5 +92,10 @@ def main() -> None:
     print("\nALL MEMORY-LAYER TESTS PASSED")
 
 
+def test_memory_layer() -> None:
+    """pytest entry point — runs the memory-layer checks (each asserts via _check)."""
+    main()
+
+
 if __name__ == "__main__":
     main()

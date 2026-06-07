@@ -26,6 +26,20 @@ or directly:
 ```
 Output: **`dist\pz-ap-client\`** (~85 MB) containing `pz-ap-client.exe` + `_internal\`.
 
+### Bundling Archipelago from a different location
+
+By default the build reads AP from `.\vendor\Archipelago`. To bundle an Archipelago install from
+elsewhere (without cloning into `vendor/`), point the build at it — the bundle layout and the frozen
+client's runtime path are unchanged; only the build-time *source* moves:
+```powershell
+.\build-exe.ps1 -ApSource D:\Archipelago
+# or, equivalently, set the env var the spec reads:
+$env:PZ_AP_SOURCE = 'D:\Archipelago'; .\.venv\Scripts\pyinstaller.exe --noconfirm --clean pz-ap-client.spec
+```
+The source must be a real Archipelago tree (contain `CommonClient.py`) and version-compatible with the
+client. Note this only relocates the *build* source — inside the finished exe, AP always lives at
+`_internal\vendor\Archipelago\` (the distributable is self-contained; you don't relocate it after building).
+
 ## How the bundle is structured (and why)
 
 Archipelago discovers its game "worlds" dynamically at import time by scanning real folders

@@ -33,8 +33,17 @@ hidden = [
     "ssl", "sqlite3", "multiprocessing", "secrets", "uuid", "asyncio",
 ] + pm_hidden
 
+# Where to READ the Archipelago tree at build time. Defaults to the vendored clone; override with
+# the PZ_AP_SOURCE env var to bundle an Archipelago install from elsewhere (e.g.
+# set PZ_AP_SOURCE=D:\Archipelago). The bundle DESTINATION stays "vendor/Archipelago" regardless, so
+# the frozen client finds it at the same relative path — only the build-time source location changes.
+AP_SOURCE = os.environ.get("PZ_AP_SOURCE", "vendor/Archipelago")
+if not os.path.isfile(os.path.join(AP_SOURCE, "CommonClient.py")):
+    raise SystemExit("pz-ap-client.spec: no Archipelago tree at %r (CommonClient.py not found). "
+                     "Set PZ_AP_SOURCE to your Archipelago dir." % AP_SOURCE)
+
 datas = (
-    _tree("vendor/Archipelago", "vendor/Archipelago")
+    _tree(AP_SOURCE, "vendor/Archipelago")
     + [("data.json", "."), ("pz_ap_client/memory/anchors.json", "pz_ap_client/memory")]
     + pm_datas
 )

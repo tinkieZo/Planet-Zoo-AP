@@ -56,6 +56,14 @@ Archipelago discovers its game "worlds" dynamically at import time by scanning r
 AP's runtime deps are declared as `hiddenimports` in the spec because the AP code that imports them
 is loaded from data (not statically analyzed). pymem is pulled in via `collect_all`.
 
+For the same reason, the spec force-includes the **entire standard library**
+(`sys.stdlib_module_names`, minus heavy GUI/dev modules like `tkinter`): AP's stdlib imports — e.g.
+`shlex` from `MultiServer` — are invisible to PyInstaller, so whether they get bundled is otherwise
+*incidental* (pulled transitively by some dependency). That works on the machine that happened to
+have the right transitive versions but fails as `No module named '<stdlib>'` on a fresh build
+elsewhere (unpinned-dependency drift). Bundling all of stdlib makes the build deterministic across
+machines.
+
 ## Run the exe
 
 ```powershell

@@ -7,6 +7,7 @@
 # world-discovery (os.listdir over real dirs) works exactly as from source. Because the AP code
 # isn't statically analyzed, AP's runtime deps are declared as hidden imports below.
 import os
+import sys
 from PyInstaller.utils.hooks import collect_all
 
 
@@ -25,13 +26,20 @@ def _tree(src_root, dest_root, skip=(".git", "__pycache__", ".pytest_cache")):
 # pymem dynamically loads submodules — collect everything it ships.
 pm_datas, pm_binaries, pm_hidden = collect_all("pymem")
 
-# AP's runtime deps (requirements-clientA.txt, import names). AP is loaded from data files at
-# runtime, so PyInstaller can't discover these via static analysis — name them explicitly.
+# AP is loaded from data files at runtime, so PyInstaller can't see its imports via static analysis.
+#  (1) Third-party deps (requirements-clientA.txt) — named explicitly.
+#  (2) STDLIB imports (e.g. shlex via MultiServer): whether these get bundled otherwise is INCIDENTAL
+#      — pulled in transitively by some dep on one machine but not another (unpinned-version drift),
+#      which is exactly the intermittent "No module named shlex" on a fresh build elsewhere. So bundle
+#      the whole stdlib (minus heavy GUI/dev modules we never use) to make AP's imports resolve
+#      deterministically on every machine.
+_STDLIB_SKIP = {"tkinter", "turtle", "turtledemo", "idlelib", "test", "lib2to3", "antigravity", "this"}
+_stdlib = sorted(m for m in sys.stdlib_module_names if not m.startswith("_") and m not in _STDLIB_SKIP)
+
 hidden = [
     "websockets", "yaml", "colorama", "pathspec", "jellyfish", "jinja2", "markupsafe",
     "schema", "platformdirs", "certifi", "orjson", "typing_extensions", "bsdiff4",
-    "ssl", "sqlite3", "multiprocessing", "secrets", "uuid", "asyncio",
-] + pm_hidden
+] + pm_hidden + _stdlib
 
 # Where to READ the Archipelago tree at build time. Defaults to the vendored clone; override with
 # the PZ_AP_SOURCE env var to bundle an Archipelago install from elsewhere (e.g.
@@ -57,7 +65,7 @@ a = Analysis(
     hookspath=[],
     hooksconfig={},
     runtime_hooks=[],
-    excludes=['kivy'],
+    excludes=['kivy', 'tkinter'],
     noarchive=False,
     optimize=0,
 )

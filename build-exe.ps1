@@ -25,15 +25,23 @@ $env:PZ_AP_SOURCE = (Resolve-Path $ApSource).Path
 Write-Host "Bundling Archipelago from: $env:PZ_AP_SOURCE"
 
 # Run from the repo root so the spec's other relative paths (data.json, pz_ap_client\...) resolve.
+# PyInstaller logs progress to stderr; under -ErrorAction Stop PowerShell would abort on the first
+# such line, so relax it for the build call and trust the real exit code instead.
 Push-Location $root
+$prevEAP = $ErrorActionPreference
+$ErrorActionPreference = 'Continue'
 try {
     & $py --noconfirm --clean (Join-Path $root 'pz-ap-client.spec')
+    $code = $LASTEXITCODE
 } finally {
+    $ErrorActionPreference = $prevEAP
     Pop-Location
 }
-if ($LASTEXITCODE -eq 0) {
+if ($code -eq 0) {
     $exe = Join-Path $root 'dist\pz-ap-client\pz-ap-client.exe'
     Write-Host "`nBuilt: $exe" -ForegroundColor Green
     Write-Host "Run:   .\dist\pz-ap-client\pz-ap-client.exe <host:port> --name <slot> [--memory]"
+} else {
+    Write-Error "PyInstaller failed (exit $code)."
 }
-exit $LASTEXITCODE
+exit $code

@@ -212,20 +212,22 @@ def check_anchors(scanner, anchor_table) -> List[CheckResult]:
 
 
 def check_research(scanner) -> List[CheckResult]:
-    base = scanner.module_base
-    addr = base
-    for off in RESEARCH_CHAIN[:-1]:
-        nxt = scanner.read_qword(addr + off)
-        if not nxt:
-            return [CheckResult("system", "research_map", "unresolved", "chain broke at +0x%X" % off)]
-        addr = nxt
-    rs = addr + RESEARCH_CHAIN[-1]
-    # items map count @ rs's items-map (mirror research.py: research_system+0xF8 -> +8 count)
-    rs_obj = scanner.read_qword(rs)
-    cnt = scanner.read_qword((rs_obj + 0xF8) + 0x8) if rs_obj else None
-    if cnt and 0 < (cnt & 0xFFFFFFFF) < 100000:
-        return [CheckResult("system", "research_map", "ok", "%d records" % (cnt & 0xFFFFFFFF))]
-    return [CheckResult("system", "research_map", "garbage", "map count implausible (in a loaded zoo?)")]
+    """Reachability of the research items map via the *validated* reader, which tries BOTH master-root
+    chains and picks whichever lands on a real map (research.py:_research_system). The primary chain can
+    dereference to a valid-but-wrong object on some sessions, so checking only RESEARCH_CHAIN (as this
+    did) false-fails - mirror what the client actually does."""
+    try:
+        from .research import ResearchReader
+        snap = ResearchReader(scanner)._snapshot()
+    except Exception as e:
+        return [CheckResult("system", "research_map", "unresolved", "reader error: %s" % type(e).__name__)]
+    if snap is None:
+        return [CheckResult("system", "research_map", "garbage",
+                            "items map unreadable via either master-root chain (in a loaded zoo?)")]
+    cnt = len(snap[0])
+    if 0 < cnt < 100000:
+        return [CheckResult("system", "research_map", "ok", "%d records" % cnt)]
+    return [CheckResult("system", "research_map", "garbage", "record count implausible (%d)" % cnt)]
 
 
 def check_terrain(scanner) -> List[CheckResult]:

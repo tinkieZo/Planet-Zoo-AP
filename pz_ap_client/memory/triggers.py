@@ -56,13 +56,18 @@ class MemoryTriggerSource:
         self.releases = ReleaseDetector(scanner)
 
     def poll(self, already_checked: set) -> List[int]:
-        """One detection tick. Returns the list of newly-reported location ids."""
+        """One detection tick. Returns the list of newly-reported location ids. Each detector is
+        isolated so one failing read (e.g. an anchor whose chain isn't live yet because the zoo
+        isn't loaded) can't abort the others or the rest of the poll-loop tick (item application,
+        gate reconciliation, the preflight self-check)."""
         if not self.scanner.attached and not self.scanner.attach():
             return []
         fired: List[int] = []
-        fired += self._poll_research(already_checked)
-        fired += self._poll_first_breed(already_checked)
-        fired += self._poll_milestones(already_checked)
+        for sub in (self._poll_research, self._poll_first_breed, self._poll_milestones):
+            try:
+                fired += sub(already_checked)
+            except Exception:
+                logger.exception("detection sub-step %s failed (skipping this tick)", sub.__name__)
         for loc_id in fired:
             self.report_check(loc_id)
         return fired

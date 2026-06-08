@@ -150,8 +150,8 @@ class MemoryScanner:
         disp = self.read_i32(instr_addr + disp_offset)
         return instr_addr + instr_len + disp
 
-    def resolve_pointer_chain(self, base: int, offsets: Sequence[int]) -> int:
-        """Walk a static pointer chain to a final address.
+    def resolve_pointer_chain(self, base: int, offsets: Sequence[int]) -> Optional[int]:
+        """Walk a static pointer chain to a final address, or None if the chain breaks.
 
         Convention (matches Cheat Engine): dereference at each offset except the
         last, which is added to produce the final address::
@@ -160,13 +160,21 @@ class MemoryScanner:
             for off in offsets[:-1]:
                 addr = *(addr + off)
             final = addr + offsets[-1]
-        """
+
+        A null or unreadable intermediate deref means the chain isn't live (e.g. the manager isn't
+        allocated yet - not in a loaded zoo), so we return None rather than adding the final offset
+        to a near-null address and reading there (which raises and would crash the poll loop)."""
         pm = self._require()
         if not offsets:
             return base
         addr = base
         for off in offsets[:-1]:
-            addr = int.from_bytes(pm.read_bytes(addr + off, 8), "little")
+            try:
+                addr = int.from_bytes(pm.read_bytes(addr + off, 8), "little")
+            except Exception:
+                return None
+            if not addr:
+                return None
         return addr + offsets[-1]
 
     # -- typed read/write ------------------------------------------------------

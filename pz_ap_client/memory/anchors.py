@@ -163,7 +163,10 @@ class AnchorTable:
         off = self.entity_offset(group, key)
         if base_addr is None or off is None:
             return None
-        return _read_typed(scanner, base_addr + off, type_)
+        try:
+            return _read_typed(scanner, base_addr + off, type_)
+        except Exception:
+            return None  # stale/garbage address -> treat as unresolved, never crash the caller
 
     def write_entity(self, scanner: MemoryScanner, base_anchor: str, group: str, key: str,
                      value, type_: str = "i32") -> bool:
@@ -174,7 +177,10 @@ class AnchorTable:
         off = self.entity_offset(group, key)
         if base_addr is None or off is None:
             return False
-        _write_typed(scanner, base_addr + off, type_, value)
+        try:
+            _write_typed(scanner, base_addr + off, type_, value)
+        except Exception:
+            return False
         return True
 
     def read(self, scanner: MemoryScanner, name: str):
@@ -184,7 +190,10 @@ class AnchorTable:
         addr = anchor.resolve(scanner)
         if addr is None:
             return None
-        raw = _read_typed(scanner, addr, anchor.type)
+        try:
+            raw = _read_typed(scanner, addr, anchor.type)
+        except Exception:
+            return None  # stale/garbage address -> treat as unresolved, never crash the poll loop
         return raw / anchor.scale if anchor.scale != 1 else raw
 
     def write(self, scanner: MemoryScanner, name: str, value) -> bool:
@@ -197,7 +206,10 @@ class AnchorTable:
         stored = value * anchor.scale
         if anchor.type in ("i32", "i64"):
             stored = int(round(stored))
-        _write_typed(scanner, addr, anchor.type, stored)
+        try:
+            _write_typed(scanner, addr, anchor.type, stored)
+        except Exception:
+            return False
         return True
 
     def unfilled(self) -> List[str]:

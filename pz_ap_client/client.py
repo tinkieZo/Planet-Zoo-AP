@@ -563,12 +563,55 @@ def _shutdown_gates(ctx) -> None:
             getattr(gate, method)()
 
 
+# Keeps ctypes console-handler callbacks alive for the process lifetime (GC'ing one would
+# silently unregister the handler).
+_EMERGENCY_CLEANUP_REFS: list = []
+
+
+def _install_emergency_cleanup(ctx) -> None:
+    """Best-effort detour restore on abrupt exits the asyncio shutdown path misses - notably the
+    Windows console **X button** (CTRL_CLOSE_EVENT) and Ctrl-C, which terminate the process without
+    running ``await exit_event`` -> ``_shutdown_gates``. Detours are ALSO self-healed on the next
+    attach (signatures.recover_leaked_hook), so this only narrows the window where the game is left
+    patched. Idempotent: _shutdown_gates pops each hook, so a later clean shutdown is a no-op."""
+    import atexit
+    state = {"done": False}
+
+    def _cleanup(*_args):
+        if state["done"]:
+            return
+        state["done"] = True
+        try:
+            _shutdown_gates(ctx)
+        except Exception:
+            pass
+
+    atexit.register(_cleanup)
+    if os.name != "nt":
+        return
+    import ctypes
+    from ctypes import wintypes
+    handler_type = ctypes.WINFUNCTYPE(wintypes.BOOL, wintypes.DWORD)
+
+    def _console_handler(_ctrl_type):
+        _cleanup()      # restore detours before the OS tears us down (X button / Ctrl-C / logoff)
+        return False    # not "handled" -> let default handling proceed to terminate the process
+
+    cb = handler_type(_console_handler)
+    _EMERGENCY_CLEANUP_REFS.append(cb)  # prevent GC (would unregister the handler)
+    try:
+        ctypes.windll.kernel32.SetConsoleCtrlHandler(cb, True)
+    except Exception:
+        pass
+
+
 def main(args=None):
     async def _run(args):
         ctx = PZContext(args.connect, args.password, data_path=getattr(args, "data", None))
         ctx.auth = args.name
         if args.memory:
             ctx.enable_memory(poll_interval=args.poll_interval)
+            _install_emergency_cleanup(ctx)
         ctx.server_task = asyncio.create_task(server_loop(ctx), name="server loop")
         if args.memory:
             ctx._poll_task = asyncio.create_task(ctx.poll_loop(), name="pz poll loop")

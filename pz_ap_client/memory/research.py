@@ -101,7 +101,7 @@ class ResearchReader:
         self._warned_unmapped: set = set()
 
     def _map_ok(self, rs: int) -> bool:
-        """Cheap check that rs+ITEMS_MAP_OFF is a readable items map — lets us tell the real research
+        """Cheap check that rs+ITEMS_MAP_OFF is a readable items map - lets us tell the real research
         system from a valid-but-WRONG object a chain may dereference to. Matches _snapshot's own gate."""
         try:
             cap = struct.unpack("<q", self.scanner.read_bytes(rs + ITEMS_MAP_OFF + 0x10, 8))[0]

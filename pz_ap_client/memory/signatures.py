@@ -18,9 +18,12 @@ Today every hook ships (3) (RVA+ORIG, what the gates use) and, where a unique pa
 
 from __future__ import annotations
 
+import logging
 import re
 from dataclasses import dataclass, field
 from typing import Dict, List, Optional, Tuple
+
+logger = logging.getLogger("PZClient")
 
 # ── hook sites the client detours (rva, expected original bytes, role) ───────────────────────────────
 @dataclass(frozen=True)
@@ -105,10 +108,50 @@ def module_aob_scan(scanner, sig: str, max_hits: int = 4) -> List[int]:
 
 
 # ── self-check ───────────────────────────────────────────────────────────────────────────────────────
+def _is_leaked_detour(scanner, site: int, original: bytes) -> bool:
+    """True iff ``site`` holds one of OUR OWN leaked detours: a rel32 jmp (0xE9) whose target
+    trampoline still contains the site's original bytes. This distinguishes a hook leaked by a prior
+    unclean exit (the console X button, a kill, a crash) - which we may safely restore in place - from
+    a genuine code change or a foreign patch, which we must NOT touch."""
+    try:
+        head = scanner.read_bytes(site, 5)
+        if head[0] != 0xE9:
+            return False
+        rel = int.from_bytes(head[1:5], "little", signed=True)
+        target = site + 5 + rel
+        tramp = scanner.read_bytes(target, 0x200)
+    except Exception:
+        return False
+    return original in tramp  # our trampoline embeds the relocated original instruction
+
+
+def recover_leaked_hook(scanner, name: str) -> bool:
+    """If a hook site still holds our own leaked detour from a prior unclean exit, restore its original
+    bytes in place so a fresh install can proceed (no game restart needed). Returns True if recovered.
+    Safe: only writes when the jmp target is verifiably our trampoline (see _is_leaked_detour). The
+    orphaned trampoline page is harmless (a no-op stub) and is reclaimed when the game process exits."""
+    base = getattr(scanner, "module_base", None)
+    h = next((x for x in HOOKS if x.name == name), None)
+    if h is None or base is None:
+        return False
+    site = base + h.rva
+    if not _is_leaked_detour(scanner, site, h.orig):
+        return False
+    try:
+        scanner.write_bytes(site, h.orig)
+    except Exception:
+        return False
+    logger.info("hook %r: recovered a leaked detour @0x%X (restored original bytes from a prior unclean "
+                "exit, e.g. the console X button)", name, site)
+    return True
+
+
 def resolve_hook(scanner, name: str) -> Optional[Tuple[int, bytes]]:
     """Current (address, original-bytes) for a hook site: the RVA if its ORIG is intact, else the
     AOB-relocated address if the signature uniquely re-finds it (survives a patch that shifted the RVA),
-    else None. Gates call this instead of hardcoding base+RVA so they self-heal across game updates."""
+    else - if the site holds our own leaked detour from a prior unclean exit - the RVA after restoring
+    it in place, else None. Gates call this instead of hardcoding base+RVA so they self-heal across both
+    game updates and unclean client exits."""
     base = getattr(scanner, "module_base", None)
     h = next((x for x in HOOKS if x.name == name), None)
     if h is None or base is None:
@@ -123,6 +166,9 @@ def resolve_hook(scanner, name: str) -> Optional[Tuple[int, bytes]]:
         hits = module_aob_scan(scanner, h.aob)
         if len(hits) == 1:
             return (hits[0], h.orig)
+    # Self-heal a leaked detour (prior unclean exit): restore the original bytes so we can re-hook.
+    if recover_leaked_hook(scanner, name):
+        return (site, h.orig)
     return None
 
 
@@ -170,29 +216,33 @@ class CheckResult:
     detail: str = ""
 
 
+def _classify_hook(scanner, h: HookSite) -> CheckResult:
+    """Health of one hook site: ok (intact) | relocated (AOB re-found) | leaked (our own detour from an
+    unclean exit, auto-recovers) | broken (genuine code change, needs re-RE) | unresolved (unreadable)."""
+    site = scanner.module_base + h.rva
+    try:
+        cur = scanner.read_bytes(site, len(h.orig))
+    except Exception:
+        return CheckResult("hook", h.name, "unresolved", "site unreadable @0x%X" % site)
+    if cur == h.orig:
+        return CheckResult("hook", h.name, "ok", "intact @0x%X" % site)
+    # ORIG mismatch. First try auto-relocation via the AOB (a real patch that shifted the RVA).
+    if h.aob:
+        hits = module_aob_scan(scanner, h.aob)
+        if len(hits) == 1:
+            return CheckResult("hook", h.name, "relocated", "moved to 0x%X (rva 0x%X stale)" % (hits[0], h.rva))
+        if len(hits) > 1:
+            return CheckResult("hook", h.name, "broken", "AOB ambiguous (%d hits)" % len(hits))
+    # Not relocated: is it our own leaked detour (recoverable) or a genuine change (re-RE)?
+    if _is_leaked_detour(scanner, site, h.orig):
+        return CheckResult("hook", h.name, "leaked",
+                           "our detour still installed @0x%X (prior unclean exit) - auto-recovers on next --memory attach" % site)
+    detail = "ORIG changed + AOB not found - re-RE" if h.aob else "ORIG mismatch + no AOB - re-RE (got %s)" % cur.hex()
+    return CheckResult("hook", h.name, "broken", detail)
+
+
 def check_hooks(scanner) -> List[CheckResult]:
-    base = scanner.module_base
-    out = []
-    for h in HOOKS:
-        site = base + h.rva
-        try:
-            cur = scanner.read_bytes(site, len(h.orig))
-        except Exception:
-            out.append(CheckResult("hook", h.name, "unresolved", "site unreadable @0x%X" % site)); continue
-        if cur == h.orig:
-            out.append(CheckResult("hook", h.name, "ok", "intact @0x%X" % site)); continue
-        # ORIG mismatch -> RVA shifted (patch?). Try to auto-relocate via the AOB.
-        if h.aob:
-            hits = module_aob_scan(scanner, h.aob)
-            if len(hits) == 1:
-                out.append(CheckResult("hook", h.name, "relocated", "moved to 0x%X (rva 0x%X stale)" % (hits[0], h.rva)))
-            elif len(hits) > 1:
-                out.append(CheckResult("hook", h.name, "broken", "AOB ambiguous (%d hits)" % len(hits)))
-            else:
-                out.append(CheckResult("hook", h.name, "broken", "ORIG changed + AOB not found - re-RE"))
-        else:
-            out.append(CheckResult("hook", h.name, "broken", "ORIG mismatch + no AOB - re-RE (got %s)" % cur.hex()))
-    return out
+    return [_classify_hook(scanner, h) for h in HOOKS]
 
 
 def check_anchors(scanner, anchor_table) -> List[CheckResult]:

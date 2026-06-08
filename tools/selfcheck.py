@@ -14,7 +14,8 @@ from pz_ap_client.memory.scanner import MemoryScanner  # noqa: E402
 from pz_ap_client.memory.anchors import AnchorTable  # noqa: E402
 from pz_ap_client.memory import signatures as sig  # noqa: E402
 
-_MARK = {"ok": "OK  ", "relocated": "MOVED", "broken": "FAIL", "garbage": "FAIL", "unresolved": "MISS"}
+_MARK = {"ok": "OK  ", "relocated": "MOVED", "leaked": "LEAK", "broken": "FAIL",
+         "garbage": "FAIL", "unresolved": "MISS"}
 
 
 def main() -> int:

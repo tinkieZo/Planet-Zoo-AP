@@ -1,15 +1,23 @@
-# Track A hooking client runtime deps (subset of Archipelago's, minus the GUI).
-# Archipelago itself is vendored via: git clone --depth 1 https://github.com/ArchipelagoMW/Archipelago.git vendor/Archipelago
+# Track A hooking client runtime deps. PINNED to match the vendored Archipelago's own
+# requirements.txt — AP needs specific versions (notably websockets==13.1 for its legacy
+# .open/.closed socket API; websockets>=14 drops those and breaks CommonClient). Leaving these
+# unpinned lets pip drift to incompatible versions on a fresh install (the "No module named shlex"
+# and "ClientConnection has no attribute 'open'" failures). Keep these in sync with
+# vendor/Archipelago/requirements.txt when bumping the vendored AP.
+#
+# Excludes AP's GUI (kivy, kivymd), native-speedup build tools (cython, cymem — we use AP's pure-
+# python fallback), and launcher shortcuts (pyshortcuts) — none used by this headless client.
+# Archipelago itself is vendored: git clone --depth 1 https://github.com/ArchipelagoMW/Archipelago.git vendor/Archipelago
 pymem==1.14.0
-websockets
-PyYAML
-colorama
-pathspec
-jellyfish
-jinja2
-schema
-platformdirs
-certifi
-orjson
-typing_extensions
-bsdiff4
+websockets==13.1
+PyYAML==6.0.3
+colorama==0.4.6
+pathspec==1.0.4
+jellyfish==1.2.1
+jinja2==3.1.6
+schema==0.7.8
+platformdirs==4.9.4
+certifi==2026.2.25
+orjson==3.11.7
+typing_extensions==4.15.0
+bsdiff4==1.2.6

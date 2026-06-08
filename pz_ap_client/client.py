@@ -138,10 +138,12 @@ class PZCommandProcessor(ClientCommandProcessor):
 
 
 class PZContext(CommonContext):
-    # Empty string matches any game on connect (since AP 0.3.2) and avoids the
-    # need for a locally-registered "Planet Zoo" world (that's Track B's APWorld).
-    # We adopt the real game name from slot_info on Connected. Our own item/
-    # location lookups come from data.json, not AP's network data package.
+    # Stay game-agnostic at construction (game="") so CommonContext.__init__ doesn't look up a LOCAL
+    # "Planet Zoo" data package — that needs the APWorld (Track B), which this client doesn't bundle
+    # (it would KeyError). We still authenticate AS Planet Zoo by passing game=GAME_NAME explicitly in
+    # send_connect() — the server validates that string against the slot, and empty-game "match any"
+    # is rejected as InvalidGame in AP 0.6.x. After Connected we adopt the real game name from
+    # slot_info; our own item/location lookups come from data.json, not the network data package.
     game = ""
     items_handling = 0b111  # receive all items (own + others' sends to us)
     want_slot_data = True
@@ -273,7 +275,11 @@ class PZContext(CommonContext):
         if password_requested and not self.password:
             await super().server_auth(password_requested)
         await self.get_username()
-        await self.send_connect()
+        if self.auth:
+            self.auth = self.auth.strip()  # defensive: drop any stray whitespace from a typed slot name
+        # Send game=GAME_NAME on the wire so the server matches us to the Planet Zoo slot, WITHOUT
+        # setting self.game (which would make CommonContext require a local Planet Zoo data package).
+        await self.send_connect(game=GAME_NAME)
 
     def on_package(self, cmd: str, args: dict):
         if cmd == "RoomInfo":
@@ -299,7 +305,7 @@ class PZContext(CommonContext):
             self._check_goal()
 
     async def disconnect(self, allow_autoreconnect: bool = False):
-        self.game = ""  # back to match-any so reconnect works
+        self.game = ""  # stay game-agnostic on the context; we re-send game=GAME_NAME on reconnect
         await super().disconnect(allow_autoreconnect)
 
     # -- location checks (called by console now, by the poll loop in A3) -------
@@ -537,6 +543,26 @@ class PZContext(CommonContext):
             )
 
 
+def _prompt_missing(parsed) -> None:
+    """Fill in connection details interactively so a double-clicked exe needs no flags.
+    Anything passed on the command line is respected and skips the matching prompt; an empty
+    answer falls back to the in-console "/connect" flow."""
+    if not parsed.connect:
+        parsed.connect = input("Archipelago server address (host:port): ").strip() or None
+    if not parsed.name:
+        parsed.name = input("Slot name: ").strip() or None
+
+
+def _shutdown_gates(ctx) -> None:
+    """Restore every installed code patch / detour on the way out (trigger birth-detour, the
+    permit / placement / research-start hooks, and the presence-fill + terrain bytecode patches)."""
+    for gate, method in ((ctx.trigger_source, "close"), (ctx.permit_gate, "shutdown"),
+                         (ctx.facility_gate, "shutdown"), (ctx.research_gate, "shutdown"),
+                         (ctx.presence_gate, "shutdown"), (ctx.terrain_gate, "shutdown")):
+        if gate is not None:
+            getattr(gate, method)()
+
+
 def main(args=None):
     async def _run(args):
         ctx = PZContext(args.connect, args.password, data_path=getattr(args, "data", None))
@@ -548,30 +574,32 @@ def main(args=None):
             ctx._poll_task = asyncio.create_task(ctx.poll_loop(), name="pz poll loop")
 
         if gui_enabled:
-            ctx.run_gui()
+            # gui_enabled is just "not --nogui"; the Kivy GUI may not be installed (this client ships
+            # headless — no kivy). Fall back to the console UI instead of crashing on its import.
+            try:
+                ctx.run_gui()
+            except ImportError as e:
+                logger.info("GUI unavailable (%s) — running headless console. Pass --nogui to skip this.", e)
         ctx.run_cli()
 
         await ctx.exit_event.wait()
-        # Restore every installed code patch / detour on the way out (trigger birth-detour, the
-        # permit / placement / research-start hooks, and the presence-fill detour).
-        for gate, method in ((ctx.trigger_source, "close"), (ctx.permit_gate, "shutdown"),
-                             (ctx.facility_gate, "shutdown"), (ctx.research_gate, "shutdown"),
-                             (ctx.presence_gate, "shutdown"), (ctx.terrain_gate, "shutdown")):
-            if gate is not None:
-                getattr(gate, method)()
+        _shutdown_gates(ctx)
         await ctx.shutdown()
 
     parser = get_base_parser(description="Planet Zoo Archipelago hooking client (Track A).")
     parser.add_argument("--name", default=None, help="Slot name to connect as.")
     parser.add_argument("--data", default=None, help="Path to data.json (defaults to project root).")
-    parser.add_argument("--memory", action="store_true",
-                        help="Attach to the running game: apply items + detect checks via memory (A2/A3). "
-                             "Without this, runs the A1 manual-trigger console only.")
+    parser.add_argument("--memory", dest="memory", action="store_true", default=True,
+                        help="Attach to the running game: apply items + detect checks via memory (default ON).")
+    parser.add_argument("--no-memory", dest="memory", action="store_false",
+                        help="Console-only (A1): don't attach to the game — manual-trigger console for testing.")
     parser.add_argument("--poll-interval", type=float, default=1.0,
                         help="Seconds between memory poll ticks (default 1.0).")
     parser.add_argument("url", nargs="?", help="Archipelago connection url / address.")
     parsed = parser.parse_args(args)
     parsed = handle_url_arg(parsed, parser=parser)
+
+    _prompt_missing(parsed)
 
     import colorama
     colorama.just_fix_windows_console()

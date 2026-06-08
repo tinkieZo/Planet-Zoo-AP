@@ -66,15 +66,34 @@ machines.
 
 ## Run the exe
 
-```powershell
-# Console mode (A1) — no game needed; drive checks by hand:
-dist\pz-ap-client\pz-ap-client.exe <host:port> --name <slot>
+The intended end-user flow is **double-click — no command line**:
 
-# Full mode — attach to a running PlanetZoo.exe, apply items + detect checks via memory:
-dist\pz-ap-client\pz-ap-client.exe <host:port> --name <slot> --memory
+1. Start **Planet Zoo** and load a **Challenge** save. The client *attaches* to the running game; it
+   does not launch it.
+2. Double-click **`pz-ap-client.exe`**. It prompts for the connection details:
+   ```
+   Archipelago server address (host:port): archipelago.gg:38281
+   Slot name: Player1
+   ```
+   then connects and, **by default, attaches to the running game** to apply items + detect checks.
+
+Flags are optional and mainly for testing — anything passed skips the matching prompt:
+```powershell
+# Pre-fill the connection (skips both prompts), still attaches to the game:
+dist\pz-ap-client\pz-ap-client.exe archipelago.gg:38281 --name Player1
+
+# Console-only (A1): connect to AP but DON'T touch the game — manual-trigger console for testing:
+dist\pz-ap-client\pz-ap-client.exe --name Player1 --no-memory
 ```
-`--memory` requires `anchors.json` to be populated. On a clean exit the client **restores every
-installed detour**; don't hard-kill it while attached or the game is left patched.
+Memory attach (the default) requires `anchors.json` to be populated. On a clean exit the client
+**restores every installed detour**; don't hard-kill it while attached or the game is left patched.
+
+**Headless (no GUI):** the build doesn't bundle Kivy, so there's no graphical connect window — it runs
+the AP **console** UI. The startup prompts handle connection; you can also use the `/connect
+<host:port>` command at the prompt. Run without `--nogui` and you'll see a harmless one-line `GUI
+unavailable … running headless console` notice (the client falls back to the console automatically);
+pass `--nogui` to suppress it. First launch is a few seconds while AP discovers its worlds from the
+bundled tree — that's normal.
 
 ## Validation status (2026-06-04)
 

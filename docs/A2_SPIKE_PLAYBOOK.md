@@ -1,4 +1,4 @@
-# A2 — Cheat-Engine Memory Spike Playbook
+# A2 - Cheat-Engine Memory Spike Playbook
 
 > **Goal of A2:** find *stable* memory anchors for the values the client must
 > read (research-complete flags, animal births, zoo rating, guest count,
@@ -11,7 +11,7 @@
 
 The scanner/applier/trigger code is already written and unit-tested against an
 unfilled table (it degrades to no-ops). Your job here is purely **reconnaissance
-+ data entry into `anchors.json`** — no client code changes should be needed for
++ data entry into `anchors.json`** - no client code changes should be needed for
 the happy path.
 
 ---
@@ -49,12 +49,12 @@ For an **unknown** value (e.g. the birth counter): `new` won't help; use
 the rare case that needs CE's code-signature route below.
 
 > The one thing memscan can't do is CE's hardware-breakpoint **"find what
-> accesses this address"**. Everything else — value scans, pointer scans, write
-> tests, saving anchors — it does. Use the CE steps below only as a fallback.
+> accesses this address"**. Everything else - value scans, pointer scans, write
+> tests, saving anchors - it does. Use the CE steps below only as a fallback.
 
 ---
 
-## 0. Setup (once) — Cheat Engine fallback
+## 0. Setup (once) - Cheat Engine fallback
 
 1. Launch Planet Zoo, start/load a **Challenge** save (the fixed slice save).
 2. Open **Cheat Engine**, `File ▸ Open Process ▸ PlanetZoo.exe`.
@@ -65,7 +65,7 @@ the rare case that needs CE's code-signature route below.
 
 > ⚠️ **Anti-cheat / safety.** This is local single-player Challenge memory
 > editing for our own randomizer. Don't attach to anything online. Expect Frontier
-> patches to move things — that's why we record **signatures**, not raw addresses.
+> patches to move things - that's why we record **signatures**, not raw addresses.
 
 ---
 
@@ -92,18 +92,18 @@ releases:
 
 ---
 
-## 2. Animal-birth signal (HIGHEST RISK — do this first)
+## 2. Animal-birth signal (HIGHEST RISK - do this first)
 
 The `first_breed` locations need a reliable "a baby of species X was born" edge.
 Two viable shapes; determine which exists:
 
-**Option A — per-species birth count** (preferred). Each owned species has a
+**Option A - per-species birth count** (preferred). Each owned species has a
 "born in zoo" / population stat. Find the species record, locate a monotonic
 birth counter within it. The client diffs it (`baseline → +1`) to fire the check.
 → Record base in `species_roster_base` and per-species offset in
 `entity_offsets.species_birth[<species_key>]`.
 
-**Option B — global birth/notification counter.** A single counter that
+**Option B - global birth/notification counter.** A single counter that
 increments on every birth. Easier to find, but can't attribute the species
 without extra work (read the notification payload, or cross-reference roster
 population deltas). → Record as `birth_event_counter`; then extend
@@ -125,10 +125,10 @@ Cross-check by breeding a second species and watching which counters move.
 > **Manual `/pz_check` for `first_breed` is NOT an option** (no per-event player
 > actions allowed) and there is no mod API. Data-anchoring the roster was
 > EXHAUSTED (0/85 static chains survive restart; fingerprint 11k; 26 confirmed
-> roster objects share no vtable, 1/26) — it cannot be located on attach via data.
+> roster objects share no vtable, 1/26) - it cannot be located on attach via data.
 >
-> **SOLUTION — CODE HOOK (injection PROVEN feasible).** PoCs in `tools/`:
-> `inject_poc.py` (allocate RWX + run shellcode via a remote thread — wrote a
+> **SOLUTION - CODE HOOK (injection PROVEN feasible).** PoCs in `tools/`:
+> `inject_poc.py` (allocate RWX + run shellcode via a remote thread - wrote a
 > sentinel) and `hook_poc.py` (detour the stable guest-count READ at
 > `module+0x640123B`: suspend process → 5-byte `jmp` to a trampoline within ±2GB
 > that bumps a counter, runs the original instruction, jumps back → the counter
@@ -160,10 +160,10 @@ Raw addresses move every patch; we store an **AOB signature** instead.
    (`MemoryScanner.resolve_rip_relative`).
 5. If the value is reached via a pointer chain from that static, add the chain
    to `offsets` (CE's pointer-scan gives these; remember our convention:
-   dereference every offset **except the last**, which is added — see
+   dereference every offset **except the last**, which is added - see
    `scanner.resolve_pointer_chain`).
 
-**Validate the signature:** restart the game / reload the save and re-scan — the
+**Validate the signature:** restart the game / reload the save and re-scan - the
 signature must still resolve and point at the right value. If it matches in
 multiple places, lengthen it until unique.
 
@@ -173,17 +173,17 @@ multiple places, lengthen it until unique.
 
 For each writable anchor, confirm a write **sticks and updates the HUD**:
 
-- **cash / CC** — `MemoryEffectApplier` does read-modify-write (`current + amount`).
+- **cash / CC** - `MemoryEffectApplier` does read-modify-write (`current + amount`).
   Test by setting `cash` to `current + 50000`; the HUD should jump. Watch for a
   shadow/auth copy that overwrites your write next tick (if so, find and write
   that one too, or the source-of-truth).
-- **permits (`species_unlock`)** — flip the owned/unlocked flag at
+- **permits (`species_unlock`)** - flip the owned/unlocked flag at
   `species_roster_base + entity_offsets.species[<key>]`. Confirm the species
   becomes purchasable. Record the sentinel value in a note (1? bitfield bit?).
-- **research flags (`research_complete` write, if used as a grant)** — usually we
+- **research flags (`research_complete` write, if used as a grant)** - usually we
   only *read* these (they're locations), but if a received item needs to mark
   research done, mirror the read offset.
-- **tool/facility/program unlocks** — these are the least-understood. If they're
+- **tool/facility/program unlocks** - these are the least-understood. If they're
   simple booleans, treat like permits. If they're gated by tech-tree state,
   document findings and we'll decide whether to model them as memory writes or
   as soft (player-actioned) unlocks. Until implemented, `MemoryEffectApplier`

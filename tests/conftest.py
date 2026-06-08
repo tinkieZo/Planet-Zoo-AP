@@ -5,7 +5,7 @@ Archipelago tree, which requires Python 3.11.9+):
 
     .\.venv\Scripts\python.exe -m pytest
 
-The individual test files also still run standalone as scripts (``python tests/test_*.py``) — their
+The individual test files also still run standalone as scripts (``python tests/test_*.py``) - their
 ``main()`` is preserved; this conftest only adds the pytest wiring.
 """
 import sys

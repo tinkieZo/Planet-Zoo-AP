@@ -1,10 +1,10 @@
-"""menu_entry_trace — capture the script-natives main.1 calls BEFORE GetTerrainMenuConfig.
+"""menu_entry_trace - capture the script-natives main.1 calls BEFORE GetTerrainMenuConfig.
 
 The terrain greying is computed in main.1 (decompiled): scenarioMgr:IsTerrainEditDisabled() (instr 25),
 :IsRemoveLakesDisabled()/:IsAddLakesDisabled() (30-35), then GetTerrainMenuConfig() (instr 94). menu_build_
 trace captures the calls AFTER GetTerrainMenuConfig; this one captures the calls BEFORE it: we ring-record
 every getarg CALLER return-addr and FREEZE the ring the instant GetTerrainMenuConfig's getarg fires
-(caller == 0x52A105). The ring then holds the ~64 native callsites leading up to it — including the Is*
+(caller == 0x52A105). The ring then holds the ~64 native callsites leading up to it - including the Is*
 methods' native impls (IF they're script-natives that call getarg). Disasm the unknown RVAs to find the
 small bool-getter reading [obj+OFF] = the per-tool source field.
 
@@ -86,7 +86,7 @@ def main() -> int:
         hm.restore_all()
         print("RESTORED. frozen=%d idx=%d" % (frozen, idx), flush=True)
     if not frozen:
-        print("GetTerrainMenuConfig getarg never fired — terrain menu not entered? (try again, re-enter mode)"); return 0
+        print("GetTerrainMenuConfig getarg never fired - terrain menu not entered? (try again, re-enter mode)"); return 0
     # temporal order: entries were written at positions (n & 63) for n=0..idx-1; last = idx-1 (the trigger)
     seq = []
     start = max(0, idx - RING)

@@ -1,4 +1,4 @@
-"""PresenceGate — clean NATIVE facility-presence gate (research_centre, workshop).
+"""PresenceGate - clean NATIVE facility-presence gate (research_centre, workshop).
 
 The game keeps a per-facility "is one present" cache (a flag array at manager+0x390) that its build
 menu / research UI read to enable or grey the facility's controls. A single shared routine rebuilds
@@ -6,7 +6,7 @@ that cache (clear-then-fill); the fill write `mov byte [rcx+rax],1` @ 0x149E9486
 facility, with rbp = the component manager being filled. We detour that fill (see
 ``make_presence_gate``): for a manager in the client-written gated set the flag is filled with 0, so
 the facility reads as ABSENT and the game greys its controls NATIVELY ("you need a research centre" /
-mechanic research disabled) even with the building placed — exactly the game's own not-built UX.
+mechanic research disabled) even with the building placed - exactly the game's own not-built UX.
 
 Why this beats poking the data directly: the gate rides the game's OWN cache-fill, so it re-applies on
 every rebuild and never desyncs the facility (poll-zeroing the flag did, and could not be cleanly
@@ -20,9 +20,9 @@ research-facility set each tick, so they stay consistent and restart-correct.
 Lock/unlock semantics: the flag only changes when the game refills the cache (a facility build/
 demolish). So a gated facility built while the gate is active is greyed at build time; a facility
 already present when the gate first applies is force-zeroed once for immediate enforcement (the hook
-then holds it). On unlock the manager drops from the set and the next refill writes 1 — i.e. the
+then holds it). On unlock the manager drops from the set and the next refill writes 1 - i.e. the
 player (re)builds the facility to activate it, the natural AP "you unlocked it, now build it" moment
-(a direct flag write to 1 does NOT cleanly re-enable — the button needs a fresh fill)."""
+(a direct flag write to 1 does NOT cleanly re-enable - the button needs a fresh fill)."""
 
 from __future__ import annotations
 
@@ -43,8 +43,8 @@ PRESENCE_ORIG = bytes.fromhex("c6040101488d842480000000")
 ZOO_ROOT = 0x29446A0
 ZOO_OFF = 0x38
 FACILITY_PRESENCE_MGR_OFF = {
-    "research_centre": 0x150,   # mgr e.g. 0xF792910 — greys the research button
-    "workshop": 0x168,          # mgr e.g. 0xF793600 — disables mechanic research
+    "research_centre": 0x150,   # mgr e.g. 0xF792910 - greys the research button
+    "workshop": 0x168,          # mgr e.g. 0xF793600 - disables mechanic research
 }
 MGR_COUNT_OFF = 0x2D4           # u32 slot count within a presence manager
 MGR_FLAGS_OFF = 0x390           # pointer to the per-slot presence flag bytes
@@ -92,7 +92,7 @@ class PresenceGate:
         from .signatures import resolve_hook
         resolved = resolve_hook(self.scanner, "presence")
         if resolved is None:
-            logger.warning("presence gate: fill site unresolved (RVA stale + AOB miss — game patched?); not installing")
+            logger.warning("presence gate: fill site unresolved (RVA stale + AOB miss - game patched?); not installing")
             return False
         site, orig = resolved
         try:
@@ -118,7 +118,7 @@ class PresenceGate:
 
     def _force_zero(self, mgr: int) -> None:
         """Zero a gated facility's CURRENT presence flags so an already-built facility is locked
-        immediately (the hook then holds it 0 across rebuilds). Lock-side only — validated to grey
+        immediately (the hook then holds it 0 across rebuilds). Lock-side only - validated to grey
         the control without the desync that plagued continuous poll-zeroing."""
         try:
             arr = self.scanner.read_qword(mgr + MGR_FLAGS_OFF)
@@ -145,7 +145,7 @@ class PresenceGate:
         if not self.ensure_installed():
             if not self._warned_pending:
                 self._warned_pending = True
-                logger.info("presence gate: fill hook not installable yet — will retry")
+                logger.info("presence gate: fill hook not installable yet - will retry")
             return False
         unlocked = set(unlocked_facilities)
         gated = sorted(f for f in self.gated_facilities if f not in unlocked)

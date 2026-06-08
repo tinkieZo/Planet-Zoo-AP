@@ -1,4 +1,4 @@
-"""xref_strings — find every `lea reg,[rip->X]` reference to given addresses across executable regions.
+"""xref_strings - find every `lea reg,[rip->X]` reference to given addresses across executable regions.
 
 The terrain tool-name strings (registered by GetTerrainMenuConfig via reflection) are:
     deformation 0x142669E98 | painting 0x142669F08 | water 0x142636460 | shapestamp 0x142669F18
@@ -81,7 +81,7 @@ def main() -> int:
         except Exception:
             continue
         hits += _scan_region(md, data, rbase, tset)
-    print("done — %d LEA references found" % hits, flush=True)
+    print("done - %d LEA references found" % hits, flush=True)
     return 0
 
 

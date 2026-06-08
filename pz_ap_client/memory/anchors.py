@@ -1,4 +1,4 @@
-"""The offset/signature table — the fragile, patch-sensitive part of Track A.
+"""The offset/signature table - the fragile, patch-sensitive part of Track A.
 
 Anchors are loaded from ``anchors.json`` (sibling file). Each anchor describes
 how to resolve a logical game value (cash, CC, a research flag, the birth
@@ -7,10 +7,10 @@ signal, ...) to a memory address, in a way that survives patches by preferring
 
 Two resolution kinds:
 
-  * ``module_offset`` — final address = module_base walked through ``offsets``
+  * ``module_offset`` - final address = module_base walked through ``offsets``
     as a pointer chain. Simple, but the base offset can move between patches.
 
-  * ``signature`` — AOB-scan for ``signature``; optionally treat the match as a
+  * ``signature`` - AOB-scan for ``signature``; optionally treat the match as a
     RIP-relative instruction (``rip: {disp_offset, instr_len}``) to get the
     address of the static it references; then walk ``offsets``. This is the
     patch-robust form and the one the spike should prefer.

@@ -23,13 +23,13 @@ def _tree(src_root, dest_root, skip=(".git", "__pycache__", ".pytest_cache")):
     return out
 
 
-# pymem dynamically loads submodules — collect everything it ships.
+# pymem dynamically loads submodules - collect everything it ships.
 pm_datas, pm_binaries, pm_hidden = collect_all("pymem")
 
 # AP is loaded from data files at runtime, so PyInstaller can't see its imports via static analysis.
-#  (1) Third-party deps (requirements-clientA.txt) — named explicitly.
+#  (1) Third-party deps (requirements-clientA.txt) - named explicitly.
 #  (2) STDLIB imports (e.g. shlex via MultiServer): whether these get bundled otherwise is INCIDENTAL
-#      — pulled in transitively by some dep on one machine but not another (unpinned-version drift),
+#      - pulled in transitively by some dep on one machine but not another (unpinned-version drift),
 #      which is exactly the intermittent "No module named shlex" on a fresh build elsewhere. So bundle
 #      the whole stdlib (minus heavy GUI/dev modules we never use) to make AP's imports resolve
 #      deterministically on every machine.
@@ -44,7 +44,7 @@ hidden = [
 # Where to READ the Archipelago tree at build time. Defaults to the vendored clone; override with
 # the PZ_AP_SOURCE env var to bundle an Archipelago install from elsewhere (e.g.
 # set PZ_AP_SOURCE=D:\Archipelago). The bundle DESTINATION stays "vendor/Archipelago" regardless, so
-# the frozen client finds it at the same relative path — only the build-time source location changes.
+# the frozen client finds it at the same relative path - only the build-time source location changes.
 AP_SOURCE = os.environ.get("PZ_AP_SOURCE", "vendor/Archipelago")
 if not os.path.isfile(os.path.join(AP_SOURCE, "CommonClient.py")):
     raise SystemExit("pz-ap-client.spec: no Archipelago tree at %r (CommonClient.py not found). "

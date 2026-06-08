@@ -1,4 +1,4 @@
-"""vscan — value scanner for small, COMMON integers (population counts, etc.)
+"""vscan - value scanner for small, COMMON integers (population counts, etc.)
 that the per-address ``scanstep`` loop can't handle.
 
 Where scanstep narrows by re-reading each candidate one syscall at a time

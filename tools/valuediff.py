@@ -1,4 +1,4 @@
-"""valuediff — unknown-value changed/unchanged differential, coordinated with player actions.
+"""valuediff - unknown-value changed/unchanged differential, coordinated with player actions.
 
 The CE "unknown initial value" hunt: snapshot all i32s, then repeatedly keep only addresses that
 CHANGED (or stayed UNCHANGED) since the last snapshot, narrowing to a variable that tracks some
@@ -9,11 +9,11 @@ the player can act between steps:
     python -m tools.valuediff            # (run in background) takes the initial snapshot
 then write a word to tools/.valuediff_cmd (e.g. `echo changed > tools/.valuediff_cmd`):
     changed    keep addrs whose value changed since the last scan (run AFTER switching tool)
-    unchanged  keep addrs that stayed the same (run after doing nothing — kills churn)
+    unchanged  keep addrs that stayed the same (run after doing nothing - kills churn)
     list       print up to 40 survivors with their last-scan values
     now        re-read + print survivors' CURRENT values (to record a tool's id)
     quit       restore nothing (read-only tool) and exit
-Tip: PAUSE the game so only the tool selection changes between snapshots — far less churn.
+Tip: PAUSE the game so only the tool selection changes between snapshots - far less churn.
 Scans <=1MB writable regions (the UI/input state lives in small heaps), i32 view.
 """
 from __future__ import annotations
@@ -85,9 +85,9 @@ def _do_reduce(s, regs, snap, survivors, want_changed):
 
 
 def _print_survivors(s, survivors, now):
-    """Print up to 40 survivors — their last-scan values, or freshly re-read current values when `now`."""
+    """Print up to 40 survivors - their last-scan values, or freshly re-read current values when `now`."""
     if not survivors:
-        print("(no survivors yet — run 'changed' first)", flush=True)
+        print("(no survivors yet - run 'changed' first)", flush=True)
         return
     for a in list(survivors)[:40]:
         v = _read_i32(s, a) if now else survivors[a]

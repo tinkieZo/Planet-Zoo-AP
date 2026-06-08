@@ -1,4 +1,4 @@
-"""find_iface_method — locate a Cobra interface-method's native impl via runtime string xref.
+"""find_iface_method - locate a Cobra interface-method's native impl via runtime string xref.
 
 IScenarioManager methods (IsTerrainEditDisabled / IsAddLakesDisabled / IsRemoveLakesDisabled) are NOT in
 the exe's strings (loaded from the .ovl reflection data at runtime) and NOT registrar bindings. But at
@@ -46,7 +46,7 @@ def scan_needles(s, regs, needle_list, label):
 
 
 def _build_ptr_needles(names, str_hits):
-    """Pack 8-byte pointers to each string occurrence — the method-table-entry needles for pass 2."""
+    """Pack 8-byte pointers to each string occurrence - the method-table-entry needles for pass 2."""
     needles = []
     for n in names:
         for sa in str_hits[n.encode()][:6]:
@@ -69,7 +69,7 @@ def _dump_xref(s, base, hi, xa, sa) -> None:
         print("  xref@0x%X (str@0x%X) nearby code-ptrs: %s" % (
             xa, sa, ", ".join("[+0x%X]=0x%X" % (a - xa, v) for a, v in codeptrs)), flush=True)
     else:
-        print("  xref@0x%X (str@0x%X) — no code ptr in +-0x20" % (xa, sa), flush=True)
+        print("  xref@0x%X (str@0x%X) - no code ptr in +-0x20" % (xa, sa), flush=True)
 
 
 def _report_name(s, base, hi, name, str_hits, xref_hits) -> None:

@@ -1,4 +1,4 @@
-"""disasm — static RE toolkit for PlanetZoo.exe (capstone over a memory dump).
+"""disasm - static RE toolkit for PlanetZoo.exe (capstone over a memory dump).
 
 Dynamic value-scanning can't reveal *code structure* (which function mutates the
 species roster on birth). This dumps the module image once, then works offline:

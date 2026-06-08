@@ -1,7 +1,7 @@
-"""gen_aob — generate patch-robust AOB signatures for the client's hook sites (run against the live game).
+"""gen_aob - generate patch-robust AOB signatures for the client's hook sites (run against the live game).
 
 For each hook site we read a window of bytes, disassemble it, and wildcard the VOLATILE operand bytes
-(call/jmp rel32 targets and RIP-relative displacements — these move when the game is patched) while
+(call/jmp rel32 targets and RIP-relative displacements - these move when the game is patched) while
 keeping opcodes, modrm, struct-offset displacements and immediates (the code's identity). The result is a
 signature unique within the module that re-finds the site wherever a patch relocates it. We verify each
 pattern matches EXACTLY ONCE in the module before printing it for baking into signatures.py.
@@ -29,7 +29,7 @@ SITES = {
 
 def _wildcard_volatiles(insn) -> list:
     """Return insn's bytes as a list with the volatile operand bytes set to None: a call/jmp rel32
-    target, or a RIP-relative disp32 (both end the instruction — our sites carry no trailing imm)."""
+    target, or a RIP-relative disp32 (both end the instruction - our sites carry no trailing imm)."""
     b: list = list(insn.bytes)
     if insn.mnemonic in ("call", "jmp") and len(b) >= 5 and b[0] in (0xE8, 0xE9):
         for i in range(len(b) - 4, len(b)):
@@ -43,7 +43,7 @@ def _wildcard_volatiles(insn) -> list:
 
 
 def gen_pattern(md, code: int, data: bytes, min_bytes: int):
-    """Return (aob_string, n_bytes) — opcode/modrm/struct-offsets kept, rel32 + RIP-disp wildcarded.
+    """Return (aob_string, n_bytes) - opcode/modrm/struct-offsets kept, rel32 + RIP-disp wildcarded.
     Emits whole instructions until at least min_bytes are consumed (for uniqueness)."""
     out: list = []
     consumed = 0
@@ -63,7 +63,7 @@ def main() -> int:
     md = capstone.Cs(capstone.CS_ARCH_X86, capstone.CS_MODE_64)
     md.detail = True
     base = s.module_base
-    print("# AOB signatures (verified unique in-module) — bake into signatures.py\n")
+    print("# AOB signatures (verified unique in-module) - bake into signatures.py\n")
     for name, (rva, n) in SITES.items():
         try:
             data = s.read_bytes(base + rva, n)

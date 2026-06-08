@@ -1,4 +1,4 @@
-# A2 — Birth-hook RE handoff (Ghidra)
+# A2 - Birth-hook RE handoff (Ghidra)
 
 > Goal: find a **stable code site** the client can AOB-signature and detour to
 > detect **animal births with species attribution**. The injection/detour
@@ -35,7 +35,7 @@ client-side offset already recorded in `anchors.json`.
 | Species **name-dispatch** fn | `~0x140E66500` | `lea rdx,[name]; mov rcx,rbx; call strcmp; test al; jne handler` repeated per species |
 | match handler target | `0x140E66862` | per-species branch in the dispatch |
 | strcmp helper | `0x140A4E600` | returns al = match |
-| per-entity-count **read** template | `0x14640123B` | `mov rdx,[rcx+0x830]` (guest count) — shows how the game reads a per-entity stat |
+| per-entity-count **read** template | `0x14640123B` | `mov rdx,[rcx+0x830]` (guest count) - shows how the game reads a per-entity stat |
 | per-entity-count **write** template | `0x140B84A62` / `0x140B8500E` | `add/sub [r13+0x830],reg` (guest count up/down) |
 
 ## Suggested Ghidra workflow
@@ -43,7 +43,7 @@ client-side offset already recorded in `anchors.json`.
 1. Load `PlanetZoo.exe` (auto-analyze; base stays `0x140000000`).
 2. Go to `0x1426C1280`, find xrefs to the species name strings → the species/
    content **definition** code; recover the species **record/index** structure.
-3. Decompile the name-dispatch at `0x140E66500` and its caller — identify what
+3. Decompile the name-dispatch at `0x140E66500` and its caller - identify what
    `rbx` is and what the handler at `0x140E66862` does (likely builds/looks up a
    species entry). This connects a **species_key → roster slot/index**.
 4. Find the **AddAnimal / OnBirth / population++** function: xref the roster
@@ -51,14 +51,14 @@ client-side offset already recorded in `anchors.json`.
    record; cross-check against the guest-count write template
    (`add [r13+0x830],reg`) which is the analogous per-entity-count update.
 5. Pick the **hook site**: the instruction that increments a species count on
-   birth (ideal — fires once per birth, species in a register/offset), OR an
+   birth (ideal - fires once per birth, species in a register/offset), OR an
    instruction that loads the roster base (so the detour can capture the live
    roster pointer for the client to poll).
 
 ## What to extract (hand back these)
 
 - **AOB signature** of the hook site (≥12–16 bytes, operands wildcarded), unique
-  in the module — verify with `tools/disasm.py` or Ghidra search.
+  in the module - verify with `tools/disasm.py` or Ghidra search.
 - **Original instruction** bytes + length (for the trampoline + restore).
 - **Species attribution**: which register/offset identifies the species at the
   hook (e.g. the `+offset` written, or an index in a register) → map to
@@ -75,7 +75,7 @@ hm.install("birth", site, orig, make_birth_trampoline)  # detour -> scratch regi
 hm.restore_all()                               # on disconnect / finally
 ```
 `make_birth_trampoline(region, scratch, resume)` returns trampoline bytes that
-**record the species event** into `scratch` (extend `trampoline_count_hits` —
+**record the species event** into `scratch` (extend `trampoline_count_hits` -
 instead of a blind `inc`, write the species offset/id), run `orig`, and `jmp
 resume`. The same pattern applies to **permits** (hook the purchasable/market
 check) once that site is found.
@@ -83,24 +83,24 @@ check) once that site is found.
 ## ★★ CURRENT STATUS (2026-06-01, supersedes the spec below) ★★
 
 The `0x1407F5404` give-birth hook below was **DISPROVEN live** (installed cleanly,
-bred a real calf, counter stayed 0 — that call is not on the birth path). What we
+bred a real calf, counter stayed 0 - that call is not on the birth path). What we
 have now, **validated live**:
 
-- **Robust birth SIGNAL — SOLVED.** Software-detour at **`0x140C82168`** (RVA
+- **Robust birth SIGNAL - SOLVED.** Software-detour at **`0x140C82168`** (RVA
   `0xC82168`), the rejoin of the per-species container insert (`mov rdi,[rbp+0xd8]`,
   7B). Fires on every animal entering a habitat (births immediately, buys after
   quarantine), idle rate 0, crash-proof, address-independent. `pz_ap_client/memory/hook.py`
   → `make_insert_instrument` / `read_insert_events`; harness `tools/insert_hook.py`.
-- **SPECIES attribution — SOLVED.** At the hook `rbx` = per-species container;
+- **SPECIES attribution - SOLVED.** At the hook `rbx` = per-species container;
   **`[rbx+0x08]` = stable species id** (zebra `0x1B8E`, warthog `0x1BF1`), confirmed
   identical across a zebra buy and birth. `[rbx+0x10]` = population count, `[rbx+0]`
   = ptr into a species-registry array, `[rbx+0x18]` = handle data array, `[rbx+0x20]`
   = capacity. The inserted element (`rsi`) is an **entity HANDLE** (not a pointer).
-- **SOLVED: birth-vs-buy** (no Ghidra needed in the end — replicated the game's own
+- **SOLVED: birth-vs-buy** (no Ghidra needed in the end - replicated the game's own
   resolver from the two pasted functions `FUN_146EC8630` + hash-map `FUN_1444F29B0`).
   At the hook **`r13` = the ZOO** (`param_1`; prologue `mov r13,rcx` @`0x140C820B1`),
   NOT the manager. Resolution: `manager = *(zoo+0x2F8)`; hash-map at `manager+0xB90`
-  (`+0x10` cap, `+0x18` buckets; open-addressing probe — see `animals.py`) maps the
+  (`+0x10` cap, `+0x18` buckets; open-addressing probe - see `animals.py`) maps the
   handle → index; `entity = *(manager+0xC20) + index*0x3F0`. The entity's **life-stage
   byte `[entity+0x3A7]` == 0 ⇒ NEWBORN (a BIRTH)**; buys are stage 1+. Species id at
   `[entity+0x54]` (or the container `[rbx+8]`). VALIDATED live 16/16 (the only stage-0
@@ -109,10 +109,10 @@ have now, **validated live**:
   `pz_ap_client/memory/animals.py` (`AnimalResolver`) + `births.py` (`BirthDetector`),
   wired into `triggers.py::_poll_first_breed`. **first_breed is DONE.**
 
-### ★ GHIDRA ASKS (this is the static-RE piece — your tool) — any ONE unblocks it:
+### ★ GHIDRA ASKS (this is the static-RE piece - your tool) - any ONE unblocks it:
 1. **(preferred) Birth-specific spawn site.** In `FUN_1407F4EA0` (gestation) or its
    callees, find the EXACT instruction that *creates the offspring entity* on a
-   completed birth (NOT `0x1407F5404` — that didn't fire). Hooking it = birth-only,
+   completed birth (NOT `0x1407F5404` - that didn't fire). Hooking it = birth-only,
    sidesteps buy-vs-birth entirely. Give: address, the instruction, and which
    register/field identifies the species (or the new entity handle).
 2. **Animal-entity age/newborn field.** In `FUN_1407F4EA0`, `param_1` (r15) is the
@@ -140,7 +140,7 @@ birth-specific spawn is on the branch that reaches `0x147249DE3` directly.
 
 UPDATE: those 3 caller-chain addrs turned out to be GENERIC UTILITIES (hash-map
 find `FUN_1444F29B0`, hash-map resize `FUN_147249C30`, atomic refcount-release
-`FUN_1401B55D0`) — the stack-scan caught incidental container/refcount frames, NOT
+`FUN_1401B55D0`) - the stack-scan caught incidental container/refcount frames, NOT
 birth-vs-buy business logic. **Caller-chain classification (Path B) is dead.**
 
 Static call-tree from the insert (no game, from the dump):
@@ -158,30 +158,30 @@ Static call-tree from the insert (no game, from the dump):
   **birth** path vs the **market-buy** path. The birth-path caller (or the offspring-
   creation it does just before the add) is our birth-only hook site. Paste those
   callers' decompiles. (Equivalently, ask #2/#3 above: the animal-entity age/newborn
-  field + the handle→entity resolver — either finishes it.)
+  field + the handle→entity resolver - either finishes it.)
 
-## ★ BIRTH HOOK — OLD SPEC (DISPROVEN — kept for history)
+## ★ BIRTH HOOK - OLD SPEC (DISPROVEN - kept for history)
 
 Fully reverse-engineered in `FUN_1407F4EA0` (the gestation/birth tick):
 - **HOOK SITE: `0x1407F5404`** (RVA `0x7F5404`), instruction `call 0x140C91A70`
-  (`E8` rel32, **5 bytes** — fits a 5-byte jmp/call detour with NO padding). It is
+  (`E8` rel32, **5 bytes** - fits a 5-byte jmp/call detour with NO padding). It is
   the give-birth/create-offspring call (`thunk → FUN_1494635E0`), reached only via
   the gestation-complete branch (`[r15+0x3bd]=0` at `0x1407F537E`), so it fires
   **exactly once per birth**.
 - **SPECIES INDEX = `r14w`** (ushort), set at `0x1407F4F94`
   (`movzx r14d, word ptr [rdx+rax+0x54]`) and held in callee-saved `r14` through
-  the function — live at the hook. Maps to a species via the per-species table
+  the function - live at the hook. Maps to a species via the per-species table
   (base `*(*(zoo+0x10)+0x98)`, **stride `0xb88`**).
 - `r15` = the breeding animal object; mate at `[r15+0x2d8]`.
-- **AOB SIGNATURE (locked, UNIQUE in module — 1 occurrence):**
+- **AOB SIGNATURE (locked, UNIQUE in module - 1 occurrence):**
   `4C 8B C3 48 8D 54 24 40 49 8B CB E8 ?? ?? ?? ??`
   = `mov r8,rbx` / `lea rdx,[rsp+0x40]` / `mov rcx,r11` / `call <rel32>`.
   **Hook site = match + 11** (the `E8` byte). Don't hardcode the give-birth
-  address — compute it from the live rel32: `target = site + 5 + int32(orig[1:5])`
+  address - compute it from the live rel32: `target = site + 5 + int32(orig[1:5])`
   (was `0x140C91A70`; recomputing survives a callee relocation).
 
 **Detour (it's a CALL, so tail-call style):** because the hooked instruction is a
-*relative* `call rel32`, its bytes can't be relocated by copying — the trampoline
+*relative* `call rel32`, its bytes can't be relocated by copying - the trampoline
 instead re-issues the call to the same **absolute** target. Sequence: record
 `r14w` into a scratch ring-buffer + bump a birth counter (preserve ALL give-birth
 arg regs rcx/rdx/r8/r9 + stack; use only rax/r11 as scratch with push/pop) →
@@ -217,19 +217,19 @@ the 0xb88-stride table, or correlate by breeding a known species).
   `BirthImminent` `0x14268E0F0`, `Birth_Task` `0x1426A6574`, `GestationPeriod`
   `0x142687EB2`, `OffspringPerMating` `0x142687E7A`, `NewbornJuvenileProp`
   `0x14268C5BA`, `AddAnimalToExhibit` `0x142662DA0`.
-- **Gotcha — hashed tokens:** standalone `Birth`/`Birth_Task` have NO pointer
-  xrefs — Frontier's Cobra engine looks many event/property tokens up by
+- **Gotcha - hashed tokens:** standalone `Birth`/`Birth_Task` have NO pointer
+  xrefs - Frontier's Cobra engine looks many event/property tokens up by
   STRING HASH, so string-pointer xrefs miss those handlers. `BirthImminent` *is*
   pointer-referenced (that's how we reached `0x1407F4EA0`). For hashed tokens,
   trace via the function we already have, not via string xref.
 - **Entity pool `DAT_14298ae00`** (generational handle table): `+0x30` array top,
   `+0x10` element stride, `+0x48` count, validity/gen bit `& 0xFFFFFFFFFFFFFFFE`;
-  indexed by a handle. Likely the animal/entity store — the species "roster" is
+  indexed by a handle. Likely the animal/entity store - the species "roster" is
   probably derived from iterating this, which is why no static count anchor exists.
 - The `PlainsZebra` xref led to the **appearance/colour-morph** string builder
-  (`FUN_140E65DE0`) — a detour, not births. Don't chase species-name xrefs for births.
+  (`FUN_140E65DE0`) - a detour, not births. Don't chase species-name xrefs for births.
 
-## ★ PERMITS (species_unlock) — FULLY RE'd (2026-06-01)
+## ★ PERMITS (species_unlock) - FULLY RE'd (2026-06-01)
 
 Market = "Animal Exchange" / "Trade Centre". The whole buy path + a memory-enforced
 gate are reverse-engineered (no game mod API; this is the only mechanism).
@@ -261,7 +261,7 @@ system, biome-independent. This is more advanced than the births record-only hoo
 (must resolve species + branch to the function's fail-return synchronously).
 
 Alt gates (worse): the game's native **whitelist** `[exchange_mgr+0x3B8]` = a handle to
-a whitelist-collection entity (set via `FUN_14A099DB0`; 0 = unrestricted) — cleanest
+a whitelist-collection entity (set via `FUN_14A099DB0`; 0 = unrestricted) - cleanest
 UX but requires constructing/populating a collection entity (hard via raw writes); or
 hook the display builder `PushLocalAnimalExchangeToDatastore` to skip gated species.
 
@@ -271,7 +271,7 @@ hook the display builder `PushLocalAnimalExchangeToDatastore` to skip gated spec
   7 bytes; rbx=listing record, r15=exchange_mgr). It's a `je` target → a 5-byte jmp +
   2 NOP at the start is safe (branch lands on the patch start).
 - **FAIL-RETURN `0x14A0894B7`** (`xor bl,bl; lea rcx,[r15+0x608]; call 0x1401B55D0`
-  (release the lock taken at entry `0x14A089437`); restore regs; `ret`) — returns 0,
+  (release the lock taken at entry `0x14A089437`); restore regs; `ret`) - returns 0,
   no spawn, lock balanced. Jump here to block.
 - listing record: `[rbx+0x10]`=species/animal handle, `[rbx+0x208]`=cost(neg),
   `[rbx+0x228]`=listing id, `[rbx+0x210]`=a funds-path flag (the byte the orig reads).
@@ -285,11 +285,11 @@ hook the display builder `PushLocalAnimalExchangeToDatastore` to skip gated spec
     the instant before the client marks a new listing; acceptable, or default-block
     unknown gated species.)
   - Approach B: resolve `[rbx+0x10]`→species in-hook (call `FUN_146EC8630(*(zoo+0x2f8),
-    handle)` → species id) and check a scratch species set — heavier asm, no race.
+    handle)` → species id) and check a scratch species set - heavier asm, no race.
   - If NOT blocked: run the relocated `movzx` (position-independent) + `jmp 0x14A0894EC`.
 Client writes/updates the blocked set on permit receipt. Live-test: a gated species'
 buy must fail (no animal, no charge) until its permit arrives. CAUTION: this detours a
-live purchase fn — verify bytes, suspend during patch, test carefully (crash risk).
+live purchase fn - verify bytes, suspend during patch, test carefully (crash risk).
 
 ## Offline aid
 
@@ -298,12 +298,12 @@ live purchase fn — verify bytes, suspend during patch, test carefully (crash r
 
 ---
 
-# RESEARCH (research_complete) — Ghidra investigation plan (2026-06-01)
+# RESEARCH (research_complete) - Ghidra investigation plan (2026-06-01)
 
 > Goal: two deliverables the client needs for the 12 `research_complete` AP locations
 > (`welfare_<10 species>` + `enrichment_generalist` + `habitat_advanced_barriers`):
->  (1) **research_id ↔ species map** — which research item belongs to which species;
->  (2) **progress/completion read** — given a research item, is it complete (and where
+>  (1) **research_id ↔ species map** - which research item belongs to which species;
+>  (2) **progress/completion read** - given a research item, is it complete (and where
 >      is that stored, re-derivable from a stable root each session).
 
 ## Why Ghidra (live-RE is exhausted)
@@ -311,7 +311,7 @@ live purchase fn — verify bytes, suspend during patch, test carefully (crash r
 research level), NOT the per-research level state. `mgr_diff` after warthog L4→L5 gave
 only fluctuating / pointer-laden 4→5 candidates, no stable per-species level array. The
 research **query** script functions (below) are referenced only in a name→list
-reflection table (`call 0x1419e4a60`), i.e. **Cobra hash-bound** — no string→native-fn
+reflection table (`call 0x1419e4a60`), i.e. **Cobra hash-bound** - no string→native-fn
 pointer for the linear disassembler to follow. Ghidra resolves hashed/virtual bindings.
 
 ## Primary targets (script-binding name strings; image base 0x140000000)
@@ -322,15 +322,15 @@ pointer for the linear disassembler to follow. Ghidra resolves hashed/virtual bi
   `GetResearchCategoryLevel` @ `0x14267A670`, `GetResearchType`/`GetResearchBaseType`
   @ `0x14267A7F0`/`0x14267A800`, enum `ResearchStatus_ResearchedAndCompleted` @ `0x14267ABC8`.
 - Content-def type: **`AnimalResearchUnlocksSettings`** @ `0x1426360F0` (the content that
-  defines research→unlocks per species — likely holds the id↔species relation statically).
+  defines research→unlocks per species - likely holds the id↔species relation statically).
 
-## Steps (you drive Ghidra; paste decompilation back, I analyze — like births/permits/rating)
+## Steps (you drive Ghidra; paste decompilation back, I analyze - like births/permits/rating)
 1. In Ghidra: Search → For Strings → `GetResearchItemAssociatedSpecies`; then References
    To that string. One ref is the reflection table (the `0x14063F4EB` site, ignore).
    Look for the **Cobra binding** ref: a registration that passes the string + a native
    function pointer (often via a hash helper). If the string only has the reflection ref,
    instead open the **native fn by behavior**: it takes a research-item handle/id and
-   returns a species id — find it near the other `GetResearchItem*` natives.
+   returns a species id - find it near the other `GetResearchItem*` natives.
 2. Decompile `GetResearchItemAssociatedSpecies`'s native fn → paste it. I'll extract how
    a research id maps to a species (the field/table that links them) → fills the id↔species
    map for ALL species (owned or not).
@@ -347,10 +347,10 @@ pointer for the linear disassembler to follow. Ghidra resolves hashed/virtual bi
   Determining which id-space `GetResearchItemLevel` indexes is part of step 3.
 - zoo (EntityManager) = `0x14D446C0` this session, **stable chain** `*(*(base+0x29446A0)+0x20)+0x390`.
 - Reflection registration of all `GetResearchItem*` names lives around `0x14063F3xx–0x14063FDxx`
-  (FUN containing those `lea r8,[name]; call 0x1419e4a60` lines) — a good anchor to find the
+  (FUN containing those `lea r8,[name]; call 0x1419e4a60` lines) - a good anchor to find the
   parallel native-binding table if Cobra registers them together.
 
-## RESEARCH — progress (2026-06-01): binding table + handlers + completion enum DECODED
+## RESEARCH - progress (2026-06-01): binding table + handlers + completion enum DECODED
 
 Binding registration fn = **`FUN_14063e570`** (registers each research script name with its
 native handler; pattern: store `*puVar7 = HANDLER` then `thunk_FUN_14ee19ef0(ctx,uVar10,"Name")`).
@@ -386,15 +386,15 @@ content map at `[rcx+0xf8]` (hashmap find `FUN_14064F0B0`, record stride **0x58*
 **entity pool `DAT_14298AE00`** (generational handle table: `[+0x30]` top, `[+0x10]` stride,
 `[+0x48]` count), pulls a value that may be the literal string `"Infinite"`, and **parses a
 string→number** (`FUN_1400B7960`). So per-research level/status is a computed value behind
-content-map + entity-pool + string indirection — there is **no cheap stable offset** to read.
+content-map + entity-pool + string indirection - there is **no cheap stable offset** to read.
 
 => RECOMMENDED STRATEGY for research_complete (focused follow-up, pick one):
   (A) **Call the native query in-process** (injection): build/borrow a script-VM stack and call
       `GetResearchItemLevel` / a `GetResearchStatus`-style fn, read back status==4. Heaviest
       plumbing but exact. (We already inject/detour; calling a script-bound fn needs a valid
-      `param_1` script context — capture one from a live script call via a detour, then reuse.)
+      `param_1` script context - capture one from a live script call via a detour, then reuse.)
   (B) **Find the lower-level research-state store** these fns ultimately read/write (follow
-      `CompleteResearch` `FUN_140646130` and `FUN_140E456A0`'s map `[rcx+0xf8]` writes) — likely
+      `CompleteResearch` `FUN_140646130` and `FUN_140E456A0`'s map `[rcx+0xf8]` writes) - likely
       a per-research record keyed by research-item id; read status/level from it via a stable
       root. Cleaner if the store is a flat keyed table.
   (C) Detour `CompleteResearch` (`FUN_140646130`) like births/release: record (research-item id)
@@ -409,12 +409,12 @@ string). Two issues: (1) the research id is a string inside script-arg objects, 
 (2) it's unconfirmed that NATURAL (vet) completion routes through this *script* binding vs an
 internal path. So a clean entry-detour that records the completed research id is NOT available here.
 
-CONCLUSION: research is mediated entirely by the Cobra script/content/entity-pool/string layer —
+CONCLUSION: research is mediated entirely by the Cobra script/content/entity-pool/string layer -
 no clean native hook site like births(insert)/release(executor)/permits(listing loop). It needs a
 DIFFERENT strategy + interactive Ghidra (linear offline disasm can't cross the hash/virtual/string
 indirection efficiently). Strongest next entry points for a focused session:
   - **`ResearchUnlockChangeMessage`** (msg type @0x14266D490, `MsgType_` @0x14266E168): find the
-    message BROADCAST site on completion and the handler — a message carries the changed research,
+    message BROADCAST site on completion and the handler - a message carries the changed research,
     likely with the id in a register at the dispatch. Hook that.
   - Capture a live **script-VM context** (`param_1`) via a transient detour on any research script
     call, then call `GetResearchItemLevel`/status from injected code reusing that context (Option A).
@@ -425,7 +425,7 @@ located) but remains a dedicated follow-up sub-project; NOT implemented.
 
 ---
 
-# FACILITY GATE (facility_unlock placement-block) — Ghidra target (2026-06-02)
+# FACILITY GATE (facility_unlock placement-block) - Ghidra target (2026-06-02)
 
 > Goal: enforce the 4 `facility_unlock` AP items (Research Centre, Workshop, Trade Centre,
 > Veterinary Surgery) by BLOCKING PLACEMENT until the item arrives (user decision). The
@@ -434,13 +434,13 @@ located) but remains a dedicated follow-up sub-project; NOT implemented.
 > executor + the building def-id field, then capture each facility's def-id.
 
 ## What to find (fill these in `memory/facilities.py` / `memory/hook.py`)
-1. **FACILITY_RVA** + **FACILITY_ORIG** — a stable code site on the building-placement
+1. **FACILITY_RVA** + **FACILITY_ORIG** - a stable code site on the building-placement
    COMMIT path (or the `CanPlace` predicate) with >=5 relocatable bytes for the jmp.
 2. **The register + offset** holding the building/blueprint DEFINITION id at that site
    (set `FACILITY_DEFID_OFF`, and adjust the base register in `make_facility_gate` if it
    isn't rbx). The def-id is the value we gate on (must distinguish Research Centre vs
    Workshop vs any other building the player legitimately places).
-3. **The abort target** — either a clean `xor eax,eax; ret` (if rsp is clean at entry, like
+3. **The abort target** - either a clean `xor eax,eax; ret` (if rsp is clean at entry, like
    the release executor) or a fail-return address (set `FACILITY_FAIL_DELTA = site - fail`).
 
 ## Technique (same as release-to-wild: name string -> binding -> native handler)

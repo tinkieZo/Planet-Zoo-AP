@@ -1,4 +1,4 @@
-"""scanstep — a *stateless-per-invocation* front-end to memscan, so a scan can
+"""scanstep - a *stateless-per-invocation* front-end to memscan, so a scan can
 span pauses while the player acts in-game.
 
 memscan's REPL keeps candidate addresses in process memory; that's fine for a

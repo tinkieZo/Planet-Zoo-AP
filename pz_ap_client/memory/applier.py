@@ -1,4 +1,4 @@
-"""MemoryEffectApplier — applies received items by writing game memory (A3).
+"""MemoryEffectApplier - applies received items by writing game memory (A3).
 
 Drop-in replacement for ConsoleEffectApplier: the client calls ``apply(item)``
 and the base ``EffectApplier`` routes to ``on_<effect_type>``.
@@ -56,7 +56,7 @@ class MemoryEffectApplier(EffectApplier):
             return False
         current = self.anchors.read(self.scanner, anchor_name)
         if current is None:
-            logger.warning("[%s] anchor %r unresolved — cannot apply %s",
+            logger.warning("[%s] anchor %r unresolved - cannot apply %s",
                            item.effect_type, anchor_name, item.name)
             return False
         ok = self.anchors.write(self.scanner, anchor_name, current + amount)
@@ -84,13 +84,13 @@ class MemoryEffectApplier(EffectApplier):
             logger.error("species_unlock item %s has no species_key in effect_args", item.id)
             return False
         if self.permit_gate is None:
-            logger.warning("species_unlock %r: no PermitGate wired — cannot enforce", key)
+            logger.warning("species_unlock %r: no PermitGate wired - cannot enforce", key)
             return False
         ok = self.permit_gate.unlock(key)
         if ok:
             logger.info("[apply] %s: permit granted for %s (unblocked)", item.name, key)
         else:
-            logger.warning("species_unlock %r: gate not installable yet — will retry", key)
+            logger.warning("species_unlock %r: gate not installable yet - will retry", key)
         return ok
 
     def on_tool_unlock(self, item: "Item") -> bool:
@@ -108,10 +108,10 @@ class MemoryEffectApplier(EffectApplier):
             logger.error("tool_unlock item %s has no tool_key in effect_args", item.id)
             return False
         if self.permit_gate is None:
-            logger.warning("tool_unlock %r: no PermitGate wired — cannot enforce (proxy)", key)
+            logger.warning("tool_unlock %r: no PermitGate wired - cannot enforce (proxy)", key)
             return False
         if not self.permit_gate.ensure_installed():
-            logger.warning("tool_unlock %r: purchase gate not installable yet — will retry", key)
+            logger.warning("tool_unlock %r: purchase gate not installable yet - will retry", key)
             return False
         logger.info("[apply] %s: tool %s granted (water-gated species unblocked by reconcile)",
                     item.name, key)
@@ -132,20 +132,20 @@ class MemoryEffectApplier(EffectApplier):
             # Enforced by the ResearchGate (research-start block); the client reconciles it from
             # the full received set each tick. Acknowledge so the high-water mark advances.
             if self.research_gate is None:
-                logger.warning("facility_unlock %r: no ResearchGate wired — cannot enforce", key)
+                logger.warning("facility_unlock %r: no ResearchGate wired - cannot enforce", key)
                 return False
             logger.info("[apply] %s: research facility %s granted (research unblocked by reconcile)",
                         item.name, key)
             return True
         if self.facility_gate is None:
-            logger.warning("facility_unlock %r: no FacilityGate wired — cannot enforce", key)
+            logger.warning("facility_unlock %r: no FacilityGate wired - cannot enforce", key)
             return False
         ok = self.facility_gate.unlock(key)
         if ok:
             logger.info("[apply] %s: facility granted for %s (placement unblocked)", item.name, key)
         else:
             logger.warning("facility_unlock %r: gate not installable yet (placement executor "
-                           "pending) — will retry", key)
+                           "pending) - will retry", key)
         return ok
 
     def on_program_unlock(self, item: "Item") -> bool:
@@ -161,7 +161,7 @@ class MemoryEffectApplier(EffectApplier):
             logger.warning("program_unlock %r: only 'conservation' is implemented", key)
             return False
         if self.release_gate is None:
-            logger.warning("program_unlock %r: no ReleaseDetector wired — cannot enforce", key)
+            logger.warning("program_unlock %r: no ReleaseDetector wired - cannot enforce", key)
             return False
         self.release_gate.set_locked(False)
         logger.info("[apply] %s: conservation program unlocked (releases enabled)", item.name)
@@ -180,6 +180,6 @@ class MemoryEffectApplier(EffectApplier):
         # Not yet wired to memory. Return False so it surfaces and retries rather
         # than silently advancing past a (possibly progression) item.
         logger.warning("[apply] %s effect %r not implemented in MemoryEffectApplier yet "
-                       "(item %s). Stalling — implement during/after the spike.",
+                       "(item %s). Stalling - implement during/after the spike.",
                        item.name, effect, item.id)
         return False

@@ -1,9 +1,9 @@
-"""luaparse — structural parser for Frontier's custom Lua 5.3 chunks (8-byte instructions).
+"""luaparse - structural parser for Frontier's custom Lua 5.3 chunks (8-byte instructions).
 
 Stock unluac/luadec can't read these (custom header + 8-byte Instruction). We DON'T decode opcodes;
 we parse the prototype tree and dump, per function: source/line-range/params, the constant pool
 (strings + numbers), and debug local/upvalue names. The constants reveal which field keys + global
-function names each function references — enough to see what e.g. IsWaterEditDisabled actually reads.
+function names each function references - enough to see what e.g. IsWaterEditDisabled actually reads.
 
 Custom header (verified against TerrainEditUIMode source string landing at 0x1e):
   sig "\x1bLua" 53, format 02, LUAC_DATA, sizes int=4 size_t=4 Instr=8 Number=4(f32), lua_Integer=8,
@@ -113,7 +113,7 @@ def read_function(r, protos_out, path="main"):
     fn["ninstr"] = sizecode
     # constants
     fn["strings"], fn["nums"], fn["kpool"] = _read_constants(r, path)
-    # upvalues (instack, idx) — names come from the debug section below
+    # upvalues (instack, idx) - names come from the debug section below
     nup = r.i()
     for _ in range(nup):
         r.u8(); r.u8()
@@ -121,7 +121,7 @@ def read_function(r, protos_out, path="main"):
     # protos (recurse; each registers itself in protos_out)
     for j in range(r.i()):
         read_function(r, protos_out, "%s.%d" % (path, j))
-    # debug: lineinfo (skipped) — read the count (advances p) THEN skip; do NOT fold into one
+    # debug: lineinfo (skipped) - read the count (advances p) THEN skip; do NOT fold into one
     # `r.p += r.i() * INT`, whose augmented-assignment evaluation order would discard the count read.
     sizeline = r.i()
     r.p += sizeline * INT

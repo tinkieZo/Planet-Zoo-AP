@@ -111,7 +111,7 @@ class GameData:
     # -- species purchase-gating (the PermitGate substitutes a purchase-block for any
     #    species gate token it can enforce: a species permit, or a tool we can't gate
     #    natively like water_tools). Facility tokens (research_centre/workshop) are NOT
-    #    enforced here — they have their own gates — so this stays a no-op for them. ----
+    #    enforced here - they have their own gates - so this stays a no-op for them. ----
 
     def tool_keys(self) -> set:
         """All tool keys that have a ``tool_unlock`` item (e.g. ``{"water_tools"}``)."""
@@ -150,7 +150,7 @@ class GameData:
 
     def purchase_blocked_species(self, received_item_ids: Iterable[int]) -> set:
         """Species keys whose purchase the gate should block now: any species with a
-        purchase token that is not yet satisfied by the received items. AND-semantics —
+        purchase token that is not yet satisfied by the received items. AND-semantics -
         e.g. saltwater_croc (``water_tools + permit_saltwater_croc``) stays blocked until
         BOTH arrive; nile_hippo (``water_tools``) until water_tools arrives."""
         sat = self.satisfied_purchase_tokens(received_item_ids)

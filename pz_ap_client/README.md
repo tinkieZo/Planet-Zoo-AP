@@ -1,4 +1,4 @@
-# Track A — Planet Zoo × Archipelago hooking client
+# Track A - Planet Zoo × Archipelago hooking client
 
 External memory-hooking client that bridges a running **Planet Zoo (Challenge)**
 save to an Archipelago multiworld. It subclasses AP's `CommonContext` (network
@@ -15,13 +15,13 @@ this client only consumes the shared [`data.json`](../data.json) contract.
 | `effects.py` | `EffectApplier` + `ConsoleEffectApplier` (dry-run) | no |
 | `client.py` | `CommonContext` subclass, manual-trigger console, goal detection (A1) | no |
 | `memory/scanner.py` | pymem wrapper: AOB scan, pointer chains, typed r/w (A2) | yes |
-| `memory/anchors.py` + `anchors.json` | the offset/signature table | — |
-| `memory/applier.py` | `MemoryEffectApplier` — items → memory writes (A3) | yes |
-| `memory/triggers.py` | `MemoryTriggerSource` — poll memory → checks (A3) | yes |
+| `memory/anchors.py` + `anchors.json` | the offset/signature table | - |
+| `memory/applier.py` | `MemoryEffectApplier` - items → memory writes (A3) | yes |
+| `memory/triggers.py` | `MemoryTriggerSource` - poll memory → checks (A3) | yes |
 
 ## Run
 
-Setup (from project root). **Requires Python 3.11.9–3.13** — Archipelago's `ModuleUpdate`
+Setup (from project root). **Requires Python 3.11.9–3.13** - Archipelago's `ModuleUpdate`
 hard-rejects 3.10, so build the venv with a 3.11+ interpreter:
 ```powershell
 py -3.11 -m venv .venv
@@ -30,7 +30,7 @@ git clone --depth 1 https://github.com/ArchipelagoMW/Archipelago.git vendor/Arch
 ```
 To build a distributable exe instead, see [`docs/PACKAGING.md`](../docs/PACKAGING.md).
 
-**A1 — console mode (no game).** Connect to an AP server and drive checks by hand:
+**A1 - console mode (no game).** Connect to an AP server and drive checks by hand:
 ```powershell
 .\.venv\Scripts\python.exe -m pz_ap_client.client <host:port> --name <slot>
 ```
@@ -41,10 +41,10 @@ Console commands: `/pz_check <name|id>` (fire a check), `/pz_locations [filter]`
 ```powershell
 .\.venv\Scripts\python.exe -m pz_ap_client.client <host:port> --name <slot> --memory
 ```
-Requires `anchors.json` to be filled in — see
+Requires `anchors.json` to be filled in - see
 [`docs/A2_SPIKE_PLAYBOOK.md`](../docs/A2_SPIKE_PLAYBOOK.md).
 
-**Filling `anchors.json` — `tools/memscan.py`.** Interactive scanner that replaces
+**Filling `anchors.json` - `tools/memscan.py`.** Interactive scanner that replaces
 Cheat Engine for the spike (you play the game and report values; it finds
 addresses, pointer-scans for a stable chain, test-writes, and saves anchors):
 ```powershell

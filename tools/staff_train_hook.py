@@ -1,9 +1,9 @@
-"""staff_train_hook — boost keeper training by +N by detouring GetStaffMemberCurrentTrainingLevel.
+"""staff_train_hook - boost keeper training by +N by detouring GetStaffMemberCurrentTrainingLevel.
 
 The getter (0x146B1B6F0) computes the level value into r8d at 0x146B1B85E, then stores it to the VM stack
 at 0x146B1B870. We detour at 0x146B1B864 (after r8 is set): r8d += N, clamped to CAP. Because this getter
 is called ~157x/sec (per-frame keeper logic, not just UI), boosting its return should raise effective
-keeper training globally — no roster/map surgery. scratch[+0]=N (boost), scratch[+4]=CAP (max level).
+keeper training globally - no roster/map surgery. scratch[+0]=N (boost), scratch[+4]=CAP (max level).
 
     python -m tools.staff_train_hook [N=2] [cap=4] [hold_secs=90]
 Open keeper panels + watch keeper behaviour during the hold; restores on exit.
@@ -59,7 +59,7 @@ def main() -> int:
     s.write_bytes(scratch, struct.pack("<I", n))
     s.write_bytes(scratch + 4, struct.pack("<I", cap))
     print("INSTALLED keeper-training boost @0x%X  N=+%d cap=%d" % (site, n, cap), flush=True)
-    print(">>> Open keeper info/training panels — training level should read +%d (clamped %d)." % (n, cap), flush=True)
+    print(">>> Open keeper info/training panels - training level should read +%d (clamped %d)." % (n, cap), flush=True)
     print(">>> Also watch keeper work (welfare/abilities) for a behaviour change. Holding %ds..." % hold, flush=True)
     try:
         time.sleep(hold)

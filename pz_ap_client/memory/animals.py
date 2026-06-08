@@ -1,4 +1,4 @@
-"""AnimalResolver — resolve an animal entity handle to its entity + read fields.
+"""AnimalResolver - resolve an animal entity handle to its entity + read fields.
 
 Planet Zoo has no static per-animal anchor (entities reallocate), but the insert
 hook (hook.py / tools/insert_hook.py) captures, for each animal added to a habitat,
@@ -16,7 +16,7 @@ This resolves handle -> animal entity by replicating the game's own lookup
 
 Validated live: the only stage-0 animals were exactly the observed births; every
 bought animal read stage 1. So **a captured insert whose entity stage == 0 is a
-birth** — path-independent and robust.
+birth** - path-independent and robust.
 """
 
 from __future__ import annotations
@@ -27,7 +27,7 @@ from typing import Optional
 MASK64 = (1 << 64) - 1
 
 # entity-record offsets (stride 0x3F0)
-OFF_SPECIES_HANDLE = 0x50   # u32 species HANDLE — same namespace as ResearchReader.current_handle,
+OFF_SPECIES_HANDLE = 0x50   # u32 species HANDLE - same namespace as ResearchReader.current_handle,
                             # so a birth's species is reverse-mapped via the research map (verified
                             # exact: wolf 0x46DA, zebra 0x309F, gorilla 0x3084, panda 0x3096, ...).
                             # This is the RELIABLE per-species id (container[+8] is a habitat id).
@@ -106,7 +106,7 @@ class AnimalResolver:
             return None
 
     def species_handle(self, entity: int) -> Optional[int]:
-        """The animal's species HANDLE (entity+0x50) — reverse-map via ResearchReader.current_handle
+        """The animal's species HANDLE (entity+0x50) - reverse-map via ResearchReader.current_handle
         to get the species_key. This is the reliable species id for birth attribution."""
         try:
             return struct.unpack("<I", self.scanner.read_bytes(entity + OFF_SPECIES_HANDLE, 4))[0]

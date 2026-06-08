@@ -1,4 +1,4 @@
-"""_meminfo — shared Win32 committed-region enumeration for the RE tools.
+"""_meminfo - shared Win32 committed-region enumeration for the RE tools.
 
 Several tools walk the target process's committed memory via VirtualQueryEx, filtered by page
 protection (executable / readable / writable) and sometimes capped by region size or address range.

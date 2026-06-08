@@ -1,9 +1,9 @@
-"""find_writer — the CE "find out what writes this address" equivalent.
+"""find_writer - the CE "find out what writes this address" equivalent.
 
 Attaches as a debugger to PlanetZoo.exe, arms **hardware write-breakpoints**
 (debug registers DR0..DR3) on up to 4 target addresses, and logs the instruction
 (RIP) of whatever writes each one. Used to locate the exact instruction that
-bumps a species count on birth (roster+0x630 for zebra) so we can hook *that* —
+bumps a species count on birth (roster+0x630 for zebra) so we can hook *that* -
 ground truth, unlike the give-birth call we mis-guessed from the decompile.
 
     python -m tools.find_writer 0x<addr1> [0x<addr2> ...] [seconds]
@@ -49,7 +49,7 @@ CONTEXT_DEBUG_REGISTERS = CONTEXT_AMD64 | 0x10
 
 
 # RW/LEN for the data breakpoints. Default: write, 4 bytes. ACCESS mode (set by main when the
-# argv contains "access") = RW 11 (data read OR write) + LEN 00 (1 byte) — for "find what READS x".
+# argv contains "access") = RW 11 (data read OR write) + LEN 00 (1 byte) - for "find what READS x".
 _RW = 0b01
 _LEN = 0b11
 
@@ -193,7 +193,7 @@ def _is_return_addr(scanner, addr: int) -> bool:
 
 def _callers(scanner, rsp: int, modrange) -> "list[int]":
     """Walk the first 96 stack qwords and return VALIDATED return addresses (each preceded by a
-    call) inside the module — an accurate caller chain, not a raw scan."""
+    call) inside the module - an accurate caller chain, not a raw scan."""
     lo, hi = modrange
     try:
         data = scanner.read_bytes(rsp, 768)

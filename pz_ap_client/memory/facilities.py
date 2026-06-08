@@ -1,7 +1,7 @@
-"""FacilityGate — memory-enforced, per-facility building-PLACEMENT gate (A3 facilities).
+"""FacilityGate - memory-enforced, per-facility building-PLACEMENT gate (A3 facilities).
 
 ``facility_unlock`` items (Research Centre, Workshop, Trade Centre, Veterinary Surgery)
-must be physically enforced — no honor system. Chosen mechanism (user decision 2026-06-02):
+must be physically enforced - no honor system. Chosen mechanism (user decision 2026-06-02):
 block PLACEMENT, so a gated facility literally cannot be built until its item arrives.
 
 This is the permit gate's twin (see permits.py): a conditional-abort detour on the
@@ -9,7 +9,7 @@ building-placement commit executor that compares the building's DEFINITION id (a
 id at ``[reg + FACILITY_DEFID_OFF]``) against a client-written blocked set; a match jumps
 to the fn's fail-return so the placement aborts with nothing built. Difference from permits:
 the gated id is a building DEF id, expected content-STABLE across restarts (a content-def
-index, like the research-item id — not the per-session species handle), so the def-id map
+index, like the research-item id - not the per-session species handle), so the def-id map
 is static (verify stability on capture); no research snapshot is needed.
 
 Model mirrors PermitGate: ``set_gated(keys)`` declares the facilities that require an item;
@@ -20,7 +20,7 @@ unlocked, mapped through FACILITY_DEFID.
 fn is located in Ghidra (the binding-name leads `AddBuilding` / `CreateBuildingPartSet` /
 `CanPlace`; same registration-map technique that found release-to-wild). Until then
 ``ensure_installed`` is a logged no-op and ``unlock`` returns False, so facility items
-STALL (surface + retry) rather than silently "applying" — consistent with the no-honor
+STALL (surface + retry) rather than silently "applying" - consistent with the no-honor
 contract. Capture each facility's def-id via tools/capture_facility.py once the site lands. ***
 
 Safe: software detour; ``shutdown()`` restores the site; degrades to no-op if unavailable.
@@ -37,7 +37,7 @@ from .hook import (HookManager, make_facility_gate, FACILITY_SCRATCH_COUNT,
 
 logger = logging.getLogger("PZClient")
 
-# Placement-commit executor — TO FILL from Ghidra (see docs/A2_RE_HANDOFF.md "FACILITY GATE").
+# Placement-commit executor - TO FILL from Ghidra (see docs/A2_RE_HANDOFF.md "FACILITY GATE").
 # RVA (module-relative), the >=5 original bytes at the site (relocatable), and the site->fail
 # delta (site_addr - fail_return_addr) for the abort jump.
 FACILITY_RVA: Optional[int] = None
@@ -46,7 +46,7 @@ FACILITY_FAIL_DELTA: Optional[int] = None
 
 # data.json facility_key -> building DEFINITION id (content-def id). Captured via
 # tools/capture_facility.py (place each gated facility once; read the logged def-id).
-# Expected content-stable across restarts (verify on capture — if volatile, resolve at
+# Expected content-stable across restarts (verify on capture - if volatile, resolve at
 # runtime like the species handle).
 FACILITY_DEFID: Dict[str, int] = {
     # "research_centre": 0x....,
@@ -80,7 +80,7 @@ class FacilityGate:
             if not self._warned_pending:
                 self._warned_pending = True
                 logger.info("facility gate: placement executor not located yet (FACILITY_RVA "
-                            "unset) — facility items will stall until it's filled. See "
+                            "unset) - facility items will stall until it's filled. See "
                             "docs/A2_RE_HANDOFF.md 'FACILITY GATE'.")
             return False
         base = getattr(self.scanner, "module_base", None)
@@ -150,7 +150,7 @@ class FacilityGate:
             if did is None:
                 if key not in self._warned_unmapped:
                     self._warned_unmapped.add(key)
-                    logger.warning("facility: no def-id for gated facility %r yet — add it to "
+                    logger.warning("facility: no def-id for gated facility %r yet - add it to "
                                    "facilities.FACILITY_DEFID (capture via tools/capture_facility.py)", key)
                 continue
             out.append(did)
@@ -165,7 +165,7 @@ class FacilityGate:
         if len(ids) > FACILITY_BLOCKED_MAX:
             if not self._warned_overflow:
                 self._warned_overflow = True
-                logger.error("facility: %d blocked exceeds capacity %d — extras unguarded; "
+                logger.error("facility: %d blocked exceeds capacity %d - extras unguarded; "
                              "raise FACILITY_BLOCKED_MAX", len(ids), FACILITY_BLOCKED_MAX)
             ids = ids[:FACILITY_BLOCKED_MAX]
         try:

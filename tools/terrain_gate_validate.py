@@ -1,4 +1,4 @@
-"""terrain_gate_validate — PROVE the semi-live terrain-tool gate: write rules+0x6a1, re-enter mode, observe.
+"""terrain_gate_validate - PROVE the semi-live terrain-tool gate: write rules+0x6a1, re-enter mode, observe.
 
 Decompiled TerrainEditUIMode (tools/luaparse) shows the greying is recomputed on every terrain-mode
 ENTRY: main.1 calls scenarioMgr:IsTerrainEditDisabled() -> bTerrainEditDisabled, and main.2 sets
@@ -78,7 +78,7 @@ def main() -> int:
     try:
         rules = _capture_rules(s, scratch)
         if not rules:
-            print("no SetEnableTerrain fire captured in 300s — did you reload/toggle?"); return 1
+            print("no SetEnableTerrain fire captured in 300s - did you reload/toggle?"); return 1
         time.sleep(2.5)  # let scenario setup finish any further SetEnableTerrain writes
         orig = s.read_bytes(rules + TERRAIN_BYTE, 1)[0]
         print("\nrules=0x%X  rules+0x6a1 (terrain-enable) currently = %d" % (rules, orig), flush=True)

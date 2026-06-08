@@ -1,4 +1,4 @@
-"""_capture — shared trampoline + polling helpers for the ring-capture RE tools.
+"""_capture - shared trampoline + polling helpers for the ring-capture RE tools.
 
 scenario_mgr_capture / staff_train_capture install a read-only software detour that ring-captures a
 register (the object the hooked code is about to use) into a scratch buffer, then read that ring out

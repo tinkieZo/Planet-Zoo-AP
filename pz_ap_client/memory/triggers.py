@@ -1,4 +1,4 @@
-"""MemoryTriggerSource — detects game events and emits location checks (A3).
+"""MemoryTriggerSource - detects game events and emits location checks (A3).
 
 The client's poll loop calls :meth:`poll` on a tick. It reads the relevant
 memory anchors, maps any newly-satisfied trigger to its location ID via the
@@ -7,9 +7,9 @@ shared ``data.json``, and calls ``report_check`` (which debounces against
 already sent is skipped.
 
 Each ``trigger_type`` maps to a read:
-  * ``research_complete`` — research_state_base + research[research_key] nonzero
-  * ``first_breed``       — birth_event_counter increases (or per-species count)
-  * ``milestone``         — metric anchor crosses threshold
+  * ``research_complete`` - research_state_base + research[research_key] nonzero
+  * ``first_breed``       - birth_event_counter increases (or per-species count)
+  * ``milestone``         - metric anchor crosses threshold
 
 Anything whose anchor/offset isn't filled in yet is simply skipped, so the loop
 runs harmlessly against an incomplete table during the spike.
@@ -52,7 +52,7 @@ class MemoryTriggerSource:
         self.births = BirthDetector(scanner, research=self.research)
         self._bred_species: set = set()  # species_keys observed born (cumulative)
         # A3 conservation_release: software-detour on the release-to-wild executor that
-        # counts releases (no stable game counter exists — see releases.py / the A2 spike).
+        # counts releases (no stable game counter exists - see releases.py / the A2 spike).
         self.releases = ReleaseDetector(scanner)
 
     def poll(self, already_checked: set) -> List[int]:

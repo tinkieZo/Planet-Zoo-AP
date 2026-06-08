@@ -1,4 +1,4 @@
-"""dump_bindings — resolve Cobra script-function names to their native executors.
+"""dump_bindings - resolve Cobra script-function names to their native executors.
 
 Planet Zoo registers script functions via the REAL binding registrar 0x14144BE30 (name in rdx);
 each registration site is `... lea <reg>,[rip->HANDLER] ; ... ; lea rdx,[rip->name] ; call 0x14144BE30`
@@ -120,7 +120,7 @@ def main() -> int:
         except Exception:
             continue
         found += _scan_region(s, md, rbase, data, seen, filters)
-    print("done — %d matching bindings (%d call sites scanned)" % (found, len(seen)), flush=True)
+    print("done - %d matching bindings (%d call sites scanned)" % (found, len(seen)), flush=True)
     return 0
 
 

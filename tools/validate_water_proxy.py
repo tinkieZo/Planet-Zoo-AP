@@ -1,10 +1,10 @@
-"""validate_water_proxy — LIVE end-to-end check of the water_tools species-block proxy.
+"""validate_water_proxy - LIVE end-to-end check of the water_tools species-block proxy.
 
 Installs the real PermitGate, gates the water_tools-gated aquatic species (nile_hippo + saltwater_croc),
 resolves their CURRENT-session purchase handles (via the research map), and holds the block so you can
-verify in-game. Phase 1 (~50s): both BLOCKED — try to buy Hippopotamus + Saltwater Crocodile (the buy
+verify in-game. Phase 1 (~50s): both BLOCKED - try to buy Hippopotamus + Saltwater Crocodile (the buy
 should do NOTHING, no spend) and a control species like Plains Zebra (should buy normally). Phase 2
-(~35s): proxy reconciles as if water_tools (+ the croc permit) arrived -> both UNBLOCKED — buying works.
+(~35s): proxy reconciles as if water_tools (+ the croc permit) arrived -> both UNBLOCKED - buying works.
 Restores the hook on exit (no permanent change).
 
     python -m tools.validate_water_proxy
@@ -24,7 +24,7 @@ GATED = ["nile_hippo", "saltwater_croc"]
 def main() -> int:
     s = MemoryScanner("PlanetZoo.exe")
     if not s.attach():
-        print("not attached — is the game running with a zoo loaded?"); return 1
+        print("not attached - is the game running with a zoo loaded?"); return 1
     gate = PermitGate(s)
     gate.set_gated(GATED)
     if not gate.ensure_installed():
@@ -36,7 +36,7 @@ def main() -> int:
     print("  blocked handles = %s" % [hex(h) for h in handles], flush=True)
     if not handles:
         print("  WARNING: no handles resolved (species not in this zoo's research map?). The gate can't\n"
-              "  block species it can't resolve — load/visit a zoo where these species exist, or check\n"
+              "  block species it can't resolve - load/visit a zoo where these species exist, or check\n"
               "  research.SPECIES_WELFARE_ITEM. Restoring.", flush=True)
         gate.shutdown(); return 0
     try:
@@ -44,7 +44,7 @@ def main() -> int:
         print(">>> Try to BUY: Hippopotamus + Saltwater Crocodile -> should DO NOTHING (no spend).", flush=True)
         print(">>> Control: buy a Plains Zebra (not gated) -> should buy NORMALLY.", flush=True)
         time.sleep(50)
-        print("\n=== PHASE 2 (UNBLOCKED, ~35s) — proxy now sees water_tools (+ permit) as received ===", flush=True)
+        print("\n=== PHASE 2 (UNBLOCKED, ~35s) - proxy now sees water_tools (+ permit) as received ===", flush=True)
         gate.reconcile(set(GATED))  # mark both satisfied -> blocked set empty
         print("  blocked handles now = %s (expect empty)" % [hex(h) for h in gate._blocked_handles()], flush=True)
         print(">>> Try to BUY Hippopotamus + Saltwater Crocodile again -> should buy NORMALLY now.", flush=True)

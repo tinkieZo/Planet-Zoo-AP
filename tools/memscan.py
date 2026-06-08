@@ -1,4 +1,4 @@
-"""memscan — an interactive memory scanner that replaces Cheat Engine for the
+"""memscan - an interactive memory scanner that replaces Cheat Engine for the
 A2 spike. You operate the game and report values; this tool finds the addresses,
 derives a patch-stable pointer chain, tests writes, and saves entries into
 ``pz_ap_client/memory/anchors.json``.
@@ -455,7 +455,7 @@ def _cmd_read(session: Session, args: List[str]) -> None:
 def _cmd_write(session: Session, args: List[str]) -> None:
     addr = _addr(args[0])
     session.scanner.write_bytes(addr, pack(session.type_, args[1]))
-    print(f"wrote {args[1]} ({session.type_}) to 0x{addr:X} — check the game HUD")
+    print(f"wrote {args[1]} ({session.type_}) to 0x{addr:X} - check the game HUD")
 
 
 def _cmd_ptrscan(session: Session, args: List[str]) -> None:
@@ -477,7 +477,7 @@ def _cmd_save(session: Session, args: List[str]) -> None:
     name, addr, notes = args[0], _addr(args[1]), " ".join(args[2:])
     chains = pointer_scan(session.scanner, addr)
     if not chains:
-        print("  no pointer chain found — not saved. Resolve manually (CE code signature).")
+        print("  no pointer chain found - not saved. Resolve manually (CE code signature).")
         return
     best = min(chains, key=len)  # shortest chain = most robust
     save_anchor(name, session.type_, best, notes)

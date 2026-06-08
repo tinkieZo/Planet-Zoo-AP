@@ -1,4 +1,4 @@
-"""rules_capture_load — capture the scenario-RULES object at scenario LOAD via SetEnableTerrain, save a dump.
+"""rules_capture_load - capture the scenario-RULES object at scenario LOAD via SetEnableTerrain, save a dump.
 
 The scenario setup configures rules at load; SetEnableTerrain (0x145DDC510) writes the rules object at
 0x145DDC649 `mov byte [rcx+0x6a1],al` (rcx = rules = scriptZoo+0x48). We hook that write, capture rcx,

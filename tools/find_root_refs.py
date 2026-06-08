@@ -1,6 +1,6 @@
-"""find_root_refs — find code instructions that reference the anchor-chain root globals.
+"""find_root_refs - find code instructions that reference the anchor-chain root globals.
 
-The anchor pointer chains start at module globals base+0x2944690 / base+0x29446A0 — raw RVAs that shift on
+The anchor pointer chains start at module globals base+0x2944690 / base+0x29446A0 - raw RVAs that shift on
 a patch. To resolve them by signature instead, we need a code site that loads a root (or a near-root
 cluster global) via `lea/mov reg,[rip+disp]`; signaturing that instruction (wildcarding the disp) +
 RIP-resolving recovers the address wherever a patch moves it. This is how signatures.ROOT_CLUSTER was
@@ -8,10 +8,10 @@ built: a unique ref to the near-root cluster global base+0x2944450, plus a fixed
 
 Two scan modes (re-run either if a future patch breaks the ROOT_CLUSTER signature and it needs re-deriving):
 
-  (default)  byte-scan — fast hand-rolled match of 7-byte REX.W lea/mov/cmp `[rip+disp32]`; reports any ref
+  (default)  byte-scan - fast hand-rolled match of 7-byte REX.W lea/mov/cmp `[rip+disp32]`; reports any ref
              landing within +-0x800 of a root, which reveals *near-root cluster globals* (a table base +
              offset). This proximity match is the mode that surfaced base+0x2944450.
-  --disasm   capstone — disassembles .text and computes the true target of ANY rip-relative operand
+  --disasm   capstone - disassembles .text and computes the true target of ANY rip-relative operand
              (non-REX movs, trailing-immediate instrs, cmp/add/...), but reports only EXACT root refs.
              More thorough per-instruction, but blind to near-root globals (the roots aren't directly
              referenced), so it complements rather than supersedes the byte-scan.
@@ -114,7 +114,7 @@ def _scan_disasm_chunk(md, data, addr, chunk, base, targets, found) -> None:
 def _scan_disasm(s, base, targets):
     """Disassemble .text and record exact rip-relative refs to a root (any opcode/length)."""
     va, size = text_section(s, base)
-    print("# .text rva=0x%X size=0x%X — disassembling for RIP refs to roots..." % (va, size), flush=True)
+    print("# .text rva=0x%X size=0x%X - disassembling for RIP refs to roots..." % (va, size), flush=True)
     found = {name: [] for name in targets.values()}
     md = capstone.Cs(capstone.CS_ARCH_X86, capstone.CS_MODE_64)
     md.detail = True

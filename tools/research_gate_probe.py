@@ -1,4 +1,4 @@
-"""research_gate_probe — validate the research-state gate mechanism SAFELY (no code hook).
+"""research_gate_probe - validate the research-state gate mechanism SAFELY (no code hook).
 
 Three things to learn before wiring ResearchGate:
   1. Does forcing a record's status byte to 0 (NotStarted) make it un-researchable in the UI?
@@ -49,7 +49,7 @@ def _cmd_watch(s, r) -> int:
     if not found:
         print("item not found"); return 1
     it, _, _, cat, rec_addr = found
-    print("watching item 0x%X (cat %d) record @0x%X for %ds — change the research in-game"
+    print("watching item 0x%X (cat %d) record @0x%X for %ds - change the research in-game"
           % (it, cat, rec_addr, secs))
     prev = None
     end = time.time() + secs

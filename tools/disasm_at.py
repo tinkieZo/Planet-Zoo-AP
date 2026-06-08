@@ -1,4 +1,4 @@
-"""disasm_at — disassemble a window around given VAs (context for an xref hit).
+"""disasm_at - disassemble a window around given VAs (context for an xref hit).
 
     python -m tools.disasm_at 0x140B45D9A 0x1400B25E1 [before=0x40] [after=0xA0]
 """

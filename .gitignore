@@ -13,7 +13,7 @@ vendor/
 *.log
 .DS_Store
 
-# RE-tool scan caches / state (written by tools/ — all regenerable, never commit).
+# RE-tool scan caches / state (written by tools/ - all regenerable, never commit).
 # NB: tools/.pz_module.bin alone is a ~330 MB dump of the game module.
 *.bin
 *.npy
@@ -24,7 +24,7 @@ vendor/
 # Test cache
 .pytest_cache/
 
-# Archived RE dead-ends — local history only (see tools/_attic/README.md).
+# Archived RE dead-ends - local history only (see tools/_attic/README.md).
 # Remove this line instead if you'd rather commit them to preserve the RE journey.
 tools/_attic/
 

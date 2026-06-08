@@ -1,4 +1,4 @@
-"""staff_train_capture — capture a live keeper object + inspect its training structure.
+"""staff_train_capture - capture a live keeper object + inspect its training structure.
 
 GetStaffMemberCurrentTrainingLevel (0x146B1B6F0) getargs the staff member into r15 (set at 0x146B1B76D),
 then reads its training: trainingComp = [keeper+0x100]; map @ trainingComp+0x400 (entry+8 = current level

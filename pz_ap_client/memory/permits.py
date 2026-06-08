@@ -1,4 +1,4 @@
-"""PermitGate — memory-enforced, per-species animal-purchase gate (A3 permits).
+"""PermitGate - memory-enforced, per-species animal-purchase gate (A3 permits).
 
 Planet Zoo has no mod API and the player must not be trusted to honor a soft lock,
 so a ``species_unlock`` permit is enforced physically: until the permit arrives, the
@@ -9,13 +9,13 @@ SPECIES handle ``[rbx+0x10]`` against a client-written blocked set; a match jump
 the fn's fail-return (0x14A0894B7) so the purchase aborts with no animal spawned.
 
 Validated live (2026-06-01): blocking the common-warthog handle made every warthog
-buy-click a no-op while a zebra bought normally — per-species, memory-enforced.
+buy-click a no-op while a zebra bought normally - per-species, memory-enforced.
 
 Model: ``set_gated(keys)`` declares the species that REQUIRE a permit (the AP world's
 randomized set); ``unlock(key)`` records a received permit. The blocked set written to
 the hook = gated - unlocked, intersected with the species we have a listing handle for.
 Species whose handle isn't mapped yet are skipped with a one-time warning (the hook is
-proven; only the handle map is incomplete — see SPECIES_LISTING_HANDLES).
+proven; only the handle map is incomplete - see SPECIES_LISTING_HANDLES).
 
 Safe: a software detour can't crash the game even if leaked; ``shutdown()`` restores
 the site. Degrades to a no-op if pymem / the game / the site aren't available.
@@ -38,7 +38,7 @@ PERMIT_ORIG = bytes.fromhex("0fb68310020000")   # movzx eax,byte[rbx+0x210] (7B,
 PERMIT_FAIL_DELTA = 0x2E                          # site - fail-return (0x14A0894E5 - 0x14A0894B7)
 
 # NOTE: the species HANDLE used by both the Animal-Exchange listing ([rec+0x10]) and the
-# research record ([rec+0x10]) is a per-SESSION runtime index — restart-validation (2026-06-01)
+# research record ([rec+0x10]) is a per-SESSION runtime index - restart-validation (2026-06-01)
 # proved it changes across a game restart (zebra 0x30A2->0x309D). So we do NOT hardcode handles;
 # the gate resolves each gated species' CURRENT-session handle from the research map via its
 # stable welfare research-item id (ResearchReader.current_handle -> see research.SPECIES_WELFARE_ITEM).
@@ -65,7 +65,7 @@ class PermitGate:
         from .signatures import resolve_hook
         resolved = resolve_hook(self.scanner, "permit")
         if resolved is None:
-            logger.warning("permit: hook site unresolved (RVA stale + AOB miss — game patched?); not installing")
+            logger.warning("permit: hook site unresolved (RVA stale + AOB miss - game patched?); not installing")
             return False
         site, orig = resolved
         try:
@@ -109,7 +109,7 @@ class PermitGate:
 
     def reconcile(self, unlocked_keys: Iterable[str]) -> bool:
         """Set the held-permit set to exactly ``unlocked_keys`` (the full set of
-        received species_unlock permits) and resync. Idempotent and authoritative —
+        received species_unlock permits) and resync. Idempotent and authoritative -
         the client calls this each tick from its complete received-items list, so the
         gate is correct across restarts without depending on the cumulative item
         high-water mark. Returns True if installed + synced."""
@@ -138,7 +138,7 @@ class PermitGate:
                 if key not in self._warned_unmapped:
                     self._warned_unmapped.add(key)
                     logger.warning("permit: can't resolve a current handle for gated species %r "
-                                   "— add its welfare item id to research.SPECIES_WELFARE_ITEM "
+                                   "- add its welfare item id to research.SPECIES_WELFARE_ITEM "
                                    "(capture via tools/capture_species.py)", key)
                 continue
             out.append(h)
@@ -153,7 +153,7 @@ class PermitGate:
         if len(handles) > PERMIT_BLOCKED_MAX:
             if not self._warned_overflow:
                 self._warned_overflow = True
-                logger.error("permit: %d blocked species exceeds capacity %d — extras unguarded; "
+                logger.error("permit: %d blocked species exceeds capacity %d - extras unguarded; "
                              "raise PERMIT_BLOCKED_MAX", len(handles), PERMIT_BLOCKED_MAX)
             handles = handles[:PERMIT_BLOCKED_MAX]
         try:

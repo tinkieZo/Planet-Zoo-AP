@@ -1,7 +1,7 @@
 """Code-injection / detour primitives for the hooking client.
 
 The read/write anchor layer can't observe dynamically-managed events (animal
-births, etc.) — those objects have no restart-stable address (see the A2 spike).
+births, etc.) - those objects have no restart-stable address (see the A2 spike).
 The robust route, proven in tools/inject_poc.py + tools/hook_poc.py, is to detour
 a STABLE code instruction: redirect it to an allocated trampoline that records the
 event into a scratch region the client polls, then runs the original instruction
@@ -237,7 +237,7 @@ def make_permit_trampoline(region: int, scratch: int, resume_addr: int, fail_add
 
 # Scratch layout for the facility PLACEMENT-block hook (mirrors the permit gate). The
 # gated id here is a building/blueprint DEFINITION id (a content-def id, expected to be
-# content-stable across restarts — unlike the per-session species handle the permit gate
+# content-stable across restarts - unlike the per-session species handle the permit gate
 # uses; verify on capture). Layout within the 0x40 scratch block:
 #   [scratch + 0x00]  u32 blocked_count (client writes; number of blocked facility def-ids)
 #   [scratch + 0x08]  u32[FACILITY_BLOCKED_MAX] blocked facility def-ids (client writes)
@@ -256,7 +256,7 @@ FACILITY_DEFID_OFF = 0x10      # [<reg>+0x10] = building def-id (placeholder; co
 
 def make_facility_gate(region: int, scratch: int, resume_addr: int, fail_addr: int,
                        original: bytes, defid_off: int = FACILITY_DEFID_OFF) -> bytes:
-    """Conditional-abort detour for the building-PLACEMENT commit executor — the facility
+    """Conditional-abort detour for the building-PLACEMENT commit executor - the facility
     gate (research_centre / vet_surgery / workshop / trade_centre). Structurally identical
     to ``make_permit_trampoline``: at the hook a register (assumed rbx) points at the
     building/blueprint object; its def-id at ``[rbx+defid_off]`` is compared against the
@@ -317,7 +317,7 @@ def make_release_gate(region: int, scratch: int, resume_addr: int, original: byt
     entry `mov [rsp+0x10],rbx`). scratch+0 = u32 release count, scratch+4 = u32 LOCK flag
     (client-written: 1 = conservation program locked). At the function entry rsp is clean
     (only the return addr), so when LOCKED we abort the whole release with `xor eax,eax; ret`
-    (no release, no count) — the conservation-program AP gate. When UNLOCKED we count the
+    (no release, no count) - the conservation-program AP gate. When UNLOCKED we count the
     release, run the rsp-relative original, and jmp back. rax is caller-scratch at entry
     (not a param), so clobbering it is safe."""
     body = bytearray()
@@ -376,7 +376,7 @@ PRESENCE_LOG_RBP = 0x108         # u64 last manager pointer (rbp) the fill was s
 
 def make_presence_gate(region: int, scratch: int, resume_addr: int, original: bytes) -> bytes:
     """Clean reversible facility-presence gate. Hooks the SHARED cache-FILL write that marks a
-    facility present — `mov byte [rcx+rax],1` @ 0x149E94863 (rcx=slot, rax=flag array loaded just
+    facility present - `mov byte [rcx+rax],1` @ 0x149E94863 (rcx=slot, rax=flag array loaded just
     above by `mov rax,[rbp+0x390]`, so rbp = the component MANAGER being filled). scratch = a
     client-written set of gated manager pointers (count @ +0, u64 ptrs @ +8). If rbp is in the set
     the fill stores 0 (that facility reads as ABSENT -> its button greys natively, e.g. "you need a
@@ -442,7 +442,7 @@ def make_research_gate(region: int, scratch: int, resume_addr: int, original: by
     """Category-selective skip-the-status-write gate for research. Two uses:
       * COMPLETION block: `mov byte [r14+0x49],3` @ 0x140E48F82 (record in r14, cat_modrm 0x4E).
       * START block:      `mov byte [r15+0x49],2` @ 0x140E461C6 (record in r15, cat_modrm 0x4F)
-        — preferred: research never enters "Researching", so no bar/level/completion at all.
+        - preferred: research never enters "Researching", so no bar/level/completion at all.
     Reads the record's category ([reg+0x3C] via ``cat_modrm``); if it's in the client-written
     gated set (scratch), SKIPS the status write (research never advances to that status) and
     auto-resumes normal behavior once the facility item arrives; else performs the original
@@ -486,9 +486,9 @@ def make_research_progress_gate(region: int, scratch: int, resume_addr: int, ori
     `comiss xmm0,threshold` fails -> the completion block is skipped. Net effect: a gated
     research's bar never fills and it never completes (no level-up, reward, or AP check), held at
     the GAME's own frame rate so there's no flicker/race. Runs unconditionally for non-gated
-    (normal store). Used at BOTH stores in the tick — the accumulated progress [r14+0x20]
-    (0x140E48E93) and the displayed bar [r14+0x1c] (0x140E48EE0) — so progress is blocked AND the
-    bar reads empty. Preserves FLAGS (pushfq/popfq — the display-store site has a later jp/jne
+    (normal store). Used at BOTH stores in the tick - the accumulated progress [r14+0x20]
+    (0x140E48E93) and the displayed bar [r14+0x1c] (0x140E48EE0) - so progress is blocked AND the
+    bar reads empty. Preserves FLAGS (pushfq/popfq - the display-store site has a later jp/jne
     depending on a prior ucomiss) and rax (= threshold ptr)/rcx/rdx. Same scratch layout as the
     completion gate: [+0x00] u32 gated-cat count, [+0x08] gated category bytes."""
     body = bytearray()
@@ -591,16 +591,16 @@ def make_birth_trampoline(scratch: int, resume_addr: int, give_birth_target: int
     """Trampoline for the Planet Zoo birth hook (site = the give-birth `call`).
 
     The hooked instruction is a **relative** ``call rel32`` (``E8 ...``), so its
-    bytes can't be relocated by copying — the trampoline instead re-issues the
+    bytes can't be relocated by copying - the trampoline instead re-issues the
     call to the same absolute ``give_birth_target`` (computed from the original
     rel32 at install time). Sequence:
 
       1. record the species index (``r14w``, live at the hook) into the ring and
-         bump the birth counter — using only rax/r11 (push/pop) + flags, so the
+         bump the birth counter - using only rax/r11 (push/pop) + flags, so the
          give-birth argument registers (rcx/rdx/r8/r9) and stack are untouched;
-      2. ``call give_birth_target`` — real give-birth runs with the original
+      2. ``call give_birth_target`` - real give-birth runs with the original
          arguments and stack alignment (rsp is identical to the original site);
-      3. ``jmp resume_addr`` — continue at the instruction after the original call.
+      3. ``jmp resume_addr`` - continue at the instruction after the original call.
 
     The client polls ``u32[scratch]``; on an increase of N it reads the last N
     species from the ring at ``scratch + BIRTH_RING_OFF`` (see ``read_birth_events``).
@@ -630,7 +630,7 @@ def make_birth_trampoline(scratch: int, resume_addr: int, give_birth_target: int
 
 # Scratch layout for the add-animal INSERT instrument:
 #   [scratch + 0x00]    u32  monotonic insert count (poll cursor)
-#   [scratch + RING_OFF] record[INSERT_RING], each INSERT_REC (0x40) bytes — 8 qwords:
+#   [scratch + RING_OFF] record[INSERT_RING], each INSERT_REC (0x40) bytes - 8 qwords:
 #       handle(rsi), container(rbx), [rbp+0xd8], [rbp+0xe0], [rbp+0xf8], rbp, r13, r14
 # The [rbp+...] slots / regs are candidate ANIMAL-OBJECT pointers so the client can
 # read a newborn/age field to tell a BIRTH from a market BUY (path-independent).
@@ -701,7 +701,7 @@ def read_insert_events(scanner, scratch: int, cursor: int) -> "tuple[int, List[d
 def read_birth_events(scanner, scratch: int, cursor: int) -> "tuple[int, List[int]]":
     """Drain new birth events recorded by ``make_birth_trampoline``.
 
-    Returns ``(new_cursor, species_indices)`` — the species index (r14w value)
+    Returns ``(new_cursor, species_indices)`` - the species index (r14w value)
     for each birth since ``cursor``. Caps the drain at ``BIRTH_RING`` (ring size);
     if more than that piled up between polls, older entries were overwritten and
     are reported lost. Map each index to a species_key via the per-species table.

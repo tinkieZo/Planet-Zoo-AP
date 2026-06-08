@@ -1,16 +1,16 @@
-"""signatures — central registry of every patch-sensitive address the client depends on + a self-check.
+"""signatures - central registry of every patch-sensitive address the client depends on + a self-check.
 
 Single source of truth for the hardcoded sites scattered across the gate/detector modules, plus a
 preflight that, on attach, resolves every site and reports a health table. Two jobs:
 
-  * GO/NO-GO preflight — never run gates/detours against addresses that don't resolve sane (which would
+  * GO/NO-GO preflight - never run gates/detours against addresses that don't resolve sane (which would
     corrupt memory); and
-  * patch compass — when a Frontier update shifts the binary, the self-check tells you EXACTLY which of
+  * patch compass - when a Frontier update shifts the binary, the self-check tells you EXACTLY which of
     the ~dozen sites broke, so re-RE is targeted (using the recipes in docs/memory), not from scratch.
 
 Resolution strategy per site (most→least patch-robust):
   1. script-bound natives -> resolve by NAME via the binding registrar (names are stable across patches)
-     [release/permit are script-bound; registrar walk is in tools/dump_bindings.py — wire-in is future];
+     [release/permit are script-bound; registrar walk is in tools/dump_bindings.py - wire-in is future];
   2. AOB signature (opcode/modrm/struct-offsets kept, rel32/RIP-disp wildcarded) -> auto-relocates;
   3. raw RVA + expected ORIG bytes -> intact-check only (detects breakage, doesn't auto-relocate).
 Today every hook ships (3) (RVA+ORIG, what the gates use) and, where a unique pattern exists, (2).
@@ -126,7 +126,7 @@ def resolve_hook(scanner, name: str) -> Optional[Tuple[int, bytes]]:
     return None
 
 
-# The anchor-chain root globals (base+0x2944690 / 0x29446A0) are NOT directly code-referenced — they're
+# The anchor-chain root globals (base+0x2944690 / 0x29446A0) are NOT directly code-referenced - they're
 # entries in a .data cluster reached via a near-root global + offset. We harden them by signaturing a
 # UNIQUE code ref to a near-root cluster global (base+0x2944450) and applying the fixed cluster delta;
 # the whole cluster shifts as a block on a patch, so the deltas hold while the signature re-finds the ref.
@@ -189,9 +189,9 @@ def check_hooks(scanner) -> List[CheckResult]:
             elif len(hits) > 1:
                 out.append(CheckResult("hook", h.name, "broken", "AOB ambiguous (%d hits)" % len(hits)))
             else:
-                out.append(CheckResult("hook", h.name, "broken", "ORIG changed + AOB not found — re-RE"))
+                out.append(CheckResult("hook", h.name, "broken", "ORIG changed + AOB not found - re-RE"))
         else:
-            out.append(CheckResult("hook", h.name, "broken", "ORIG mismatch + no AOB — re-RE (got %s)" % cur.hex()))
+            out.append(CheckResult("hook", h.name, "broken", "ORIG mismatch + no AOB - re-RE (got %s)" % cur.hex()))
     return out
 
 
@@ -229,7 +229,7 @@ def check_research(scanner) -> List[CheckResult]:
 
 
 def check_terrain(scanner) -> List[CheckResult]:
-    # MAIN2_CODE lives in the writable VM heap, not the module — reuse TerrainGate's writable-region scan.
+    # MAIN2_CODE lives in the writable VM heap, not the module - reuse TerrainGate's writable-region scan.
     try:
         from .terrain import TerrainGate
         found = len(TerrainGate(scanner)._find())
@@ -245,7 +245,7 @@ def check_roots(scanner) -> List[CheckResult]:
     hits = module_aob_scan(scanner, ROOT_CLUSTER["aob"])
     if len(hits) != 1:
         return [CheckResult("root", "anchor_roots", "broken",
-                            "cluster signature %s (%d hits) — anchors fall back to raw RVA" %
+                            "cluster signature %s (%d hits) - anchors fall back to raw RVA" %
                             ("ambiguous" if hits else "not found", len(hits)))]
     out = []
     for rva in ROOT_CLUSTER["root_deltas"]:
@@ -254,7 +254,7 @@ def check_roots(scanner) -> List[CheckResult]:
             out.append(CheckResult("root", "root_0x%X" % rva, "ok", "signature==RVA @0x%X" % addr))
         else:
             out.append(CheckResult("root", "root_0x%X" % rva, "relocated",
-                                   "signature->0x%X (RVA 0x%X stale — anchors will self-correct)" % (addr, base + rva)))
+                                   "signature->0x%X (RVA 0x%X stale - anchors will self-correct)" % (addr, base + rva)))
     return out
 
 

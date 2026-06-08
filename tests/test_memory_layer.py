@@ -93,7 +93,7 @@ def main() -> None:
 
 
 def test_memory_layer() -> None:
-    """pytest entry point — runs the memory-layer checks (each asserts via _check)."""
+    """pytest entry point - runs the memory-layer checks (each asserts via _check)."""
     main()
 
 

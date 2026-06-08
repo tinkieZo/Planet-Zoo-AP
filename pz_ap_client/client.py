@@ -1,13 +1,13 @@
-"""Planet Zoo Archipelago client — A1 shell.
+"""Planet Zoo Archipelago client - A1 shell.
 
 Subclasses Archipelago's ``CommonContext`` (the network layer is free) and adds:
 
-  * a **manual trigger console** — type ``/pz_check <location>`` to fire a check,
+  * a **manual trigger console** - type ``/pz_check <location>`` to fire a check,
     standing in for the game until the A2 memory layer lands;
-  * **idempotent item application** — received items are applied through an
+  * **idempotent item application** - received items are applied through an
     ``EffectApplier`` exactly once each, tracked by a persisted high-water mark
     (see :mod:`pz_ap_client.state`);
-  * **goal detection** — derived from ``slot_data.goal`` mapped onto our own
+  * **goal detection** - derived from ``slot_data.goal`` mapped onto our own
     location IDs; sends ``CLIENT_GOAL`` when satisfied.
 
 Run it:  python -m pz_ap_client.client <server:port> --name <slot>
@@ -29,7 +29,7 @@ if TYPE_CHECKING:
     from .memory.triggers import MemoryTriggerSource
 
 # Don't let Archipelago's ModuleUpdate prompt to pip-install missing optional
-# deps (e.g. kivy) at import time — that blocks on input() in a headless run.
+# deps (e.g. kivy) at import time - that blocks on input() in a headless run.
 os.environ.setdefault("SKIP_REQUIREMENTS_UPDATE", "1")
 
 # Make the vendored Archipelago tree importable.
@@ -68,7 +68,7 @@ GAME_NAME = "Planet Zoo"
 
 
 class PZCommandProcessor(ClientCommandProcessor):
-    """Manual trigger console — the A1 stand-in for the running game."""
+    """Manual trigger console - the A1 stand-in for the running game."""
 
     # Narrow ctx from CommonContext to PZContext so the type checker sees our
     # subclass methods (resolve_location, report_check, game_data, ...).
@@ -133,15 +133,15 @@ class PZCommandProcessor(ClientCommandProcessor):
             loc = self.ctx.game_data.location_by_id.get(loc_id)
             mark = "[x]" if loc_id in have else "[ ]"
             self.output(f"  {mark} {loc.name if loc else loc_id}")
-        self.output(f"Goal: {len(have)}/{len(need)} — {'COMPLETE' if self.ctx.finished_game else 'in progress'}")
+        self.output(f"Goal: {len(have)}/{len(need)} - {'COMPLETE' if self.ctx.finished_game else 'in progress'}")
         return True
 
 
 class PZContext(CommonContext):
     # Stay game-agnostic at construction (game="") so CommonContext.__init__ doesn't look up a LOCAL
-    # "Planet Zoo" data package — that needs the APWorld (Track B), which this client doesn't bundle
+    # "Planet Zoo" data package - that needs the APWorld (Track B), which this client doesn't bundle
     # (it would KeyError). We still authenticate AS Planet Zoo by passing game=GAME_NAME explicitly in
-    # send_connect() — the server validates that string against the slot, and empty-game "match any"
+    # send_connect() - the server validates that string against the slot, and empty-game "match any"
     # is rejected as InvalidGame in AP 0.6.x. After Connected we adopt the real game name from
     # slot_info; our own item/location lookups come from data.json, not the network data package.
     game = ""
@@ -203,9 +203,9 @@ class PZContext(CommonContext):
         self.permit_gate = PermitGate(scanner)
         # Purchase-block universe = every species whose gate has a token we enforce by
         # purchase-block: a species permit (species_unlock), OR a tool we can't gate
-        # natively (water_tools — its in-game tool button lives in the data-driven Cobra
+        # natively (water_tools - its in-game tool button lives in the data-driven Cobra
         # UI we can't reach; see docs/OVERNIGHT_2026-06-03.md). Facility tokens
-        # (research_centre/workshop) are NOT in here — they have their own gates.
+        # (research_centre/workshop) are NOT in here - they have their own gates.
         self.permit_gate.set_gated(self.game_data.purchase_universe())
         # All facility_unlock keys in this seed, split by enforcement mechanism:
         #   research_centre / workshop -> ResearchGate (research-start block by category)
@@ -216,17 +216,17 @@ class PZContext(CommonContext):
         placement_fac = all_fac - research_fac
         # Trigger source owns the ReleaseDetector (release-gate) + a ResearchReader the gate reuses.
         self.trigger_source = MemoryTriggerSource(scanner, anchors, self.game_data, self.report_check)
-        # Facility (placement) gate — only the non-research facilities (trade_centre, vet_surgery).
+        # Facility (placement) gate - only the non-research facilities (trade_centre, vet_surgery).
         self.facility_gate = FacilityGate(scanner)
         self.facility_gate.set_gated(placement_fac)
-        # Research gate — research_centre / workshop, enforced by the research-start hook (hard
+        # Research gate - research_centre / workshop, enforced by the research-start hook (hard
         # enforcement: no progress/completion, resets in-progress). The PresenceGate adds the
         # native greyed-button UX (the facility reads as not-built) on the same gated set.
         self.research_gate = ResearchGate(reader=self.trigger_source.research)
         self.research_gate.set_gated(research_fac)
         self.presence_gate = PresenceGate(scanner)
         self.presence_gate.set_gated(research_fac)
-        # Terrain-tool gate — native greying of the terrain-edit menu tools (water_tools), by patching
+        # Terrain-tool gate - native greying of the terrain-edit menu tools (water_tools), by patching
         # the BuildCategories Lua bytecode. The real enforcement of the tool item (vs the PermitGate
         # purchase-block proxy, which stays as belt-and-suspenders for the water-gated species).
         self.terrain_gate = TerrainGate(scanner)
@@ -248,7 +248,7 @@ class PZContext(CommonContext):
         unfilled = anchors.unfilled()
         if unfilled:
             logger.warning("Memory mode: %d anchors not yet filled in (%s). "
-                           "Run the A2 spike — see docs/A2_SPIKE_PLAYBOOK.md.",
+                           "Run the A2 spike - see docs/A2_SPIKE_PLAYBOOK.md.",
                            len(unfilled), ", ".join(unfilled))
 
     async def poll_loop(self) -> None:
@@ -359,7 +359,7 @@ class PZContext(CommonContext):
             if item is None:
                 # Not one of ours (e.g. an Archipelago-global item); skip but
                 # still advance so we don't get stuck re-trying it forever.
-                logger.warning("Received unknown item id %s — skipping", net_item.item)
+                logger.warning("Received unknown item id %s - skipping", net_item.item)
                 self.state.set(seed, self.slot, idx + 1)
                 continue
             if not self.applier.apply(item):
@@ -376,7 +376,7 @@ class PZContext(CommonContext):
     def _reconcile_permits(self) -> None:
         """Drive the purchase gate from the COMPLETE set of received items, evaluating each
         species' FULL gate expression (AND-semantics over its purchase tokens). A species is
-        unblocked only when every purchase token in its gate is satisfied — so nile_hippo
+        unblocked only when every purchase token in its gate is satisfied - so nile_hippo
         unblocks on water_tools, and saltwater_croc only on water_tools AND its permit.
         Authoritative + idempotent (restart-correct; doesn't rely on the item high-water mark);
         the gate re-syncs only on change."""
@@ -394,7 +394,7 @@ class PZContext(CommonContext):
         """Drive the release-to-wild gate from the received set, authoritatively (so it's
         correct across restarts, like permits). Locked until the Conservation Program
         (program_unlock) item is received. Skip entirely in a seed that neither gates
-        conservation nor needs the release counter — so we never block a player whose
+        conservation nor needs the release counter - so we never block a player whose
         seed has no conservation feature."""
         if self.trigger_source is None or not (self._conservation_gated or self._conservation_counted):
             return
@@ -446,7 +446,7 @@ class PZContext(CommonContext):
 
     def _reconcile_presence(self) -> None:
         """Drive the native greyed-button presence gate from the COMPLETE set of received research
-        facilities — the UX twin of _reconcile_research (research_centre greys the research button,
+        facilities - the UX twin of _reconcile_research (research_centre greys the research button,
         workshop disables mechanic research). Authoritative + idempotent; no-op if no research
         facilities are gated this seed."""
         if self.presence_gate is None or not self.presence_gate.gated_facilities:
@@ -465,7 +465,7 @@ class PZContext(CommonContext):
 
     def _run_preflight(self) -> None:
         """Once, on first successful attach: run the signatures self-check and log a health report.
-        Fail-loud — if a Frontier patch shifted/changed any hook, anchor, or the terrain bytecode, this
+        Fail-loud - if a Frontier patch shifted/changed any hook, anchor, or the terrain bytecode, this
         names exactly what broke so re-RE is targeted. Best-effort; never raises into the poll loop."""
         if self._preflight_done or self.trigger_source is None:
             return
@@ -486,9 +486,9 @@ class PZContext(CommonContext):
             ok = len(results) - len(bad)
             logger.info("preflight self-check: %d/%d sites OK", ok, len(results))
             for r in reloc:
-                logger.warning("preflight: %s AUTO-RELOCATED (%s) — game likely patched; verify", r.name, r.detail)
+                logger.warning("preflight: %s AUTO-RELOCATED (%s) - game likely patched; verify", r.name, r.detail)
             for r in bad:
-                logger.error("preflight: %s [%s] %s — gate/detection for it may be unreliable", r.name, r.status, r.detail)
+                logger.error("preflight: %s [%s] %s - gate/detection for it may be unreliable", r.name, r.status, r.detail)
         except Exception as e:
             logger.warning("preflight self-check skipped (%s)", e)
 
@@ -575,11 +575,11 @@ def main(args=None):
 
         if gui_enabled:
             # gui_enabled is just "not --nogui"; the Kivy GUI may not be installed (this client ships
-            # headless — no kivy). Fall back to the console UI instead of crashing on its import.
+            # headless - no kivy). Fall back to the console UI instead of crashing on its import.
             try:
                 ctx.run_gui()
             except ImportError as e:
-                logger.info("GUI unavailable (%s) — running headless console. Pass --nogui to skip this.", e)
+                logger.info("GUI unavailable (%s) - running headless console. Pass --nogui to skip this.", e)
         ctx.run_cli()
 
         await ctx.exit_event.wait()
@@ -592,7 +592,7 @@ def main(args=None):
     parser.add_argument("--memory", dest="memory", action="store_true", default=True,
                         help="Attach to the running game: apply items + detect checks via memory (default ON).")
     parser.add_argument("--no-memory", dest="memory", action="store_false",
-                        help="Console-only (A1): don't attach to the game — manual-trigger console for testing.")
+                        help="Console-only (A1): don't attach to the game - manual-trigger console for testing.")
     parser.add_argument("--poll-interval", type=float, default=1.0,
                         help="Seconds between memory poll ticks (default 1.0).")
     parser.add_argument("url", nargs="?", help="Archipelago connection url / address.")

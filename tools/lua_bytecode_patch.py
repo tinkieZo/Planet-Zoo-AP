@@ -1,4 +1,4 @@
-"""lua_bytecode_patch — find TerrainEditUIMode main.2's loaded Lua bytecode + patch a tool's enabled flag.
+"""lua_bytecode_patch - find TerrainEditUIMode main.2's loaded Lua bytecode + patch a tool's enabled flag.
 
 The greying is decided in Lua main.2 (BuildCategories): each tool's `enabled = NOT b<X>Disabled`, one
 `NOT` instruction per tool. This bypasses the (deeply reflection-dispatched) scenario-manager methods by
@@ -6,7 +6,7 @@ patching the bytecode directly: find main.2's 312-byte code array in the VM heap
 from the .ovl), and overwrite one instruction with a constant LOADBOOL to force a tool enabled/disabled.
 Deterministic, reversible, semi-live (effect on next terrain-mode entry).
 
-main.2 SOURCE-flag instructions (byte offsets into the code array) — patching these forces the disabled
+main.2 SOURCE-flag instructions (byte offsets into the code array) - patching these forces the disabled
 flag, so the tool greys WITH the "Disabled by scenario" tooltip (and un-greys cleanly when restored):
   0x08  GETTABLE R4 = bTerrainEditDisabled  (gates sculpt + stamp)   07014000
   0x0C  GETTABLE R5 = bLakeEditDisabled      (gates water)            47414000
@@ -66,7 +66,7 @@ def main() -> int:
             i = data.find(code, i + 1)
     print("found %d copy(ies) of main.2 code: %s" % (len(hits), ", ".join("0x%X" % h for h in hits)), flush=True)
     if not hits:
-        print("not found (bytecode may differ when loaded?). Aborting — no patch."); return 1
+        print("not found (bytecode may differ when loaded?). Aborting - no patch."); return 1
     orig = struct.pack("<I", orig_ins)
     print("patch target: code+0x%X  orig=%s -> %s (LOADBOOL R%d,%d)" % (byteoff, orig.hex(), patch.hex(), reg_a, gate), flush=True)
     try:

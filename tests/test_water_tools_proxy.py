@@ -45,7 +45,7 @@ def test_purchase_tokens(gd) -> None:
            f"african_elephant (start) has NO purchase tokens (got {toks('african_elephant')})")
     _check(toks("lowland_gorilla") == ("permit_lowland_gorilla",),
            f"lowland_gorilla tokens = (permit_lowland_gorilla,) (got {toks('lowland_gorilla')})")
-    # compound gate: a non-purchase token (conservation_program) is NOT purchase-enforced — its own gate handles it
+    # compound gate: a non-purchase token (conservation_program) is NOT purchase-enforced - its own gate handles it
     _check(toks("giant_panda") == ("permit_giant_panda",),
            f"giant_panda tokens exclude conservation_program (got {toks('giant_panda')})")
 
@@ -136,7 +136,7 @@ def test_client_reconcile(gd) -> None:
 
 
 def test_tool_unlock_applies(gd) -> None:
-    """on_tool_unlock must ACKNOWLEDGE (return True) — previously it stalled the whole item
+    """on_tool_unlock must ACKNOWLEDGE (return True) - previously it stalled the whole item
     queue by returning False. Enforcement is the purchase reconcile, not this handler."""
     try:
         from pz_ap_client.memory.applier import MemoryEffectApplier

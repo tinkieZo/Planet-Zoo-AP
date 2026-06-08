@@ -1,4 +1,4 @@
-"""Game-free unit tests for the A3 memory modules (research/permits) — exercises the
+"""Game-free unit tests for the A3 memory modules (research/permits) - exercises the
 real parsing + the restart-stable design (key off the content-stable research-item id,
 resolve the volatile species handle from the map at runtime). No live game needed.
 
@@ -291,7 +291,7 @@ def main() -> None:
 
 
 def test_a3_modules() -> None:
-    """pytest entry point — runs the A3-module checks (each asserts via _check)."""
+    """pytest entry point - runs the A3-module checks (each asserts via _check)."""
     main()
 
 

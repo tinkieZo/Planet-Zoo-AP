@@ -1,4 +1,4 @@
-"""find_method_table — locate IScenarioManager method-table entries (name/header/hash) + their native fn.
+"""find_method_table - locate IScenarioManager method-table entries (name/header/hash) + their native fn.
 
 Frontier interned strings have a header at name-0x10: [04 04 00][len][4-byte hash]. The interface method
 table may reference a method by char-ptr (name), header-ptr (name-0x10), OR by the 4-byte hash. For each

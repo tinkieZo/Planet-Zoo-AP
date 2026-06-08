@@ -1,7 +1,7 @@
 # Packaging the client as a distributable exe (PyInstaller)
 
-Produces a self-contained **one-dir** Windows build of the Planet Zoo Archipelago hooking client —
-the AP network client + the memory/hook layer + a bundled Archipelago — that a player can run without
+Produces a self-contained **one-dir** Windows build of the Planet Zoo Archipelago hooking client -
+the AP network client + the memory/hook layer + a bundled Archipelago - that a player can run without
 installing Python or Archipelago.
 
 ## Prerequisites
@@ -29,7 +29,7 @@ Output: **`dist\pz-ap-client\`** (~85 MB) containing `pz-ap-client.exe` + `_inte
 ### Bundling Archipelago from a different location
 
 By default the build reads AP from `.\vendor\Archipelago`. To bundle an Archipelago install from
-elsewhere (without cloning into `vendor/`), point the build at it — the bundle layout and the frozen
+elsewhere (without cloning into `vendor/`), point the build at it - the bundle layout and the frozen
 client's runtime path are unchanged; only the build-time *source* moves:
 ```powershell
 .\build-exe.ps1 -ApSource D:\Archipelago
@@ -37,7 +37,7 @@ client's runtime path are unchanged; only the build-time *source* moves:
 $env:PZ_AP_SOURCE = 'D:\Archipelago'; .\.venv\Scripts\pyinstaller.exe --noconfirm --clean pz-ap-client.spec
 ```
 The source must be a real Archipelago tree (contain `CommonClient.py`) and version-compatible with the
-client. Note this only relocates the *build* source — inside the finished exe, AP always lives at
+client. Note this only relocates the *build* source - inside the finished exe, AP always lives at
 `_internal\vendor\Archipelago\` (the distributable is self-contained; you don't relocate it after building).
 
 ## How the bundle is structured (and why)
@@ -51,14 +51,14 @@ Archipelago discovers its game "worlds" dynamically at import time by scanning r
   *not* frozen. At startup `client.py` inserts that path onto `sys.path`, so AP imports from real
   files and world-discovery works exactly as from source. `data.json` and `anchors.json` are bundled
   where the code already looks for them (`Path(__file__).parent.parent / data.json`, etc.), so **no
-  source changes were needed** — the existing path logic resolves to the bundle dir when frozen.
+  source changes were needed** - the existing path logic resolves to the bundle dir when frozen.
 
 AP's runtime deps are declared as `hiddenimports` in the spec because the AP code that imports them
 is loaded from data (not statically analyzed). pymem is pulled in via `collect_all`.
 
 For the same reason, the spec force-includes the **entire standard library**
-(`sys.stdlib_module_names`, minus heavy GUI/dev modules like `tkinter`): AP's stdlib imports — e.g.
-`shlex` from `MultiServer` — are invisible to PyInstaller, so whether they get bundled is otherwise
+(`sys.stdlib_module_names`, minus heavy GUI/dev modules like `tkinter`): AP's stdlib imports - e.g.
+`shlex` from `MultiServer` - are invisible to PyInstaller, so whether they get bundled is otherwise
 *incidental* (pulled transitively by some dependency). That works on the machine that happened to
 have the right transitive versions but fails as `No module named '<stdlib>'` on a fresh build
 elsewhere (unpinned-dependency drift). Bundling all of stdlib makes the build deterministic across
@@ -66,7 +66,7 @@ machines.
 
 ## Run the exe
 
-The intended end-user flow is **double-click — no command line**:
+The intended end-user flow is **double-click - no command line**:
 
 1. Start **Planet Zoo** and load a **Challenge** save. The client *attaches* to the running game; it
    does not launch it.
@@ -77,36 +77,36 @@ The intended end-user flow is **double-click — no command line**:
    ```
    then connects and, **by default, attaches to the running game** to apply items + detect checks.
 
-Flags are optional and mainly for testing — anything passed skips the matching prompt:
+Flags are optional and mainly for testing - anything passed skips the matching prompt:
 ```powershell
 # Pre-fill the connection (skips both prompts), still attaches to the game:
 dist\pz-ap-client\pz-ap-client.exe archipelago.gg:38281 --name Player1
 
-# Console-only (A1): connect to AP but DON'T touch the game — manual-trigger console for testing:
+# Console-only (A1): connect to AP but DON'T touch the game - manual-trigger console for testing:
 dist\pz-ap-client\pz-ap-client.exe --name Player1 --no-memory
 ```
 Memory attach (the default) requires `anchors.json` to be populated. On a clean exit the client
 **restores every installed detour**; don't hard-kill it while attached or the game is left patched.
 
-**Headless (no GUI):** the build doesn't bundle Kivy, so there's no graphical connect window — it runs
+**Headless (no GUI):** the build doesn't bundle Kivy, so there's no graphical connect window - it runs
 the AP **console** UI. The startup prompts handle connection; you can also use the `/connect
 <host:port>` command at the prompt. Run without `--nogui` and you'll see a harmless one-line `GUI
 unavailable … running headless console` notice (the client falls back to the console automatically);
 pass `--nogui` to suppress it. First launch is a few seconds while AP discovers its worlds from the
-bundled tree — that's normal.
+bundled tree - that's normal.
 
 ## Validation status (2026-06-04)
 
-- ✅ **Bundle integrity** — `pz-ap-client.exe --help` loads the bundled Archipelago and prints usage.
-- ✅ **Frozen startup + network** — launched against a bogus server, the exe loads/validates
+- ✅ **Bundle integrity** - `pz-ap-client.exe --help` loads the bundled Archipelago and prints usage.
+- ✅ **Frozen startup + network** - launched against a bogus server, the exe loads/validates
   `data.json`, builds the AP `CommonContext`, and connects via the bundled `websockets`
   (`Connecting to … → Connection refused`, as expected), then retries. The hard part (bundling AP)
   works end-to-end.
-- ⏳ **`--memory` live attach** — *not* exercised against the running game on purpose: the first poll
+- ⏳ **`--memory` live attach** - *not* exercised against the running game on purpose: the first poll
   tick installs detour trampolines, and a test that hard-kills the process would leave the live game
   patched. The code path is byte-identical to the source build that was validated live this session,
   and pymem is bundled. Run it against the game with a real server (and exit cleanly) to confirm.
-- ⏳ **Full end-to-end** (generate seed → host → connect → play) — **blocked on the Planet Zoo
+- ⏳ **Full end-to-end** (generate seed → host → connect → play) - **blocked on the Planet Zoo
   APWorld (Track B)**, which doesn't exist yet. Without it, AP can't generate a Planet Zoo seed and a
   server has no "Planet Zoo" slot to authenticate against. Procedure for when the apworld lands:
   1. Drop `planet_zoo.apworld` into `vendor/Archipelago/worlds/` (and into the bundle).

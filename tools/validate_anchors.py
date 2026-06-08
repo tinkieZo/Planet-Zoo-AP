@@ -1,4 +1,4 @@
-"""validate_anchors — restart-robustness test for the A2 anchor chains.
+"""validate_anchors - restart-robustness test for the A2 anchor chains.
 
 The real proof a module_offset chain is patch/restart-stable is to re-resolve it
 in a FRESH process and confirm it still lands on the right value. This harness:

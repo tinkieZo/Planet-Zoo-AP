@@ -1,25 +1,25 @@
-"""TerrainGate — native per-tool terrain-menu gate via Lua bytecode patch.
+"""TerrainGate - native per-tool terrain-menu gate via Lua bytecode patch.
 
 The terrain edit menu's per-tool availability is decided in the Cobra Lua function TerrainEditUIMode
 ``main.2`` (BuildCategories): each tool's ``enabled = not b<X>Disabled``, the ``b<X>Disabled`` flags read
-from the IScenarioManager (deeply reflection-dispatched — see memory/water-tools-gate.md). Rather than
+from the IScenarioManager (deeply reflection-dispatched - see memory/water-tools-gate.md). Rather than
 chase that reflection, we patch ``main.2``'s LOADED bytecode directly: it is loaded verbatim into a
 writable VM heap region, so overwriting one GETTABLE (the source-flag load) with a constant ``LOADBOOL``
-forces that flag — greying the tool WITH the "Disabled by scenario" tooltip (gate) or force-enabling it.
+forces that flag - greying the tool WITH the "Disabled by scenario" tooltip (gate) or force-enabling it.
 
 LIVE-VALIDATED 2026-06-04 (Goodwin House): patching the water flag made the water tool disabled +
-unselectable; restoring re-enabled it. Memory-enforced (not honor-based), reversible, semi-live — the
+unselectable; restoring re-enabled it. Memory-enforced (not honor-based), reversible, semi-live - the
 change takes effect the next time the player enters terrain-edit mode (``main.2`` re-runs on entry).
 
 main.2's 78-instruction code array is found by its byte signature (the VM reloads it fresh per scenario
-load, so its address moves — we re-find on cache miss). Source-flag instructions (byte offsets into the
+load, so its address moves - we re-find on cache miss). Source-flag instructions (byte offsets into the
 code array):
   0x08  GETTABLE R4 = bTerrainEditDisabled  -> gates SCULPT + STAMP (they share this flag)
   0x0C  GETTABLE R5 = bLakeEditDisabled      -> gates WATER
 ``painting`` has no enabled gate in main.2 (always available) so it cannot be greyed this way.
 
 Patch = ``LOADBOOL R<A>, gate, 0`` where gate=1 forces disabled=TRUE (tool greys) when the tool's AP item
-is NOT received, gate=0 forces FALSE (force-enabled) once it is — so the AP item state fully drives
+is NOT received, gate=0 forces FALSE (force-enabled) once it is - so the AP item state fully drives
 availability, overriding the scenario default. Same ``set_gated`` / ``reconcile`` / ``shutdown`` shape as
 the other gates; degrades to a no-op if the bytecode can't be located.
 """
@@ -34,7 +34,7 @@ from typing import Dict, List, Optional
 
 logger = logging.getLogger("PZClient")
 
-# main.2 (TerrainEditUIMode BuildCategories) code array — 78 instr * 4 = 312 bytes, loaded verbatim.
+# main.2 (TerrainEditUIMode BuildCategories) code array - 78 instr * 4 = 312 bytes, loaded verbatim.
 MAIN2_CODE = bytes.fromhex(
     "8b000000cb00000007014000474140009c0180018d814003cb810100ca01c181ca81c182ca01c283"
     "220100001e80008001820200224200001e00008001c20200ca018284ca4143861b020002ca010287"
@@ -45,7 +45,7 @@ MAIN2_CODE = bytes.fromhex(
     "01c20200ca018284ca4143861b028002ca010287cac001038ac0008c8b018000cb810000ca41438d"
     "ca41808dab4180008a80818c870147008c41470300020001a441800126008000"
 )
-# Stable validity prefix (instr 0+1) — never patched, so it marks a live, unpatched-or-patched copy.
+# Stable validity prefix (instr 0+1) - never patched, so it marks a live, unpatched-or-patched copy.
 _SIG_PREFIX = MAIN2_CODE[:8]
 
 # tool_key -> byte offset into the code array of the GETTABLE that loads its disabled flag.
@@ -68,7 +68,7 @@ class _MBI(ctypes.Structure):
 
 
 def _loadbool(reg_a: int, gate: int) -> bytes:
-    """LOADBOOL R<reg_a>, gate, 0  — 4-byte Lua 5.3 instruction."""
+    """LOADBOOL R<reg_a>, gate, 0  - 4-byte Lua 5.3 instruction."""
     return struct.pack("<I", 3 | ((reg_a & 0xFF) << 6) | ((gate & 1) << 23))
 
 

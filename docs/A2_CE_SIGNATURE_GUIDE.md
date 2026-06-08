@@ -1,4 +1,4 @@
-# A2 — Cheat-Engine AOB Signature Guide (robustness pass)
+# A2 - Cheat-Engine AOB Signature Guide (robustness pass)
 
 > Companion to [`A2_SPIKE_PLAYBOOK.md`](A2_SPIKE_PLAYBOOK.md). Use this for the
 > anchors that `memscan` located but **cannot make restart-robust** with a
@@ -10,12 +10,12 @@ We empirically restart-tested the `module_offset` pointer chains:
 
 | Container | Anchors | Restart result |
 |---|---|---|
-| **Finance** | `cash`, `conservation_credits` | **robust** — 2 of 9 candidate chains survived **two** full restarts; committed |
-| **Zoo-stats** | `guest_count` (and likely `zoo_rating`) | **fragile** — **0 of 23** candidate chains survived a restart |
+| **Finance** | `cash`, `conservation_credits` | **robust** - 2 of 9 candidate chains survived **two** full restarts; committed |
+| **Zoo-stats** | `guest_count` (and likely `zoo_rating`) | **fragile** - **0 of 23** candidate chains survived a restart |
 | **Roster** | `species_roster_base` | reached via the same unstable stats root → treat as fragile |
 
 So pointer chains are **container-specific**: fine for finance, useless for the
-stats/roster container. Those anchors need an **AOB code signature** — the one
+stats/roster container. Those anchors need an **AOB code signature** - the one
 resolution method `memscan` can't produce, because it relies on CE's
 hardware-breakpoint **"Find out what accesses this address"**.
 
@@ -44,7 +44,7 @@ So the goal in CE is: **find an instruction that references a STABLE static**
 from that static down to the field.
 
 The most robust pick is an instruction that loads the **container/manager
-pointer** (a static global), not one that touches the volatile field directly —
+pointer** (a static global), not one that touches the volatile field directly -
 then `offsets` are stable struct member offsets (e.g. `0x830`).
 
 ---
@@ -52,7 +52,7 @@ then `offsets` are stable struct member offsets (e.g. `0x830`).
 ## Per-anchor recipes
 
 For each, first re-find the **live address** in CE (values drift/move per
-session — that's expected), then run "find what accesses", then build the AOB.
+session - that's expected), then run "find what accesses", then build the AOB.
 
 ### `guest_count` (i32, read-only; milestone threshold 1000)
 - **Find it:** CE value type **4 Bytes**, scan your current guest number, let it
@@ -83,7 +83,7 @@ session — that's expected), then run "find what accesses", then build the AOB.
 ### `zoo_rating` (float, read-only; milestone threshold 2 stars)
 - **Locate first** (not yet found): the **aggregate** Zoo Reputation, not the
   per-entity rating block (that block is at stats-container+0x910.., an array of
-  ~0x28-byte records — NOT the 6 displayed ratings). Easiest when reputation is
+  ~0x28-byte records - NOT the 6 displayed ratings). Easiest when reputation is
   a clearly fractional value, or via change-detection. Once you have the
   aggregate address, signature it as above. `scale:1` if stored 0–5.
 
@@ -108,7 +108,7 @@ session — that's expected), then run "find what accesses", then build the AOB.
    instruction length. **Wildcard the disp32 bytes**, e.g.
    `48 8B 05 ?? ?? ?? ??` (RIP-relative `mov rax,[rip+disp32]`).
 6. **Validate uniqueness:** in CE, memory-view → search the AOB; if it matches in
-   multiple places, lengthen it. Restart the game, re-scan the AOB — it must
+   multiple places, lengthen it. Restart the game, re-scan the AOB - it must
    still resolve and (with `rip`+`offsets`) point at the right value.
 
 `rip` for a `48 8B 05 ?? ?? ?? ??` instruction (7 bytes total, disp32 at byte 3):

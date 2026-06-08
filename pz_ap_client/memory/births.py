@@ -1,4 +1,4 @@
-"""BirthDetector — robust, species-attributed birth detection (A3 first_breed).
+"""BirthDetector - robust, species-attributed birth detection (A3 first_breed).
 
 Births can't be data-anchored (entities reallocate; counts are volatile). The
 robust route, validated in the A2 spike, is a software detour on the stable
@@ -14,7 +14,7 @@ per-event classifier:
   * species comes from the entity's SPECIES HANDLE at `entity+0x50`, reverse-mapped
     through the research map (`ResearchReader.current_handle`, same handle namespace).
     This is reliable per-animal and covers every species automatically (restart-correct,
-    no hardcoded id map). NOTE: the old `[container+8]` approach was WRONG — that's a
+    no hardcoded id map). NOTE: the old `[container+8]` approach was WRONG - that's a
     HABITAT/holding-container id (many species share one container), not the species.
 
 Safe: a software detour can't crash the game even if it leaked; `shutdown()`
@@ -55,7 +55,7 @@ class BirthDetector:
         from .signatures import resolve_hook
         resolved = resolve_hook(self.scanner, "birth_insert")
         if resolved is None:
-            logger.warning("birth: insert site unresolved (RVA stale + AOB miss — game patched?); not installing")
+            logger.warning("birth: insert site unresolved (RVA stale + AOB miss - game patched?); not installing")
             return False
         site, orig = resolved
         try:
@@ -94,22 +94,30 @@ class BirthDetector:
         if not events:
             return []
         handle2key = self._handle_to_key()
-        out: List[str] = []
-        for e in events:
-            entity = self.resolver.resolve_entity(e.get("r13", 0), e.get("handle", 0))
-            if entity is None:
-                continue
-            if self.resolver.life_stage(entity) != LIFE_STAGE_NEWBORN:  # buy/grown -> not a birth
-                continue
-            sh = self.resolver.species_handle(entity)
-            key = handle2key.get(sh) if sh is not None else None
-            if key:
-                logger.info("Detected BIRTH: %s (species handle 0x%X)", key, sh)
-                out.append(key)
-            elif sh is not None and sh not in self._unknown_logged:
-                self._unknown_logged.add(sh)
-                logger.info("BIRTH of species handle 0x%X not in the research map (non-welfare species?)", sh)
+        out = [key for e in events if (key := self._attribute_birth(e, handle2key))]
         return out
+
+    def _attribute_birth(self, e: dict, handle2key: dict) -> Optional[str]:
+        """Classify one insert event: returns its species_key iff it was a BIRTH of a mapped
+        welfare species, else None (logging buys/unknown-handles are skipped silently / once)."""
+        entity = self.resolver.resolve_entity(e.get("r13", 0), e.get("handle", 0))
+        if entity is None:
+            return None
+        if self.resolver.life_stage(entity) != LIFE_STAGE_NEWBORN:  # buy/grown -> not a birth
+            return None
+        sh = self.resolver.species_handle(entity)
+        key = handle2key.get(sh) if sh is not None else None
+        if key:
+            logger.info("Detected BIRTH: %s (species handle 0x%X)", key, sh)
+            return key
+        if sh is not None and sh not in self._unknown_logged:
+            self._unknown_logged.add(sh)
+            known = {k: "0x%X" % h for h, k in handle2key.items()}
+            logger.info("BIRTH of species handle 0x%X not in the research map (non-welfare species, "
+                        "or the entity/research handle namespaces diverged this session). "
+                        "Research-map handles: %s", sh,
+                        known or "<EMPTY - research chain didn't resolve / not in a loaded zoo>")
+        return None
 
     def shutdown(self) -> None:
         try:

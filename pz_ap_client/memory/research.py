@@ -1,4 +1,4 @@
-"""ResearchReader — per-species welfare-research completion + current species handle.
+"""ResearchReader - per-species welfare-research completion + current species handle.
 
 The research state lives in the research-system's items hashmap. Resolve the system via
 a restart-stable master-root chain, then read records directly:
@@ -9,7 +9,7 @@ a restart-stable master-root chain, then read records directly:
                     value records of stride 0x58 at buckets+bitmap + slot*0x58.
   record (0x58):    +0x00 u32 = RESEARCH-ITEM ID (the map key; CONTENT-STABLE across
                     restarts), +0x0C u32 = LEVEL, +0x10 u32 = species HANDLE (a per-session
-                    runtime index — NOT restart-stable), +0x3C byte = category (7 = animal),
+                    runtime index - NOT restart-stable), +0x3C byte = category (7 = animal),
                     +0x49 byte = STATUS (4 = ResearchedAndCompleted).
 
 *** Restart-validation (2026-06-01) proved the species HANDLE is volatile across a game
@@ -41,7 +41,7 @@ RESEARCH_CHAIN = (0x2944690, 0x18, 0x350)
 RESEARCH_CHAIN_ALT = (0x29446A0, 0x20, 0x518)  # 2nd proven path (guest/zoo root)
 ITEMS_MAP_OFF = 0xF8
 REC_STRIDE = 0x58
-REC_ITEMID = 0x00            # u32 research-item id (map key) — RESTART-STABLE content id
+REC_ITEMID = 0x00            # u32 research-item id (map key) - RESTART-STABLE content id
 REC_LEVEL = 0x0C            # u32 level
 REC_SPECIES = 0x10           # u32 species handle (per-session; resolve at runtime)
 REC_CATEGORY = 0x3C          # byte: 7 = animal research
@@ -62,7 +62,7 @@ ADVANCED_LEVEL = 10          # levels >= this are "advanced research" (optional,
 SPECIES_WELFARE_ITEM: Dict[str, int] = {
     # value = the species' level-0 welfare research-item id (restart-stable content id).
     "plains_zebra": 0xDAC,      # welfare run 0xDAC..0xDB1
-    "common_warthog": 0x640,    # welfare run 0x640.. — not an AP key
+    "common_warthog": 0x640,    # welfare run 0x640.. - not an AP key
     "saltwater_croc": 0x10CC,   # gated; run 0x10CC..0x10D2 (+adv 0x10D3)
     "lowland_gorilla": 0x1450,  # gated; run 0x1450..0x1459 (+adv 0x145A)
     "giant_panda": 0x834,       # gated; run 0x834..0x83A (+adv 0x83B)
@@ -181,7 +181,7 @@ class ResearchReader:
         i0 = self.items.get(species_key)
         if i0 is None and species_key not in self._warned_unmapped:
             self._warned_unmapped.add(species_key)
-            logger.info("research: no welfare item id for %r yet — add it to "
+            logger.info("research: no welfare item id for %r yet - add it to "
                         "SPECIES_WELFARE_ITEM (capture via tools/capture_species.py)", species_key)
         return i0
 
@@ -234,7 +234,7 @@ class ResearchReader:
 
 
 # Research facilities gate research by CATEGORY (placement isn't hookable and capacity getters
-# crash — see the progression-unlock notes). The two research-enabling facilities map cleanly
+# crash - see the progression-unlock notes). The two research-enabling facilities map cleanly
 # onto the two research categories present in the items map:
 #   research_centre -> ANIMAL_CATEGORY (7)  : welfare_<species> locations
 #   workshop        -> MECHANIC_CATEGORY (3): mechanic research (drink_shops, barriers)
@@ -248,7 +248,7 @@ STATUS_RESEARCHABLE = 1
 STATUS_RESEARCHING = 2
 # Record layout decoded from the research tick fn @0x140E48E60 (`progress += delta` at [rec+0x20],
 # `comiss` vs per-level threshold, then level++ [rec+0x24] + status [rec+0x49]). Kept for reference;
-# the gate does NOT touch progress (research completes via multiple inlined progress paths — only
+# the gate does NOT touch progress (research completes via multiple inlined progress paths - only
 # the STATUS writes are true chokepoints). Zeroing capacity getters CRASHED (div-by-zero).
 REC_PROGRESS = 0x20        # f32 accumulated research progress
 REC_PROGRESS_BAR = 0x1C    # f32 smoothed/displayed bar value
@@ -265,12 +265,12 @@ class ResearchGate:
     """Memory-enforced research gate for the research-enabling facilities (research_centre,
     workshop). Installs a code hook on the research-START writer (0x140E461C6): for a gated
     category ([r15+0x3C] in the client-written scratch set) the status->2 write is SKIPPED, so
-    that research NEVER enters "Researching" — no progress bar, no level tick, no completion, no
-    reward, no AP check — and it auto-starts once the facility item arrives. (Validated live
+    that research NEVER enters "Researching" - no progress bar, no level tick, no completion, no
+    reward, no AP check - and it auto-starts once the facility item arrives. (Validated live
     2026-06-02; the cleanest player-facing gate. Progress-zeroing was abandoned: research
     completes via multiple inlined progress paths, so only the status chokepoints are reliable.)
 
-    ``reconcile(received_facilities)`` is authoritative + idempotent — driven from the full
+    ``reconcile(received_facilities)`` is authoritative + idempotent - driven from the full
     received-facility set each tick, so it's restart-correct. On a (re)gate it also resets any
     in-progress (status 2) gated research back to Researchable so the currently-active research
     stops (the hook then blocks it re-starting). Safe: software detour; ``shutdown()`` restores
@@ -314,7 +314,7 @@ class ResearchGate:
         from .signatures import resolve_hook
         resolved = resolve_hook(self.scanner, "research_start")
         if resolved is None:
-            logger.warning("research gate: start site unresolved (RVA stale + AOB miss — game patched?); not installing")
+            logger.warning("research gate: start site unresolved (RVA stale + AOB miss - game patched?); not installing")
             return False
         site, orig = resolved
         try:
@@ -376,7 +376,7 @@ class ResearchGate:
         if not self.ensure_installed():
             if not self._warned_pending:
                 self._warned_pending = True
-                logger.info("research gate: start hook not installable yet — will retry")
+                logger.info("research gate: start hook not installable yet - will retry")
             return False
         if gated != self._last_gated:
             self._write_gated(gated)

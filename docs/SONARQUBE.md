@@ -32,7 +32,7 @@ $env:SONAR_JAVA_PATH = $JAVA
 ```
 
 Leave that window open (it runs in the foreground). It's ready when the log prints
-`SonarQube is operational` — or poll `http://localhost:9000/api/system/status` until it returns
+`SonarQube is operational` - or poll `http://localhost:9000/api/system/status` until it returns
 `{"status":"UP"}` (first boot takes ~2 min: Elasticsearch → web → compute engine).
 
 Web UI / dashboard: **http://localhost:9000** → project **`planet-zoo-ap`**.
@@ -76,7 +76,7 @@ Press `Ctrl+C` in the StartSonar window, or:
 
 Full Sonar way profile (332 active Python rules) over 50 files / 5,317 LOC:
 **0 bugs, 0 code smells, 0 vulnerabilities, 0 security hotspots, 0 min technical debt,
-0.5% duplicated lines** — including **0** `python:S3776` (cognitive-complexity) violations.
+0.5% duplicated lines** - including **0** `python:S3776` (cognitive-complexity) violations.
 
 The only remaining duplication (40 lines in `pz_ap_client/memory/hook.py`) is **intentional**: the
 permit-gate and facility-gate trampolines are independently-audited hand-assembled machine code

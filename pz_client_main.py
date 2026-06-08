@@ -2,7 +2,7 @@
 
 A thin launcher so PyInstaller has a top-level script to freeze; all logic lives in
 ``pz_ap_client.client``. The vendored Archipelago tree is shipped as on-disk data next to the
-frozen package (see pz-ap-client.spec), and client.py adds it to sys.path at import time —
+frozen package (see pz-ap-client.spec), and client.py adds it to sys.path at import time -
 ``Path(__file__).parent.parent / "vendor" / "Archipelago"`` resolves to the bundle dir when frozen.
 """
 import logging

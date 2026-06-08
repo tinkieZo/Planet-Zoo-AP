@@ -1,7 +1,7 @@
-"""ReleaseDetector — counts animals released to the wild (A3 conservation_release).
+"""ReleaseDetector - counts animals released to the wild (A3 conservation_release).
 
 There is no restart-stable cumulative "animals released" integer in the game (the A2
-spike conclusively ruled out the master-root stats subtree, 2 levels deep — a release
+spike conclusively ruled out the master-root stats subtree, 2 levels deep - a release
 only flips transient per-event flags + decrements population counts). The robust route,
 matching births/permits, is a software detour on the RELEASE-SPECIFIC executor:
 
@@ -11,7 +11,7 @@ matching births/permits, is a software detour on the RELEASE-SPECIFIC executor:
 The detour (``make_release_gate``) does double duty on one hook:
   * COUNTS releases at scratch+0 (the conservation_release location), and
   * GATES the Conservation Program (program_unlock item): scratch+4 = lock flag; while
-    LOCKED the trampoline aborts the release at entry (``xor eax,eax; ret`` — rsp is clean
+    LOCKED the trampoline aborts the release at entry (``xor eax,eax; ret`` - rsp is clean
     there), so the player physically cannot release until the AP item arrives (no honor
     system). A blocked release isn't counted (nothing happened).
 Because it's the release-specific script action, no sell-vs-release disambiguation and no
@@ -54,7 +54,7 @@ class ReleaseDetector:
         from .signatures import resolve_hook
         resolved = resolve_hook(self.scanner, "release")
         if resolved is None:
-            logger.warning("release: hook site unresolved (RVA stale + AOB miss — game patched?); not installing")
+            logger.warning("release: hook site unresolved (RVA stale + AOB miss - game patched?); not installing")
             return False
         site, orig = resolved
         try:

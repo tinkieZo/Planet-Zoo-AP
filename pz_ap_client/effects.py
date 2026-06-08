@@ -5,8 +5,8 @@ of whether an item should arrive lives in the APWorld; here we only execute.
 
 The backend is pluggable so A1 can run with no game attached:
 
-  * ``ConsoleEffectApplier``  — logs what it *would* do (used by A1 + tests).
-  * ``MemoryEffectApplier``   — writes to game memory (added in A3, subclass below).
+  * ``ConsoleEffectApplier``  - logs what it *would* do (used by A1 + tests).
+  * ``MemoryEffectApplier``   - writes to game memory (added in A3, subclass below).
 
 Dispatch is by ``effect_type``: a backend overrides ``on_<effect_type>`` for the
 effects it supports. Unknown / unsupported effects are logged, not fatal.
@@ -35,7 +35,7 @@ class EffectApplier:
         handler = getattr(self, f"on_{item.effect_type}", None)
         if handler is None:
             logger.warning(
-                "No handler for effect_type %r (item %s %r) — skipping",
+                "No handler for effect_type %r (item %s %r) - skipping",
                 item.effect_type, item.id, item.name,
             )
             return False
@@ -50,7 +50,7 @@ class ConsoleEffectApplier(EffectApplier):
     """Dry-run backend: prints intended effects. Used by A1 and unit tests.
 
     Every handler returns True so the high-water mark advances exactly as it
-    would with a real game attached — this lets us exercise the full A3
+    would with a real game attached - this lets us exercise the full A3
     idempotency path without the game.
     """
 

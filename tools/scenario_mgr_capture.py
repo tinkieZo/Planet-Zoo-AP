@@ -1,4 +1,4 @@
-"""scenario_mgr_capture — capture the scenario-manager object that the terrain-greying predicate reads.
+"""scenario_mgr_capture - capture the scenario-manager object that the terrain-greying predicate reads.
 
 FUN_14041e020 is the reflection wrapper for property #0x14 (one of the Is*Disabled predicates). It
 unwraps self (the scenario manager) into rdi, then calls the property-getter
@@ -55,7 +55,7 @@ def main() -> int:
         hm.restore_all()
         print("RESTORED. fires=%d distinct objs=%d" % (cnt, len(seen)), flush=True)
     if not seen:
-        print("no capture (wrapper didn't fire — re-enter terrain mode during the window)."); return 0
+        print("no capture (wrapper didn't fire - re-enter terrain mode during the window)."); return 0
     print("=== captured scenario-manager object pointer(s) ===", flush=True)
     for v, n in sorted(seen.items(), key=lambda kv: -kv[1]):
         _report_obj(s, v, n)

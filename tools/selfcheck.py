@@ -1,4 +1,4 @@
-"""selfcheck — preflight health report for every patch-sensitive address the client depends on.
+"""selfcheck - preflight health report for every patch-sensitive address the client depends on.
 
 Run it against the live game (in a loaded zoo) to confirm the whole inventory resolves, or after a
 Frontier patch to see EXACTLY which sites broke (so re-RE is targeted). Read-only; installs nothing.
@@ -24,7 +24,7 @@ def main() -> int:
     try:
         at = AnchorTable.load()
     except Exception as e:
-        print("anchor table load failed: %s — checking code sites only" % e); at = None
+        print("anchor table load failed: %s - checking code sites only" % e); at = None
     results = sig.run_selfcheck(s, at)
     print("=" * 74)
     print("  PZ-AP client self-check  (module base 0x%X)" % s.module_base)
@@ -38,7 +38,7 @@ def main() -> int:
     ok = sum(1 for r in results if r.status in ("ok", "relocated"))
     bad = [r for r in results if r.status not in ("ok", "relocated")]
     print("=" * 74)
-    print("  %d/%d green%s" % (ok, len(results), ("" if not bad else "  —  attention: " + ", ".join(r.name for r in bad))))
+    print("  %d/%d green%s" % (ok, len(results), ("" if not bad else "  -  attention: " + ", ".join(r.name for r in bad))))
     print("=" * 74)
     return 0 if not bad else 2
 

@@ -144,7 +144,7 @@ async def main() -> None:
 
 
 def test_client_offline() -> None:
-    """pytest entry point — runs the async A1/A3/goal round-trip (asserts via _check)."""
+    """pytest entry point - runs the async A1/A3/goal round-trip (asserts via _check)."""
     asyncio.run(main())
 
 

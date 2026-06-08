@@ -1,4 +1,4 @@
-"""Generic memory access for the hooking client — pymem wrapper.
+"""Generic memory access for the hooking client - pymem wrapper.
 
 No game-specific knowledge lives here. It provides exactly the primitives the
 A2 spike needs once anchors are known:

@@ -100,22 +100,42 @@ class ResearchReader:
             self.research_items.update(research_items)
         self._warned_unmapped: set = set()
 
+    def _map_ok(self, rs: int) -> bool:
+        """Cheap check that rs+ITEMS_MAP_OFF is a readable items map — lets us tell the real research
+        system from a valid-but-WRONG object a chain may dereference to. Matches _snapshot's own gate."""
+        try:
+            cap = struct.unpack("<q", self.scanner.read_bytes(rs + ITEMS_MAP_OFF + 0x10, 8))[0]
+            bk = struct.unpack("<Q", self.scanner.read_bytes(rs + ITEMS_MAP_OFF + 0x18, 8))[0]
+        except Exception:
+            return False
+        return 0 < cap <= (1 << 20) and 0x10000 < bk < (1 << 47)
+
+    def _walk_chain(self, base: int, chain) -> Optional[int]:
+        addr = base
+        for off in chain:
+            nxt = self.scanner.read_qword(addr + off)
+            if not nxt:
+                return None
+            addr = nxt
+        return addr
+
     def _research_system(self) -> Optional[int]:
+        """Resolve the research system. A chain can dereference to a valid-but-WRONG object on some
+        sessions (seen live: the primary chain landing on a non-map object while the alt was correct),
+        so PREFER whichever chain lands on a readable items map; fall back to the first that resolved
+        only if neither validates (preserves the original behaviour where the primary was correct)."""
         base = getattr(self.scanner, "module_base", None)
         if not base:
             return None
+        fallback = None
         for chain in (RESEARCH_CHAIN, RESEARCH_CHAIN_ALT):
-            addr = base
-            ok = True
-            for off in chain:
-                nxt = self.scanner.read_qword(addr + off)
-                if not nxt:
-                    ok = False
-                    break
-                addr = nxt
-            if ok and addr:
-                return addr
-        return None
+            addr = self._walk_chain(base, chain)
+            if addr:
+                if self._map_ok(addr):
+                    return addr
+                if fallback is None:
+                    fallback = addr
+        return fallback
 
     def _snapshot(self) -> Optional[Tuple[dict, dict]]:
         """Read the items map once: returns (by_item, by_handle) or None.

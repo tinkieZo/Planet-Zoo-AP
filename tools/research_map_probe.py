@@ -85,27 +85,28 @@ def _scan_offsets(s: MemoryScanner, rs: int) -> int:
     return found
 
 
-def _diagnose(s: MemoryScanner, rs: int) -> None:
-    """Explain a failed snapshot: dump the expected-offset header, then scan nearby offsets."""
-    print("\n=== snapshot failed - diagnosing the items map @ research_system+0x%X ===" % ITEMS_MAP_OFF,
-          flush=True)
+def _diagnose(s: MemoryScanner, rs: int, label: str = "research_system") -> None:
+    """Check a chain endpoint's items map: dump the expected-offset header, scan nearby offsets if bad."""
+    print("\n--- items map @ %s endpoint 0x%X (offset +0x%X) ---" % (label, rs, ITEMS_MAP_OFF), flush=True)
     hdr = _read_header(s, rs, ITEMS_MAP_OFF)
     if hdr is None:
-        print("  could not even READ rs+0x%X (research_system pointer is bad / unmapped)." % ITEMS_MAP_OFF,
-              flush=True)
+        print("  could not even READ rs+0x%X (pointer is bad / unmapped)." % ITEMS_MAP_OFF, flush=True)
+    elif _is_plausible(*hdr):
+        print("  VALID map header: count=%d cap=%d buckets=0x%X  <-- this looks like the real research"
+              " system" % (hdr[0], hdr[1], hdr[2]), flush=True)
+        return
     else:
         print("  raw header: count=%d  cap=%d (0x%X)  buckets=0x%X" % (hdr[0], hdr[1], hdr[1], hdr[2]),
               flush=True)
-        print("  -> failed because: %s" % _explain_header(*hdr), flush=True)
-    print("\n  scanning rs+0x40 .. rs+0x400 for a plausible hashmap header (cap=pow2, sane count, heap"
-          " buckets):", flush=True)
+        print("  -> not a map because: %s" % _explain_header(*hdr), flush=True)
+    print("  scanning +0x40 .. +0x400 for a plausible hashmap header (sane cap, heap buckets):", flush=True)
     if not _scan_offsets(s, rs):
-        print("    none found - research_system is likely the WRONG object (chain stale for this build),"
-              " or you're not in a loaded zoo.", flush=True)
+        print("    none found - this endpoint is the WRONG object (not the research system).", flush=True)
 
 
-def _report_chains(s: MemoryScanner, base: Optional[int]) -> None:
-    """Walk both research chains, printing every hop, so a stale offset is visible at the break."""
+def _report_chains(s: MemoryScanner, base: Optional[int]):
+    """Walk both research chains, printing every hop, so a stale offset is visible at the break.
+    Returns (primary_endpoint, alt_endpoint)."""
     print("\n=== resolving research chains ===", flush=True)
     print("  primary chain %s:" % (tuple(hex(c) for c in RESEARCH_CHAIN),), flush=True)
     a = _walk(s, base, RESEARCH_CHAIN) if base else None
@@ -113,6 +114,7 @@ def _report_chains(s: MemoryScanner, base: Optional[int]) -> None:
     b = _walk(s, base, RESEARCH_CHAIN_ALT) if base else None
     print("  primary -> %s ; alt -> %s ; agree=%s"
           % (hex(a) if a else None, hex(b) if b else None, a == b and a is not None), flush=True)
+    return a, b
 
 
 def _dump_species(by_item: dict) -> None:
@@ -138,19 +140,21 @@ def main() -> int:
     if not s.attach():
         print("not attached"); return 1
     print("module_base = 0x%X" % (s.module_base or 0), flush=True)
-    _report_chains(s, s.module_base)
+    a, b = _report_chains(s, s.module_base)
+    # Diagnose BOTH endpoints' items maps (the reader used to trust the primary blindly).
+    if a:
+        _diagnose(s, a, "primary")
+    if b:
+        _diagnose(s, b, "alt")
 
     r = ResearchReader(s)
     rs = r._research_system()
-    print("\nresearch_system (used by reader) = %s"
+    print("\nresearch_system (validated pick used by reader) = %s"
           % (hex(rs) if rs else "NONE (chain didn't resolve - in a zoo?)"), flush=True)
     snap = r._snapshot()
     if not snap:
-        if rs:
-            _diagnose(s, rs)
-        else:
-            print("chain didn't resolve at all - likely not in a loaded zoo, or both chains are stale.",
-                  flush=True)
+        print("\nsnapshot FAILED even after validation - neither chain lands on a readable items map."
+              " The chain is stale for this build; re-anchor needed.", flush=True)
         return 0
     by_item, by_handle = snap
     print("map records: %d occupied; %d distinct handles" % (len(by_item), len(by_handle)), flush=True)

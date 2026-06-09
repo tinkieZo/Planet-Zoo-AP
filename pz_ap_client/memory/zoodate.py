@@ -44,39 +44,73 @@ class ParkAgeReader:
 
     def __init__(self, scanner):
         self.scanner = scanner
-        self._val: Optional[int] = None
-        self._last: Optional[float] = None
+        self._cached = None             # park-info instance addresses (revalidated cheaply each read)
+        self._last_scan: Optional[float] = None
+        self._last_val: Optional[int] = None
         self._warned = False
 
-    def _scan_max_years(self) -> Optional[int]:
-        """Vtable-scan the park-info class; return the max completed-years (+0x1c8) over instances (the
-        live park; the template reads 0), or None if no sane instance resolves."""
+    def _target(self) -> Optional[int]:
         base = getattr(self.scanner, "module_base", None)
-        if not base:
+        return base + self.VTABLE_RVA if base else None
+
+    def _years_at(self, addr: int, target: int) -> Optional[int]:
+        """+0x1c8 at addr IFF it still carries the park-info vtable (so a freed/moved object is rejected),
+        else None. Raises only on a bad read (caller treats that as a stale cache)."""
+        if self.scanner.read_qword(addr) != target:
             return None
-        target = base + self.VTABLE_RVA
+        years = struct.unpack("<q", self.scanner.read_bytes(addr + self.PERIODS_OFF, 8))[0]
+        return years if 0 <= years < _MAX_SANE_YEARS else None
+
+    def _max_cached(self, target: int) -> Optional[int]:
+        """Max years over the cached instances - CHEAP (no heap scan). None if the cache is empty or any
+        instance is stale (lost its vtable), which forces a rescan."""
+        if not self._cached:
+            return None
+        best = None
+        for a in self._cached:
+            try:
+                years = self._years_at(a, target)
+            except Exception:
+                return None
+            if years is None:
+                return None
+            best = years if best is None else max(best, years)
+        return best
+
+    def _rescan(self, target: int) -> Optional[int]:
+        """Heap-scan the park-info class (the only blocking path), cache the live instances, return max."""
         try:
             hits = self.scanner.scan_heap_for_qword(target, max_hits=64)
         except Exception:
             return self._miss()
-        best = None
+        addrs, best = [], None
         for h in hits:
             try:
-                years = struct.unpack("<q", self.scanner.read_bytes(h + self.PERIODS_OFF, 8))[0]
+                years = self._years_at(h, target)
             except Exception:
                 continue
-            if 0 <= years < _MAX_SANE_YEARS:
+            if years is not None:
+                addrs.append(h)
                 best = years if best is None else max(best, years)
+        self._cached = addrs or None
+        self._last_val = best
         return best if best is not None else self._miss()
 
     def read(self) -> Optional[int]:
-        """Completed years the park has been open (0 in Year 1), or None if unresolved. Throttled."""
+        """Completed years the park has been open (0 in Year 1), or None if unresolved. Steady state is a
+        cheap revalidate of cached instances; a heap scan happens only on a cache miss, throttled, so the
+        poll loop (and the websocket keepalive on its event loop) isn't stalled by a recurring scan."""
+        target = self._target()
+        if target is None:
+            return None
+        cached = self._max_cached(target)
+        if cached is not None:
+            return cached
         now = time.monotonic()
-        if self._last is not None and (now - self._last) < self.SCAN_COOLDOWN_S:
-            return self._val
-        self._last = now
-        self._val = self._scan_max_years()
-        return self._val
+        if self._last_scan is not None and (now - self._last_scan) < self.SCAN_COOLDOWN_S:
+            return self._last_val
+        self._last_scan = now
+        return self._rescan(target)
 
     def _miss(self) -> None:
         if not self._warned:

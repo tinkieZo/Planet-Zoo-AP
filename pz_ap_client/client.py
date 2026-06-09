@@ -169,7 +169,9 @@ class PZContext(CommonContext):
         self.terrain_gate = None  # TerrainGate (memory mode); native terrain-tool greying (water_tools)
         self._park_age = None  # ParkAgeReader (memory mode); reads park years-open to detect a fresh save
         self._fresh_reset_done = False  # re-awarded all items for a fresh zoo once this session
+        self._initial_applied: "Optional[int]" = None  # high-water mark at session start (drives re-award)
         self._preflight_done = False  # run the signatures self-check once on first attach (fail-loud)
+        self._pending_checks: List[int] = []  # location ids queued by the poll thread, sent on the loop
         self.poll_interval: float = 1.0
         self._poll_task: "Optional[asyncio.Task]" = None
         # Strong refs to fire-and-forget tasks so the event loop's weak
@@ -221,7 +223,7 @@ class PZContext(CommonContext):
         research_fac = all_fac & set(FACILITY_RESEARCH_CATEGORY)
         placement_fac = all_fac - research_fac
         # Trigger source owns the ReleaseDetector (release-gate) + a ResearchReader the gate reuses.
-        self.trigger_source = MemoryTriggerSource(scanner, anchors, self.game_data, self.report_check)
+        self.trigger_source = MemoryTriggerSource(scanner, anchors, self.game_data, self._collect_check)
         # Facility (placement) gate - only the non-research facilities (trade_centre, vet_surgery).
         self.facility_gate = FacilityGate(scanner)
         self.facility_gate.set_gated(placement_fac)
@@ -257,22 +259,50 @@ class PZContext(CommonContext):
                            "Run the A2 spike - see docs/A2_SPIKE_PLAYBOOK.md.",
                            len(unfilled), ", ".join(unfilled))
 
-    async def poll_loop(self) -> None:
-        """Background tick: detect game events -> checks, and retry stalled item writes."""
-        while not self.exit_event.is_set():
+    def _collect_check(self, location_id: int) -> None:
+        """TriggerSource's report callback. Runs on the POLL WORKER THREAD, so it must NOT touch the
+        websocket - it only queues the id. poll_loop drains the queue and does the real report on the
+        event loop (where server sends are safe)."""
+        self._pending_checks.append(location_id)
+
+    def _poll_tick(self) -> None:
+        """The synchronous poll body. Runs in a worker thread (see poll_loop) and does only memory I/O -
+        detection, item application, gate installs/reconciles - NO server sends (checks are queued via
+        _collect_check). Each step is isolated so one failure doesn't abort the rest of the tick."""
+        for step in (
+            lambda: self.trigger_source.poll(self.effective_checked),  # game events -> queued checks
+            self._run_preflight,        # once, on first attach: self-check every patch-sensitive site
+            self._apply_new_items,      # apply/retry received items (+ fresh-save re-award)
+            self._reconcile_permits,    # keep the purchase gate = full received-permit set
+            self._reconcile_conservation,  # keep the release gate = (conservation program received?)
+            self._reconcile_facilities,    # keep the placement gate = full received-facility set
+            self._reconcile_research,      # keep the research gate = (research facilities received?)
+            self._reconcile_presence,      # keep the native greyed-button UX in sync
+            self._reconcile_terrain,       # keep the native terrain-tool greying = received tool set
+        ):
             try:
-                if self.trigger_source is not None and self.slot is not None:
-                    self.trigger_source.poll(self.effective_checked)
-                    self._run_preflight()  # once, on first attach: self-check every patch-sensitive site
-                    self._apply_new_items()  # retry anything that stalled (e.g. game not ready)
-                    self._reconcile_permits()  # keep the purchase gate = full received-permit set
-                    self._reconcile_conservation()  # keep the release gate = (conservation program received?)
-                    self._reconcile_facilities()  # keep the placement gate = full received-facility set
-                    self._reconcile_research()  # keep the research gate = (research facilities received?)
-                    self._reconcile_presence()  # keep the native greyed-button UX in sync
-                    self._reconcile_terrain()  # keep the native terrain-tool greying = received tool set
+                step()
             except Exception:
-                logger.exception("poll loop tick failed")
+                logger.exception("poll loop step failed")
+
+    async def poll_loop(self) -> None:
+        """Background tick: detect game events -> checks, apply items, reconcile gates.
+
+        The synchronous memory work (gate installs, bytecode/heap scans, item writes) runs in a worker
+        thread via run_in_executor so it NEVER blocks the asyncio loop - a long scan on the loop would
+        starve the websocket keepalive ping/pong and trip a ``1011`` timeout disconnect (the heavy first
+        tick after attach did exactly that). Detected checks are queued on the thread and reported here on
+        the loop afterwards; run_in_executor completes before we drain, so there's no concurrency on the
+        queue or on the websocket sends."""
+        loop = asyncio.get_event_loop()
+        while not self.exit_event.is_set():
+            if self.trigger_source is not None and self.slot is not None:
+                try:
+                    await loop.run_in_executor(None, self._poll_tick)
+                except Exception:
+                    logger.exception("poll loop tick failed")
+                while self._pending_checks:
+                    self.report_check(self._pending_checks.pop(0))
             await asyncio.sleep(self.poll_interval)
 
     # -- AP connection handshake ----------------------------------------------
@@ -395,10 +425,17 @@ class PZContext(CommonContext):
         if self.state is None or self.slot is None:
             return
         seed = self.seed_name or "unknown"
-        # Fresh-save re-award: a brand-new zoo (Year 1, 0 years open) re-applies ALL received items by
-        # zeroing the high-water mark. Unlocks are idempotent (gates reconcile); cash/cc re-grant. Latched
-        # in persisted state so it fires once per fresh save, not on every reconnect to the same young zoo.
-        self._maybe_fresh_reset(seed, self.state.get(seed, self.slot), self._park_years())
+        # Capture the high-water mark at SESSION START (before this session applies anything). The
+        # fresh-save re-award keys off THIS, not the live mark: a first connect to a fresh zoo (mark 0)
+        # must apply items once - NOT apply then re-award (which would double cumulative cash/cc, since the
+        # park-age may read None on the first tick and only become 0 a tick later). Only a mark carried
+        # over from a PRIOR session (a new save replacing an old one) should trigger the re-award.
+        if self._initial_applied is None:
+            self._initial_applied = self.state.get(seed, self.slot)
+        # Fresh-save re-award: a brand-new zoo (Year 1) re-applies ALL received items by zeroing the
+        # high-water mark. Unlocks are idempotent (gates reconcile); cash/cc re-grant. Latched in persisted
+        # state so it fires once per fresh save, not on every reconnect to the same young zoo.
+        self._maybe_fresh_reset(seed, self._initial_applied, self._park_years())
         applied = min(self.state.get(seed, self.slot), len(self.items_received))
         for idx in range(applied, len(self.items_received)):
             net_item = self.items_received[idx]

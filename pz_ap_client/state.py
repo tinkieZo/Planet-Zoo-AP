@@ -29,11 +29,18 @@ from __future__ import annotations
 
 import json
 import os
+import sys
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Dict
 
-DEFAULT_STATE_DIR = Path(__file__).resolve().parent.parent / ".client_state"
+if getattr(sys, "frozen", False):
+    # Packaged exe: keep state in a stable per-user dir. A path inside the PyInstaller bundle is wiped
+    # when the bundle is replaced (app update / reinstall), which would drop the high-water mark + fresh
+    # latch and spuriously re-award cumulative items. %LOCALAPPDATA%\PlanetZooAP survives that.
+    DEFAULT_STATE_DIR = Path(os.environ.get("LOCALAPPDATA") or Path.home()) / "PlanetZooAP" / "client_state"
+else:
+    DEFAULT_STATE_DIR = Path(__file__).resolve().parent.parent / ".client_state"
 
 
 def _slot_key(seed_name: str, slot: int, save_id: "str | None" = None) -> str:

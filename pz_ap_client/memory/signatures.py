@@ -70,6 +70,15 @@ ANCHOR_SANITY: Dict[str, Tuple[float, float]] = {
 # research-system reachability chain (mirrors research.py RESEARCH_CHAIN); sanity = map has records.
 RESEARCH_CHAIN = (0x2944690, 0x18, 0x350)
 
+# Park-age fresh-save signal. The "park-info" class (vtable RVA below) holds, at +0x1c8, the number of
+# COMPLETED YEARS the park has been open (GetParkPeriodsOpen reads *(world+0xa8)+0x1c8) - monotonic and
+# PERSISTED in the save. Confirmed live: Year 1 -> 0, Year 2 -> 1, Year 30 -> 29. We vtable-scan the class
+# (layout-independent, like the research system) and take the max +0x1c8 over instances (a static template
+# instance always reads 0; the live park carries the real count). A tiny value == a fresh zoo. Build-
+# specific RVA - re-derive after a patch with tools/parkage_probe.py --find-world / --parkinfo-vt.
+PARKINFO_VTABLE_RVA = 0x26C2ED8
+PARKINFO_PERIODS_OFF = 0x1C8
+
 
 # ── robust full-module AOB scan (pymem's pattern_scan_module misses high RVAs) ───────────────────────
 def _compile_aob(sig: str) -> re.Pattern:

@@ -226,10 +226,15 @@ def _validate(meta: Dict[str, Any], items: List[Item], locations: List[Location]
     _require(len(item_ids) == len(set(item_ids)), "duplicate item id in data.json")
     _require(len(loc_ids) == len(set(loc_ids)), "duplicate location id in data.json")
 
-    # Archipelago requires item count == location count.
+    # AP places exactly one item per location, so the seed's item POOL size == location count. But
+    # data.json's `items` is the id<->name<->effect TABLE (unique item IDs, matching the APWorld's
+    # worlds/planetzoo/data/items.json), NOT the pool: AP item IDs are per-NAME, and filler (cash/CC)
+    # repeats in the pool sharing its name's ID. So the table legitimately has fewer entries than there
+    # are locations (the APWorld fills the remainder with filler). Require only that every unique item
+    # is placeable, i.e. the table fits within the locations.
     _require(
-        len(items) == len(locations),
-        f"item count ({len(items)}) must equal location count ({len(locations)})",
+        len(items) <= len(locations),
+        f"item-table size ({len(items)}) must not exceed location count ({len(locations)})",
     )
 
     # ID ranges (if declared in meta).

@@ -16,13 +16,33 @@ so the rest of the client (and the A1 console) keeps working with no game.
 
 from __future__ import annotations
 
+import ctypes
 import logging
 import re
 import struct
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Optional, Sequence
+from typing import TYPE_CHECKING, List, Optional, Sequence
 
 logger = logging.getLogger("PZClient")
+
+# VirtualQueryEx plumbing for heap region enumeration (scan_heap_for_qword). x64 MBI layout.
+_MEM_COMMIT = 0x1000
+_PAGE_GUARD = 0x100
+_WRITABLE_PROT = {0x04, 0x08, 0x40, 0x80}  # READWRITE / WRITECOPY / EXEC_READWRITE / EXEC_WRITECOPY
+
+
+class _MBI(ctypes.Structure):
+    _fields_ = [
+        ("BaseAddress", ctypes.c_ulonglong),
+        ("AllocationBase", ctypes.c_ulonglong),
+        ("AllocationProtect", ctypes.c_ulong),
+        ("__alignment1", ctypes.c_ulong),
+        ("RegionSize", ctypes.c_ulonglong),
+        ("State", ctypes.c_ulong),
+        ("Protect", ctypes.c_ulong),
+        ("Type", ctypes.c_ulong),
+        ("__alignment2", ctypes.c_ulong),
+    ]
 
 if TYPE_CHECKING:
     # Unconditional name for annotations; never imported at runtime.
@@ -176,6 +196,44 @@ class MemoryScanner:
             if not addr:
                 return None
         return addr + offsets[-1]
+
+    def scan_heap_for_qword(self, value: int, max_hits: int = 16,
+                            max_region: int = 0x4000000) -> List[int]:
+        """Addresses (8-aligned) in committed, writable, non-guard memory whose 8-byte qword == value.
+
+        Used to locate a game object by its vtable pointer when the static pointer CHAINS to it are
+        unreliable (the research-system chains miss in some saves; the vtable rva is build-stable). Reads
+        each region whole and skips regions >= ``max_region`` (multi-hundred-MB texture/mesh buffers)."""
+        pm = self._require()
+        k32 = ctypes.WinDLL("kernel32", use_last_error=True)
+        k32.VirtualQueryEx.restype = ctypes.c_size_t
+        mbi = _MBI()
+        needle = struct.pack("<Q", value)
+        addr, out = 0, []
+        while len(out) < max_hits:
+            if not k32.VirtualQueryEx(pm.process_handle, ctypes.c_void_p(addr),
+                                      ctypes.byref(mbi), ctypes.sizeof(mbi)):
+                break
+            base, size = mbi.BaseAddress or 0, mbi.RegionSize
+            if (mbi.State == _MEM_COMMIT and not (mbi.Protect & _PAGE_GUARD)
+                    and (mbi.Protect & 0xFF) in _WRITABLE_PROT and 0 < size < max_region):
+                self._find_qword(base, size, needle, out, max_hits)
+            nxt = base + size
+            if nxt <= addr:
+                break
+            addr = nxt
+        return out
+
+    def _find_qword(self, base: int, size: int, needle: bytes, out: List[int], max_hits: int) -> None:
+        try:
+            blob = self._require().read_bytes(base, size)
+        except Exception:
+            return
+        i = blob.find(needle)
+        while i != -1 and len(out) < max_hits:
+            if i % 8 == 0:
+                out.append(base + i)
+            i = blob.find(needle, i + 1)
 
     # -- typed read/write ------------------------------------------------------
 

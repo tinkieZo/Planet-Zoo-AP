@@ -1,12 +1,12 @@
-"""Game-free tests for the water_tools species-purchase proxy (item 1003).
+"""Game-free tests for the water_tools species-purchase proxy.
 
 The water tool's real in-game button lives in the data-driven Cobra UI we can't reach, so water_tools
 is enforced as a species-PURCHASE block: the aquatic species it gates can't be bought until it (and any
 co-required permit) arrives. This tests the pure gate logic in data.py + the client's reconcile, with no
 game and no AP server.
 
-Item ids (data.json): 1003 water_tools (tool_unlock) | 1002 snow_leopard | 1004 bengal_tiger |
-1006 saltwater_croc | 1007 lowland_gorilla | 1008 giant_panda (species_unlock permits).
+Item ids are resolved by EFFECT (via _eid), never hardcoded, so the tests survive id renumbering when
+data.json's id<->name table is realigned to the APWorld (item IDs = 1000 + index of items.json).
 
 Run:  python -m tests.test_water_tools_proxy
 """
@@ -27,6 +27,15 @@ def _check(cond: bool, msg: str) -> None:
     print(("PASS" if cond else "FAIL"), "-", msg)
     if not cond:
         raise AssertionError(msg)
+
+
+def _eid(gd, effect_type: str, **args) -> int:
+    """Resolve an item id by its EFFECT, so these tests survive id renumbering when data.json is
+    realigned to the APWorld (ids are positional there: 1000 + index of items.json)."""
+    for it in gd.items:
+        if it.effect_type == effect_type and all(it.effect_args.get(k) == v for k, v in args.items()):
+            return it.id
+    raise KeyError((effect_type, args))
 
 
 def test_purchase_tokens(gd) -> None:
@@ -51,6 +60,10 @@ def test_purchase_tokens(gd) -> None:
 
 
 def test_blocked_sets(gd) -> None:
+    water = _eid(gd, "tool_unlock", tool_key="water_tools")
+    croc = _eid(gd, "species_unlock", species_key="saltwater_croc")
+    tiger = _eid(gd, "species_unlock", species_key="bengal_tiger")
+
     # nothing received -> every gated species blocked, never african_elephant
     none_blocked = gd.purchase_blocked_species([])
     _check({"nile_hippo", "saltwater_croc", "bengal_tiger"} <= none_blocked,
@@ -60,23 +73,23 @@ def test_blocked_sets(gd) -> None:
            "with no items, blocked set == full purchase universe")
 
     # water_tools only -> nile_hippo frees; saltwater_croc still needs its permit
-    w = gd.purchase_blocked_species([1003])
+    w = gd.purchase_blocked_species([water])
     _check("nile_hippo" not in w, "water_tools unblocks nile_hippo")
     _check("saltwater_croc" in w, "water_tools alone does NOT unblock saltwater_croc (AND-gate)")
     _check("bengal_tiger" in w, "water_tools doesn't touch bengal_tiger")
 
     # permit only (no water_tools) -> saltwater_croc STILL blocked (needs the tool too)
-    p = gd.purchase_blocked_species([1006])
+    p = gd.purchase_blocked_species([croc])
     _check("saltwater_croc" in p, "permit alone does NOT unblock saltwater_croc (still needs water_tools)")
     _check("nile_hippo" in p, "permit for croc doesn't unblock nile_hippo")
 
     # both -> saltwater_croc frees
-    b = gd.purchase_blocked_species([1003, 1006])
+    b = gd.purchase_blocked_species([water, croc])
     _check("saltwater_croc" not in b, "water_tools + permit unblocks saltwater_croc")
     _check("nile_hippo" not in b, "and nile_hippo too")
 
     # an unrelated permit frees only its species
-    t = gd.purchase_blocked_species([1004])
+    t = gd.purchase_blocked_species([tiger])
     _check("bengal_tiger" not in t, "bengal_tiger permit unblocks bengal_tiger")
     _check("nile_hippo" in t, "and leaves water-gated species blocked")
 
@@ -103,6 +116,9 @@ def test_client_reconcile(gd) -> None:
             self.last_reconcile = set(unlocked)
             return True
 
+    water = _eid(gd, "tool_unlock", tool_key="water_tools")
+    croc = _eid(gd, "species_unlock", species_key="saltwater_croc")
+
     async def _run():
         # PZContext (AP CommonContext) schedules a keep-alive task on construction, so it must be
         # built inside a running event loop; cancel that task afterward so the loop closes cleanly.
@@ -119,10 +135,10 @@ def test_client_reconcile(gd) -> None:
 
             _check("nile_hippo" in received([]) and "saltwater_croc" in received([]),
                    "client reconcile: nothing received -> aquatic species blocked")
-            _check("nile_hippo" not in received([1003]), "client reconcile: water_tools frees nile_hippo")
-            _check("saltwater_croc" in received([1003]),
+            _check("nile_hippo" not in received([water]), "client reconcile: water_tools frees nile_hippo")
+            _check("saltwater_croc" in received([water]),
                    "client reconcile: water_tools alone keeps saltwater_croc blocked")
-            _check("saltwater_croc" not in received([1003, 1006]),
+            _check("saltwater_croc" not in received([water, croc]),
                    "client reconcile: water_tools + permit frees saltwater_croc")
         finally:
             task = ctx.keep_alive_task
@@ -155,7 +171,7 @@ def test_tool_unlock_applies(gd) -> None:
             return True
 
     applier = MemoryEffectApplier(FakeScanner(), anchors=None, permit_gate=FakeGate())
-    water = gd.item_by_id[1003]
+    water = gd.item_by_id[_eid(gd, "tool_unlock", tool_key="water_tools")]
     _check(applier.on_tool_unlock(water) is True,
            "on_tool_unlock(water_tools) acknowledges (True) instead of stalling")
 

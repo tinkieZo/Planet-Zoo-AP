@@ -167,6 +167,8 @@ class PZContext(CommonContext):
         self.research_gate = None  # ResearchGate (memory mode); enforces research_centre/workshop
         self.presence_gate = None  # PresenceGate (memory mode); native greyed-button UX for those
         self.terrain_gate = None  # TerrainGate (memory mode); native terrain-tool greying (water_tools)
+        self._park_age = None  # ParkAgeReader (memory mode); reads park years-open to detect a fresh save
+        self._fresh_reset_done = False  # re-awarded all items for a fresh zoo once this session
         self._preflight_done = False  # run the signatures self-check once on first attach (fail-loud)
         self.poll_interval: float = 1.0
         self._poll_task: "Optional[asyncio.Task]" = None
@@ -195,9 +197,13 @@ class PZContext(CommonContext):
         from .memory.research import ResearchGate, FACILITY_RESEARCH_CATEGORY
         from .memory.presence import PresenceGate
         from .memory.terrain import TerrainGate
+        from .memory.zoodate import ParkAgeReader
 
         anchors = AnchorTable.load()
         scanner = MemoryScanner(anchors.process_name)
+        # Reads the park's completed-years-open counter; a fresh zoo (Year 1) re-awards all received
+        # items, latched so it fires once per fresh save (see _apply_new_items / state.fresh_pending).
+        self._park_age = ParkAgeReader(scanner)
         # Permit gate: memory-enforced per-species purchase block. The gated universe
         # = every species that has a species_unlock item; received permits unblock them.
         self.permit_gate = PermitGate(scanner)
@@ -343,6 +349,43 @@ class PZContext(CommonContext):
 
     # -- idempotent item application (A3) -------------------------------------
 
+    def _park_years(self) -> "Optional[int]":
+        """Completed years the loaded park has been open (0 in Year 1), or None if unknown (no memory /
+        no zoo / counter not located). Returns None while the park-age anchor is gated off (see
+        zoodate.PARKAGE_ENABLED), so the fresh-reset can never mis-fire on an established zoo."""
+        from .memory.zoodate import PARKAGE_ENABLED
+        reader = self._park_age
+        if not PARKAGE_ENABLED or reader is None:
+            return None
+        try:
+            return reader.read()
+        except Exception:
+            return None
+
+    def _maybe_fresh_reset(self, seed: str, applied: int, years: "Optional[int]") -> int:
+        """If attached to a FRESH zoo (``years`` open below the threshold) that we've previously awarded
+        items to, zero the high-water mark so all cumulative items re-apply. Latched via
+        state.fresh_pending so it fires once per fresh save - not on every reconnect to the same young
+        zoo - and re-arms only once the zoo matures past the threshold. Returns the (possibly reset)
+        applied count. Unknown age (None) => do nothing (fail safe: never a spurious re-award)."""
+        from .memory.zoodate import FRESH_YEARS
+        if years is None:
+            return applied
+        pending = self.state.get_fresh_pending(seed, self.slot)
+        if years >= FRESH_YEARS:
+            if pending:
+                self.state.set_fresh_pending(seed, self.slot, False)  # matured -> arm for the next new save
+            return applied
+        if pending:
+            return applied                                            # this fresh save already handled
+        if applied > 0 and not self._fresh_reset_done:
+            self._fresh_reset_done = True
+            self.state.set(seed, self.slot, 0)
+            applied = 0
+            logger.info("Fresh zoo detected (Year 1, %d years open) - re-awarding all received items", years)
+        self.state.set_fresh_pending(seed, self.slot, True)           # mark this fresh save handled
+        return applied
+
     def applied_high_water(self) -> int:
         if self.state is None or self.slot is None:
             return 0
@@ -352,6 +395,10 @@ class PZContext(CommonContext):
         if self.state is None or self.slot is None:
             return
         seed = self.seed_name or "unknown"
+        # Fresh-save re-award: a brand-new zoo (Year 1, 0 years open) re-applies ALL received items by
+        # zeroing the high-water mark. Unlocks are idempotent (gates reconcile); cash/cc re-grant. Latched
+        # in persisted state so it fires once per fresh save, not on every reconnect to the same young zoo.
+        self._maybe_fresh_reset(seed, self.state.get(seed, self.slot), self._park_years())
         applied = min(self.state.get(seed, self.slot), len(self.items_received))
         for idx in range(applied, len(self.items_received)):
             net_item = self.items_received[idx]

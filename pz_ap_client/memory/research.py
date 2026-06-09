@@ -29,6 +29,7 @@ from __future__ import annotations
 
 import logging
 import struct
+import time
 from typing import Dict, Optional, Tuple
 
 from .hook import (HookManager, make_research_gate, RESEARCH_GATE_COUNT,
@@ -39,6 +40,13 @@ logger = logging.getLogger("PZClient")
 # master-root chain to the *address that holds* the research_system pointer (then deref).
 RESEARCH_CHAIN = (0x2944690, 0x18, 0x350)
 RESEARCH_CHAIN_ALT = (0x29446A0, 0x20, 0x518)  # 2nd proven path (guest/zoo root)
+# Both chains above are LAYOUT-FRAGILE - they miss the research system in some saves (validated live
+# 2026-06-08: a fully-loaded zoo where the primary walks a wrong cluster and the alt breaks at +0x518).
+# The robust locator is a heap scan for the research-system VTABLE (the pointer at research_system+0x000)
+# validating the items map at +0xF8. Build-specific; re-derive with tools/research_vtable_scan.py if a
+# game patch breaks research resolution.
+RESEARCH_VTABLE_RVA = 0x26C3490
+SCAN_COOLDOWN_S = 5.0        # min seconds between vtable heap-scans when unresolved (don't stall poll)
 ITEMS_MAP_OFF = 0xF8
 REC_STRIDE = 0x58
 REC_ITEMID = 0x00            # u32 research-item id (map key) - RESTART-STABLE content id
@@ -99,6 +107,8 @@ class ResearchReader:
         if research_items:
             self.research_items.update(research_items)
         self._warned_unmapped: set = set()
+        self._rs_cache: Optional[int] = None  # last good research-system address (revalidated each use)
+        self._last_scan = 0.0                 # monotonic time of the last vtable heap-scan (throttle)
 
     def _map_ok(self, rs: int) -> bool:
         """Cheap check that rs+ITEMS_MAP_OFF is a readable items map - lets us tell the real research
@@ -120,22 +130,41 @@ class ResearchReader:
         return addr
 
     def _research_system(self) -> Optional[int]:
-        """Resolve the research system. A chain can dereference to a valid-but-WRONG object on some
-        sessions (seen live: the primary chain landing on a non-map object while the alt was correct),
-        so PREFER whichever chain lands on a readable items map; fall back to the first that resolved
-        only if neither validates (preserves the original behaviour where the primary was correct)."""
+        """Resolve the research system, robust across saves. The master-root chains are layout-fragile
+        (they miss in some saves), so: reuse a cached object if it's still valid, else try the fast
+        chains, else fall back to a heap scan for the system's vtable. Returns None if truly unreachable
+        (no garbage fallback) so callers fail safe."""
         base = getattr(self.scanner, "module_base", None)
         if not base:
             return None
-        fallback = None
+        if self._rs_cache and self._map_ok(self._rs_cache):
+            return self._rs_cache                       # cached object still valid for this zoo (cheap)
         for chain in (RESEARCH_CHAIN, RESEARCH_CHAIN_ALT):
             addr = self._walk_chain(base, chain)
-            if addr:
-                if self._map_ok(addr):
-                    return addr
-                if fallback is None:
-                    fallback = addr
-        return fallback
+            if addr and self._map_ok(addr):
+                self._rs_cache = addr
+                return addr
+        now = time.monotonic()                          # throttle the (expensive) heap scan so a
+        if now - self._last_scan < SCAN_COOLDOWN_S:      # never-resolvable zoo can't stall the poll
+            return None                                  # loop with a full scan every tick
+        self._last_scan = now
+        addr = self._scan_for_system(base)              # robust fallback: the chains missed
+        if addr:
+            self._rs_cache = addr
+        return addr
+
+    def _scan_for_system(self, base: int) -> Optional[int]:
+        """Chain-independent locate: scan the heap for the research-system vtable and return the first
+        object with a valid items map (skips the decoy object that shares the vtable). Slow (heap scan)
+        but only runs when the chains miss, and the result is cached. No-op if the scanner can't scan."""
+        scan = getattr(self.scanner, "scan_heap_for_qword", None)
+        if scan is None:
+            return None
+        for obj in scan(base + RESEARCH_VTABLE_RVA):
+            if self._map_ok(obj):
+                logger.info("research: located via vtable scan @0x%X (master-root chains missed)", obj)
+                return obj
+        return None
 
     def _snapshot(self) -> Optional[Tuple[dict, dict]]:
         """Read the items map once: returns (by_item, by_handle) or None.

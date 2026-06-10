@@ -1,0 +1,47 @@
+<ResearchRoot count="6" game="Planet Zoo">
+	<levels pool_type="4">
+		<research is_completed="0" is_entry_level="1" is_enabled="1" unk_3="0" unk_4="0">
+			<item_name>DrinkShopsGulpeeSlush</item_name>
+			<next_research pool_type="4" unk_1="0">
+				<item_name>
+					<pointer>DrinkShopsPipshotWater</pointer>
+				</item_name>
+			</next_research>
+		</research>
+		<research is_completed="0" is_entry_level="0" is_enabled="0" unk_3="0" unk_4="0">
+			<item_name>DrinkShopsPipshotWater</item_name>
+			<next_research pool_type="4" unk_1="0">
+				<item_name>
+					<pointer>DrinkShopsFoxyCoffee</pointer>
+				</item_name>
+			</next_research>
+		</research>
+		<research is_completed="0" is_entry_level="0" is_enabled="0" unk_3="0" unk_4="0">
+			<item_name>DrinkShopsFoxyCoffee</item_name>
+			<next_research pool_type="4" unk_1="0">
+				<item_name>
+					<pointer>DrinkShopsCosmicCowMilkshakes</pointer>
+				</item_name>
+			</next_research>
+		</research>
+		<research is_completed="0" is_entry_level="0" is_enabled="0" unk_3="0" unk_4="0">
+			<item_name>DrinkShopsCosmicCowMilkshakes</item_name>
+			<next_research pool_type="4" unk_1="0">
+				<item_name>
+					<pointer>DrinkShopsPipshotJuice</pointer>
+				</item_name>
+			</next_research>
+		</research>
+		<research is_completed="0" is_entry_level="0" is_enabled="0" unk_3="0" unk_4="0">
+			<item_name>DrinkShopsPipshotJuice</item_name>
+			<next_research pool_type="4" unk_1="0">
+				<item_name>
+					<pointer>DrinkShopsGulpeeEnergy</pointer>
+				</item_name>
+			</next_research>
+		</research>
+		<research is_completed="0" is_entry_level="0" is_enabled="0" unk_3="0" unk_4="0">
+			<item_name>DrinkShopsGulpeeEnergy</item_name>
+		</research>
+	</levels>
+</ResearchRoot>

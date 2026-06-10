@@ -49,12 +49,14 @@ def main() -> None:
                 "conservation_release_count", "research_state_base",
                 "species_roster_base", "birth_event_counter"}
     _check(expected <= set(table.anchors), "all expected anchors present")
-    # As the A2 spike fills anchors, unfilled() shrinks. Invariant: unfilled() lists
-    # exactly the anchors that report filled=False; the rest report filled=True.
-    _check(all(not table.anchors[n].filled for n in table.unfilled()),
-           "unfilled() lists exactly the not-yet-resolvable anchors")
-    _check(all(table.anchors[n].filled for n in set(table.anchors) - set(table.unfilled())),
-           "anchors not in unfilled() report filled=True")
+    # As the A2 spike fills anchors, unfilled() shrinks. Invariant: unfilled() lists exactly the
+    # not-yet-resolvable, NON-superseded anchors; everything else is either filled or superseded
+    # (superseded = solved via a code hook / reader, intentionally never data-filled).
+    _check(all(not table.anchors[n].filled and not table.anchors[n].superseded for n in table.unfilled()),
+           "unfilled() lists exactly the not-yet-resolvable, non-superseded anchors")
+    _check(all(table.anchors[n].filled or table.anchors[n].superseded
+               for n in set(table.anchors) - set(table.unfilled())),
+           "anchors not in unfilled() are filled or superseded")
     _check("research" in table.entity_offsets and "species_birth" in table.entity_offsets,
            "entity_offset groups parsed")
 

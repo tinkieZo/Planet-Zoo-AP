@@ -37,3 +37,25 @@ tools/_attic/
 # pz-ap-client.spec + pz_client_main.py ARE committed (the build recipe); the output is not.
 build/
 dist/
+tools/_decomp/
+tools/_research_extract/
+
+# OVL patch workspace: the ~350 MB patched Main.ovl variants and other binaries are
+# regenerable (cobra-tools reinject from the pristine ovl); the authored patch sources
+# (.lua shells, mechanic-research settings spikes) ARE kept trackable.
+tools/_ovl_patch/**
+!tools/_ovl_patch/**/
+!tools/_ovl_patch/**/*.lua
+!tools/_ovl_patch/**/*.mechanicresearchsettings
+# ...EXCEPT verbatim/patched Frontier game files - never redistribute (local copies only):
+# pristine extracts, the vanilla scenario_01 script copies, and the bytecode-patched
+# staff-tab binary (compiled game Lua named .lua).
+tools/_ovl_patch/_pristine/
+tools/_ovl_patch/_scn1/
+tools/_ovl_patch/_scn1src/
+tools/_ovl_patch/_verify_scn1/
+tools/_ovl_patch/_verify_scn1src/
+tools/_ovl_patch/**/editors.park.staffmanagementtab.lua
+
+# Heap-scan output of tools/_lua_error_scan.py (regenerable from a live game).
+tools/_lua_error_hits.txt

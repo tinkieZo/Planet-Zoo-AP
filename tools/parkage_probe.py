@@ -34,6 +34,22 @@ def _looks_pointer(v) -> bool:
     return bool(v) and HEAP_LO < v < HEAP_HI
 
 
+def _expand_frontier(s, frontier, out, cap):
+    """One BFS level: every new pointer-looking qword in the frontier objects' first 0x600 bytes."""
+    nxt = []
+    for obj in frontier:
+        try:
+            blob = s.read_bytes(obj, 0x600)
+        except Exception:
+            continue
+        for off in range(0, len(blob) - 8, 8):
+            p = struct.unpack_from("<Q", blob, off)[0]
+            if _looks_pointer(p) and p not in out and len(out) < cap:
+                out.add(p)
+                nxt.append(p)
+    return nxt
+
+
 def _reachable_objects(s, max_depth: int = 3, cap: int = 6000):
     """Heap objects reachable from the stable anchor roots (BFS, depth-limited)."""
     out = set()
@@ -45,18 +61,7 @@ def _reachable_objects(s, max_depth: int = 3, cap: int = 6000):
         out.add(root_obj)
         frontier, depth = [root_obj], 0
         while frontier and depth < max_depth and len(out) < cap:
-            nxt = []
-            for obj in frontier:
-                try:
-                    blob = s.read_bytes(obj, 0x600)
-                except Exception:
-                    continue
-                for off in range(0, len(blob) - 8, 8):
-                    p = struct.unpack_from("<Q", blob, off)[0]
-                    if _looks_pointer(p) and p not in out and len(out) < cap:
-                        out.add(p)
-                        nxt.append(p)
-            frontier, depth = nxt, depth + 1
+            frontier, depth = _expand_frontier(s, frontier, out, cap), depth + 1
     return out
 
 

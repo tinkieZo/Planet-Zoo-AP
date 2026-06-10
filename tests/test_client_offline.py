@@ -138,6 +138,43 @@ async def main() -> None:
         _check(ctx2.finished_game, "goal COMPLETE after both locations checked")
         _check(("status", 30) in applied_log, "CLIENT_GOAL (30) status sent")
 
+        # --- market reconciler: stocks the scenario market with unlocked species only
+        class _FakeResearch:
+            def __init__(self, handles): self._h = handles
+            def _snapshot(self): return object()
+            def current_handle(self, key, _snap): return self._h.get(key)
+
+        class _FakeSpawner:
+            def __init__(self, handles):
+                self.research = _FakeResearch(handles)
+                self.live = []
+                self.spawned = []
+                self.mode = True
+            def scenario_mode(self): return self.mode
+            def live_species(self): return list(self.live)
+            def spawn_species_id(self, h, female=None): self.spawned.append(h); return True
+
+        # ctx2 holds the panda permit (1008) -> giant_panda is purchase-unblocked; everything
+        # else stays blocked, so only the panda may be offered on the market.
+        spawner = _FakeSpawner({"giant_panda": 0x834})
+        ctx2.market_spawner = spawner
+        ctx2._reconcile_market()
+        _check(spawner.spawned == [0x834], "market offers exactly the unlocked species (panda)")
+        ctx2._reconcile_market()
+        _check(spawner.spawned == [0x834], "respawn cooldown prevents immediate re-arm")
+        ctx2._market_last_spawn.clear()
+        spawner.live = [0x834]
+        ctx2._reconcile_market()
+        _check(spawner.spawned == [0x834], "no re-arm while a live listing exists")
+        ctx2._market_last_spawn.clear()
+        spawner.live = []
+        spawner.mode = False
+        ctx2._reconcile_market()
+        _check(spawner.spawned == [0x834], "no-op outside scenario mode")
+        spawner.mode = True
+        ctx2._reconcile_market()
+        _check(spawner.spawned == [0x834, 0x834], "purchased/expired listing re-offered after cooldown")
+
         print("\nALL OFFLINE TESTS PASSED")
     finally:
         effects.ConsoleEffectApplier._log = real_log

@@ -22,6 +22,7 @@ import asyncio
 import logging
 import os
 import sys
+import time
 from pathlib import Path
 from typing import TYPE_CHECKING, List, Optional
 
@@ -167,7 +168,12 @@ class PZContext(CommonContext):
         self.research_gate = None  # ResearchGate (memory mode); enforces research_centre/workshop
         self.presence_gate = None  # PresenceGate (memory mode); native greyed-button UX for those
         self.terrain_gate = None  # TerrainGate (memory mode); native terrain-tool greying (water_tools)
+        self.market_spawner = None  # ScheduleSpawner (memory mode); stocks the scenario market with unlocked species
+        self._market_last_spawn: dict = {}  # species_key -> time.monotonic() of the last armed spawn
+        self.market_respawn_cooldown: float = 120.0  # seconds before re-offering a missing unlocked species
         self._park_age = None  # ParkAgeReader (memory mode); reads park years-open to detect a fresh save
+        self._session = None  # ApSessionDetector (memory mode); is the LOADED park the AP scenario?
+        self._scanner = None  # the shared MemoryScanner (memory mode)
         self._fresh_reset_done = False  # re-awarded all items for a fresh zoo once this session
         self._initial_applied: "Optional[int]" = None  # high-water mark at session start (drives re-award)
         self._preflight_done = False  # run the signatures self-check once on first attach (fail-loud)
@@ -203,6 +209,7 @@ class PZContext(CommonContext):
 
         anchors = AnchorTable.load()
         scanner = MemoryScanner(anchors.process_name)
+        self._scanner = scanner
         # Reads the park's completed-years-open counter; a fresh zoo (Year 1) re-awards all received
         # items, latched so it fires once per fresh save (see _apply_new_items / state.fresh_pending).
         self._park_age = ParkAgeReader(scanner)
@@ -239,6 +246,19 @@ class PZContext(CommonContext):
         # purchase-block proxy, which stays as belt-and-suspenders for the water-gated species).
         self.terrain_gate = TerrainGate(scanner)
         self.terrain_gate.set_gated(self.game_data.tool_keys())
+        # Scenario-market spawner - the AP scenario's market is natively EMPTY (its schedule is
+        # dormant), so the client stocks it with exactly the unlocked species (the Goodwin House
+        # hijack; see memory/market.py). Reuses the trigger source's ResearchReader so species-id
+        # resolution shares one snapshot path with the permit gate.
+        from .memory.market import ScheduleSpawner
+        self.market_spawner = ScheduleSpawner(scanner, research=self.trigger_source.research)
+        # AP-session detection - the whole poll tick is a no-op unless the LOADED park is the AP
+        # scenario (park-name marker planted by Scenario_AP_Script + scenario-mode market). Keeps the
+        # client from gating/awarding inside franchise/sandbox/vanilla-career parks. Escape hatch:
+        # PZAP_NO_SESSION_GATE=1 restores the old gate-whatever-is-loaded behaviour (debugging, or an
+        # ovl that predates the SetParkName marker).
+        from .memory.session import ApSessionDetector
+        self._session = ApSessionDetector(scanner, mode_check=self.market_spawner.scenario_mode)
         self.applier = MemoryEffectApplier(scanner, anchors, permit_gate=self.permit_gate,
                                            release_gate=self.trigger_source.releases,
                                            facility_gate=self.facility_gate,
@@ -265,10 +285,23 @@ class PZContext(CommonContext):
         event loop (where server sends are safe)."""
         self._pending_checks.append(location_id)
 
+    def _session_active(self) -> bool:
+        """True iff the loaded park is the AP scenario (or session detection is bypassed). Evaluated
+        before every poll tick so the client is INERT in foreign parks - no hooks, no item writes, no
+        checks - and wakes up by itself when the AP scenario loads."""
+        if self._session is None or os.environ.get("PZAP_NO_SESSION_GATE") == "1":
+            return True
+        scanner = self._scanner
+        if not scanner.attached and not scanner.attach():
+            return False    # game not running; nothing to gate
+        return self._session.is_ap_session()
+
     def _poll_tick(self) -> None:
         """The synchronous poll body. Runs in a worker thread (see poll_loop) and does only memory I/O -
         detection, item application, gate installs/reconciles - NO server sends (checks are queued via
         _collect_check). Each step is isolated so one failure doesn't abort the rest of the tick."""
+        if not self._session_active():
+            return
         for step in (
             lambda: self.trigger_source.poll(self.effective_checked),  # game events -> queued checks
             self._run_preflight,        # once, on first attach: self-check every patch-sensitive site
@@ -279,6 +312,7 @@ class PZContext(CommonContext):
             self._reconcile_research,      # keep the research gate = (research facilities received?)
             self._reconcile_presence,      # keep the native greyed-button UX in sync
             self._reconcile_terrain,       # keep the native terrain-tool greying = received tool set
+            self._reconcile_market,        # keep the scenario market stocked = unlocked species only
         ):
             try:
                 step()
@@ -546,6 +580,37 @@ class PZContext(CommonContext):
             self.presence_gate.reconcile(received)
         except Exception:
             logger.exception("presence reconcile failed")
+
+    def _reconcile_market(self) -> None:
+        """Keep the scenario animal market stocked with the unlocked species (and ONLY them).
+        The AP scenario's market is natively empty - its schedule never fires - so everything the
+        player can buy goes through us: for each purchase-unblocked species with no live listing,
+        arm a schedule slot (native generation; see memory/market.py). A wall-clock cooldown per
+        species stops paused-game re-arms from flooding and re-offers a purchased/expired listing
+        at a sane rate. No-op outside scenario mode (sandbox/franchise markets are engine-driven)."""
+        if self.market_spawner is None or not self.market_spawner.scenario_mode():
+            return
+        received_ids = [ni.item for ni in self.items_received]
+        allowed = self.game_data.purchase_universe() - self.game_data.purchase_blocked_species(received_ids)
+        if not allowed:
+            return
+        snap = self.market_spawner.research._snapshot()
+        if snap is None:
+            return
+        now = time.monotonic()
+        live = None  # read lazily: most ticks nothing is missing/cooled-down
+        for key in sorted(allowed):
+            if now - self._market_last_spawn.get(key, -self.market_respawn_cooldown) < self.market_respawn_cooldown:
+                continue
+            handle = self.market_spawner.research.current_handle(key, snap)
+            if handle is None:
+                continue
+            if live is None:
+                live = set(self.market_spawner.live_species())
+            if handle in live:
+                continue
+            if self.market_spawner.spawn_species_id(handle):
+                self._market_last_spawn[key] = now
 
     def _run_preflight(self) -> None:
         """Once, on first successful attach: run the signatures self-check and log a health report.

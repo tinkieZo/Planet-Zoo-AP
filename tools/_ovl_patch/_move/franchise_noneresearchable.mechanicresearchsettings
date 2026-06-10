@@ -1,0 +1,19 @@
+<ResearchRoot count="5" game="Planet Zoo">
+	<levels pool_type="4">
+		<research is_completed="0" is_entry_level="0" is_enabled="0" unk_3="0" unk_4="0">
+			<item_name>GuestSpawner</item_name>
+		</research>
+		<research is_completed="0" is_entry_level="0" is_enabled="0" unk_3="0" unk_4="0">
+			<item_name>ParkGate</item_name>
+		</research>
+		<research is_completed="0" is_entry_level="0" is_enabled="0" unk_3="0" unk_4="0">
+			<item_name>ScenarioBlueprint01</item_name>
+		</research>
+		<research is_completed="0" is_entry_level="0" is_enabled="0" unk_3="0" unk_4="0">
+			<item_name>ScenarioBlueprint02</item_name>
+		</research>
+		<research is_completed="0" is_entry_level="0" is_enabled="0" unk_3="0" unk_4="0">
+			<item_name>DrinkShopsPipshotSmoothies</item_name>
+		</research>
+	</levels>
+</ResearchRoot>

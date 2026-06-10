@@ -78,6 +78,14 @@ RESEARCH_CHAIN = (0x2944690, 0x18, 0x350)
 # specific RVA - re-derive after a patch with tools/parkage_probe.py --find-world / --parkinfo-vt.
 PARKINFO_VTABLE_RVA = 0x26C2ED8
 PARKINFO_PERIODS_OFF = 0x1C8
+# Park NAME on the same park-info class: +0x1E8 = pointer to the engine's refcounted string
+# {len i64 @+0x00, refcount i32 @+0x10, chars @+0x14}. GetParkName executor 0x1466770E0 reads
+# *(world+0xA8)+0x1E8; SetParkName 0x14667A8F0 interns the Lua string and swaps it here. NULL when
+# nothing ever named the park (true for the AP scenario's empty bin - the frontend's
+# GetLocalisedText(scenarioName) is nil for our plain-string label, so the load path sets nil).
+# The AP scenario script plants "ARCHIPELAGO ZOO" here at Init = the AP-session marker
+# (memory/session.py reads it to decide whether the loaded park is the AP world).
+PARKINFO_NAME_OFF = 0x1E8
 
 
 # ── robust full-module AOB scan (pymem's pattern_scan_module misses high RVAs) ───────────────────────
@@ -319,6 +327,25 @@ def check_roots(scanner) -> List[CheckResult]:
     return out
 
 
+def check_session(scanner) -> List[CheckResult]:
+    """AP-session detection state: the park-name marker (park-info +0x1E8) planted by the scenario
+    script. 'ok' = marker read back; an unnamed/foreign park is REPORTED but not a failure (the client
+    is designed to idle there) - it only flags 'broken' when the park-info class itself is gone."""
+    try:
+        from .session import AP_PARK_NAME, ParkNameReader
+        reader = ParkNameReader(scanner)
+        name = reader.read()
+    except Exception as e:
+        return [CheckResult("system", "ap_session", "unresolved", "reader error: %s" % type(e).__name__)]
+    if name == AP_PARK_NAME:
+        return [CheckResult("system", "ap_session", "ok", "park-name marker present (%r)" % name)]
+    if reader._cached:
+        return [CheckResult("system", "ap_session", "ok",
+                            "park-info resolves; no marker (name=%r) - client idles in this park" % name)]
+    return [CheckResult("system", "ap_session", "broken",
+                        "no park-info instance (no loaded zoo, or vtable RVA stale after a patch)")]
+
+
 def run_selfcheck(scanner, anchor_table=None) -> List[CheckResult]:
     """Resolve every dependency and return a health report. anchor_table optional (skips anchor checks)."""
     results: List[CheckResult] = []
@@ -328,4 +355,5 @@ def run_selfcheck(scanner, anchor_table=None) -> List[CheckResult]:
         results += check_anchors(scanner, anchor_table)
     results += check_research(scanner)
     results += check_terrain(scanner)
+    results += check_session(scanner)
     return results

@@ -52,6 +52,9 @@ class Anchor:
     # write multiplies back (-> cents). Default 1 = no conversion.
     scale: float = 1.0
     notes: str = ""
+    # Intentionally left unfilled because the value is obtained another way (a code hook / dedicated
+    # reader), not a data anchor. Excluded from unfilled() so it doesn't raise a false "not filled" warning.
+    superseded: bool = False
 
     @property
     def filled(self) -> bool:
@@ -127,6 +130,7 @@ class AnchorTable:
                 module_only=spec.get("module_only", True),
                 scale=float(spec.get("scale", 1) or 1),
                 notes=spec.get("notes", ""),
+                superseded=bool(spec.get("superseded", False)),
             )
             for name, spec in raw.get("anchors", {}).items()
         }
@@ -213,7 +217,9 @@ class AnchorTable:
         return True
 
     def unfilled(self) -> List[str]:
-        return [n for n, a in self.anchors.items() if not a.filled]
+        """Anchors still needing the spike. Excludes 'superseded' ones (solved via a code hook / reader,
+        intentionally never data-filled) so they don't raise a false warning."""
+        return [n for n, a in self.anchors.items() if not a.filled and not a.superseded]
 
 
 def _read_typed(scanner: MemoryScanner, addr: int, type_: str):

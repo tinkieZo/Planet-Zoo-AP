@@ -76,6 +76,10 @@ class FacilityGate:
     def ensure_installed(self) -> bool:
         if self.installed:
             return True
+        if not self.gated:
+            return False  # nothing routed to the placement gate (trade/vet are permits, research has
+            # its own gate) -> silent no-op. The "pending" notice below only matters once a facility item
+            # actually needs placement-blocking (the future build-menu / blueprint-unlock feature).
         if FACILITY_RVA is None or FACILITY_ORIG is None or FACILITY_FAIL_DELTA is None:
             if not self._warned_pending:
                 self._warned_pending = True

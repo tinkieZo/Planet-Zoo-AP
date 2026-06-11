@@ -460,6 +460,57 @@ working via the park-age anchor on the same park-info class, market reconciler w
 tests green. Open items: v18 boot-validation, real AP objectives, locked-menu UX,
 exhibit-market analog (L7), end-to-end client test against a real AP server in-scenario.
 
+### Deployment / releases - one exe, in-client installer (built 2026-06-10)
+
+Decisions (locked): releases are a **single exe** (the client, standard AP Kivy GUI), and the
+ovl management lives **in the client as explicit actions**, decoupled from the connect
+lifecycle - install converges state once; nothing swaps per-session. The shell is inert
+outside AP (the hijack keys on our careerdata's scenario code), so there is nothing to revert
+for vanilla play; `/pz_restore` exists as a courtesy.
+
+- **No Frontier bytes in the release.** Measured: cobra-tools inject repacks the whole ovl
+  (16 bytes common prefix vs vanilla), so binary deltas are ~full-size and copyright-laden.
+  Instead the release ships only the authored Lua (`pz_ap_client/ovl_src/` - now the canonical
+  home; `tools/_ovl_patch/` stays a workspace) plus a trimmed **vendored cobra-tools** (like
+  the vendored Archipelago tree), and `/pz_install` builds the patched ovl **on the user's
+  machine from their own vanilla** (~4 min, one-time per game version).
+- **No Frontier content in the SOURCES either (v19 rewrite, 2026-06-11).** The shell's two
+  derived files (vanilla career-table copy, Scenario_01 park-settings copy) were eliminated
+  via engine extension points found in gamescript decompiles (`Database.Main`,
+  `Database.MainCareerData`, `ScenarioManager`):
+  1. **Additive career data via a standalone content pack** - the engine discovers content
+     packs by Manifest.xml folder scan and tryrequires `Database.<PackName>LuaDatabase` per
+     pack (`Main.InitContentToCall` - the exact mechanism every DLC uses, verified against
+     Content1's decompile). The shell now ships as `ovldata\PZArchipelago\` (~6 KB Main.ovl,
+     built by cobra `new` in seconds, byte-identical extract round-trip verified): hot-plug
+     hook + additive careerdata (scenario codes are unique-asserted; sets MERGE by code via
+     shallow `table.merge`, so extending the first career set restates only 4 park-code
+     identifiers) + scenario script + settings.
+  2. **Minimal park settings** - `ScenarioManager.Init` defaults are permissive
+     (bDisable*=false, bCanHireNewStaff=true, multipliers=1) and `WorldLoad` nil-guards
+     numerics/tables while assigning booleans unguarded; the sub-managers (marketing,
+     demographics, park rating) skip absent sub-tables. The module now states only the
+     true-booleans we rely on, our economy choices, and the two fields
+     `MergeParkSettingData` reads unguarded (`nRefundMultiplier`/`nTrackRefundMultiplier`).
+  Only `scenarioscriptutils.lua` (hand-rewritten, committable) still requires the Content0
+  inject - it must REPLACE the vanilla module that builds the script-type table. The
+  installer builds/deploys both artifacts and `/pz_restore` also removes the pack folder.
+  PENDING: v19 boot validation (career entry appears via set merge, scenario boots, marker
+  plants, selfcheck green in-park).
+- **`pz_ap_client/ovl.py`**: Steam discovery (registry + libraryfolders.vdf), a hash/stamp
+  state machine (`vanilla / installed / stale / game-updated / ambiguous` - stale = bundled
+  sources newer than the deployed shell; game-updated = Steam patched/verified over us),
+  backup hygiene (never overwrite a backup that doesn't match the live vanilla), and the
+  inject as a crash-isolated subprocess (frozen exe re-invokes itself with
+  `--run-ovl-inject`). 17 offline tests cover the state machine end-to-end.
+- **Client UX**: startup logs the mod status; `/pz_mod` `/pz_install` `/pz_restore`
+  `/pz_launch` (Steam url with `-skipScenarioIntro` - closes that polish item). Install runs
+  in a worker thread; refuses while the game runs.
+- **Per-seed stays runtime**: the ovl remains static and seed-independent - all randomization
+  is client-side reconcile (gates, market, future slot-data-driven start tweaks). For the
+  v1.0 data-layer locks, prefer scenario-scoped settings files and runtime lock-writes over
+  per-seed ovl patches so this stays true.
+
 ## Goals & options (Track B)
 - **Goal options**: flagship chain (current), star-rating target, N conservation releases,
   breed-N-distinct-species, mechanic-research completion %.

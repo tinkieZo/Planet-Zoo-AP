@@ -8,8 +8,15 @@ frozen package (see pz-ap-client.spec), and client.py adds it to sys.path at imp
 import logging
 import sys
 
-from pz_ap_client.client import main
-
 if __name__ == "__main__":
+    # Frozen self-re-invocation: the ovl installer spawns THIS exe as the
+    # cobra-tools inject child (see pz_ap_client/ovl.py). Handle the sentinel
+    # before importing the client (the child needs neither AP nor pymem).
+    if len(sys.argv) > 1 and sys.argv[1] == "--run-ovl-inject":
+        from pz_ap_client.ovl import _inject_child_main
+        sys.exit(_inject_child_main(sys.argv[2:]))
+
+    from pz_ap_client.client import main
+
     logging.getLogger().setLevel(logging.INFO)
     main(sys.argv[1:])

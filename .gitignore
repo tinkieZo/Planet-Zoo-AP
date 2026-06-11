@@ -56,6 +56,11 @@ tools/_ovl_patch/_scn1src/
 tools/_ovl_patch/_verify_scn1/
 tools/_ovl_patch/_verify_scn1src/
 tools/_ovl_patch/**/editors.park.staffmanagementtab.lua
+tools/_ovl_patch/**/database.c0careerdata.lua
+tools/_ovl_patch/**/parksettings.scenario_ap_parksettings.lua
 
 # Heap-scan output of tools/_lua_error_scan.py (regenerable from a live game).
 tools/_lua_error_hits.txt
+
+# (The ovl_src tree is fully authored as of the v19 additive-content-pack rewrite -
+# every module is committed; see pz_ap_client/ovl_src/README.md.)

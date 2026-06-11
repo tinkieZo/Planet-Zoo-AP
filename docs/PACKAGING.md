@@ -14,6 +14,19 @@ installing Python or Archipelago.
   .\.venv\Scripts\python.exe -m pip install -r requirements-clientA.txt pyinstaller
   git clone --depth 1 https://github.com/ArchipelagoMW/Archipelago.git vendor/Archipelago
   ```
+- **GUI + ovl-installer extras** (optional but expected for releases; `build-exe.ps1` warns
+  about whichever is missing and the exe degrades gracefully without them):
+  ```powershell
+  # Kivy GUI (the standard AP client window):
+  .\.venv\Scripts\pip install kivy==2.3.1 kivy_deps.sdl2 kivy_deps.glew
+  .\.venv\Scripts\pip install "kivymd @ git+https://github.com/kivymd/KivyMD@5ff9d0d"
+  # numpy - runtime dep of the vendored cobra-tools (the /pz_install inject engine):
+  .\.venv\Scripts\pip install numpy
+  ```
+- A **cobra-tools** checkout for the in-client ovl installer. `build-exe.ps1` auto-finds a
+  `cobra-tools-master` folder next to the repo (or pass `-CobraSource <dir>` /
+  `$env:PZ_COBRA_SOURCE`) and stages a trimmed copy into `vendor\cobra-tools` (core code +
+  Planet Zoo hash tables only - no docs/GUI/tests/other games' constants).
 
 ## Build
 
@@ -66,16 +79,17 @@ machines.
 
 ## Run the exe
 
-The intended end-user flow is **double-click - no command line**:
+The intended end-user flow is **double-click - no command line** (the order doesn't matter;
+the client idles until the AP scenario park is loaded):
 
-1. Start **Planet Zoo** and load a **Challenge** save. The client *attaches* to the running game; it
-   does not launch it.
-2. Double-click **`pz-ap-client.exe`**. It prompts for the connection details:
-   ```
-   Archipelago server address (host:port): archipelago.gg:38281
-   Slot name: Player1
-   ```
-   then connects and, **by default, attaches to the running game** to apply items + detect checks.
+1. Double-click **`pz-ap-client.exe`**. With the GUI bundled it opens the standard AP client
+   window; enter server + slot there. (Console builds prompt instead.)
+2. First time only: **`/pz_install`** - backs up your vanilla `Main.ovl` and builds + deploys
+   the AP scenario shell *from your own game files* (a few minutes; game must be closed).
+   The startup log always shows the current mod status (`/pz_mod` re-checks; `/pz_restore`
+   puts vanilla back; a game update just means running `/pz_install` again).
+3. **`/pz_launch`** starts Planet Zoo via Steam (with the scenario-intro skip flag). Pick the
+   **ARCHIPELAGO** career entry - the client detects the AP park automatically and goes live.
 
 Flags are optional and mainly for testing - anything passed skips the matching prompt:
 ```powershell
@@ -88,12 +102,12 @@ dist\pz-ap-client\pz-ap-client.exe --name Player1 --no-memory
 Memory attach (the default) requires `anchors.json` to be populated. On a clean exit the client
 **restores every installed detour**; don't hard-kill it while attached or the game is left patched.
 
-**Headless (no GUI):** the build doesn't bundle Kivy, so there's no graphical connect window - it runs
-the AP **console** UI. The startup prompts handle connection; you can also use the `/connect
-<host:port>` command at the prompt. Run without `--nogui` and you'll see a harmless one-line `GUI
-unavailable … running headless console` notice (the client falls back to the console automatically);
-pass `--nogui` to suppress it. First launch is a few seconds while AP discovers its worlds from the
-bundled tree - that's normal.
+**GUI vs console:** release builds bundle Kivy/KivyMD, so the exe opens the standard AP client
+window (`--nogui` forces the console). If the build venv lacked kivy, the exe falls back to the
+AP **console** UI automatically: startup prompts handle the connection, `/connect <host:port>`
+works at the prompt, and a harmless one-line `GUI unavailable … running headless console` notice
+appears. First launch is a few seconds while AP discovers its worlds from the bundled tree -
+that's normal.
 
 ## Validation status (2026-06-04)
 

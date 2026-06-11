@@ -137,6 +137,37 @@ class PZCommandProcessor(ClientCommandProcessor):
         self.output(f"Goal: {len(have)}/{len(need)} - {'COMPLETE' if self.ctx.finished_game else 'in progress'}")
         return True
 
+    # --- AP scenario shell (ovl) management -------------------------------
+
+    def _cmd_pz_mod(self) -> bool:
+        """Show whether the AP scenario shell is installed in the game's Main.ovl."""
+        from . import ovl
+        st = ovl.status()
+        self.output(f"Mod status: {st.state} - {st.detail}")
+        if st.state in ("vanilla", "stale", "game-updated"):
+            self.output("Run /pz_install to install/update the AP scenario (game must be closed).")
+        elif st.state == "ambiguous":
+            self.output("Run /pz_restore to recover vanilla, then /pz_install.")
+        return True
+
+    def _cmd_pz_install(self) -> bool:
+        """Install/update the AP scenario shell into Main.ovl (builds from YOUR game files; ~4 min)."""
+        return self.ctx.run_ovl_job("install")
+
+    def _cmd_pz_restore(self) -> bool:
+        """Restore the vanilla Main.ovl from the backup made at install time."""
+        return self.ctx.run_ovl_job("restore")
+
+    def _cmd_pz_launch(self) -> bool:
+        """Launch Planet Zoo via Steam (with the scenario-intro skip flag)."""
+        from . import ovl
+        st = ovl.status()
+        if st.state != "installed":
+            self.output(f"Note: mod status is '{st.state}' - the ARCHIPELAGO career entry needs /pz_install.")
+        ovl.launch_game()
+        self.output("Launching Planet Zoo via Steam... pick the ARCHIPELAGO career entry once it's up.")
+        return True
+
 
 class PZContext(CommonContext):
     # Stay game-agnostic at construction (game="") so CommonContext.__init__ doesn't look up a LOCAL
@@ -175,6 +206,7 @@ class PZContext(CommonContext):
         self._session = None  # ApSessionDetector (memory mode); is the LOADED park the AP scenario?
         self._scanner = None  # the shared MemoryScanner (memory mode)
         self._fresh_reset_done = False  # re-awarded all items for a fresh zoo once this session
+        self._ovl_job_running = False  # one ovl install/restore at a time (see run_ovl_job)
         self._initial_applied: "Optional[int]" = None  # high-water mark at session start (drives re-award)
         self._preflight_done = False  # run the signatures self-check once on first attach (fail-loud)
         self._pending_checks: List[int] = []  # location ids queued by the poll thread, sent on the loop
@@ -190,6 +222,36 @@ class PZContext(CommonContext):
         self._bg_tasks.add(task)
         task.add_done_callback(self._bg_tasks.discard)
         return task
+
+    def make_gui(self):
+        ui = super().make_gui()
+        ui.base_title = "Planet Zoo Archipelago Client"
+        return ui
+
+    def run_ovl_job(self, action: str) -> bool:
+        """Run the ovl install/restore in a worker thread (the inject takes minutes -
+        it must not block the asyncio loop or the GUI). One job at a time."""
+        from . import ovl
+        if self._ovl_job_running:
+            logger.info("An ovl install/restore is already running.")
+            return False
+        fn = ovl.install if action == "install" else ovl.restore
+
+        async def _job():
+            self._ovl_job_running = True
+            try:
+                loop = asyncio.get_running_loop()
+                st = await loop.run_in_executor(None, lambda: fn(log=logger.info))
+                logger.info("Mod status: %s - %s", st.state, st.detail)
+            except ovl.OvlInstallError as e:
+                logger.error("%s failed: %s", action, e)
+            except Exception:
+                logger.exception("%s failed", action)
+            finally:
+                self._ovl_job_running = False
+
+        self._spawn(_job())
+        return True
 
     def enable_memory(self, poll_interval: float = 1.0) -> None:
         """Switch to the memory-backed applier + start a trigger poll loop.
@@ -692,14 +754,38 @@ class PZContext(CommonContext):
             )
 
 
+def _gui_available() -> bool:
+    """Is the Kivy GUI importable? (The frozen release bundles it; a bare dev env may not.)"""
+    import importlib.util
+    return importlib.util.find_spec("kivy") is not None
+
+
 def _prompt_missing(parsed) -> None:
     """Fill in connection details interactively so a double-clicked exe needs no flags.
     Anything passed on the command line is respected and skips the matching prompt; an empty
-    answer falls back to the in-console "/connect" flow."""
+    answer falls back to the in-console "/connect" flow. Skipped entirely when the GUI will
+    run - its connect bar is the prompt (and input() would block the GUI thread)."""
+    if gui_enabled and _gui_available():
+        return
     if not parsed.connect:
         parsed.connect = input("Archipelago server address (host:port): ").strip() or None
     if not parsed.name:
         parsed.name = input("Slot name: ").strip() or None
+
+
+def _log_mod_status() -> None:
+    """One startup line so a user immediately knows whether the game side is ready."""
+    try:
+        from . import ovl
+        st = ovl.status()
+        logger.info("AP scenario mod: %s - %s", st.state, st.detail)
+        if st.state in ("vanilla", "stale", "game-updated"):
+            logger.info("Type /pz_install to install/update it (game must be closed), "
+                        "/pz_launch to start the game.")
+        elif st.state == "ambiguous":
+            logger.info("Type /pz_restore to recover vanilla, then /pz_install.")
+    except Exception as e:
+        logger.warning("Could not determine mod status: %s", e)
 
 
 def _shutdown_gates(ctx) -> None:
@@ -764,6 +850,7 @@ def main(args=None):
         ctx.server_task = asyncio.create_task(server_loop(ctx), name="server loop")
         if args.memory:
             ctx._poll_task = asyncio.create_task(ctx.poll_loop(), name="pz poll loop")
+        _log_mod_status()
 
         if gui_enabled:
             # gui_enabled is just "not --nogui"; the Kivy GUI may not be installed (this client ships

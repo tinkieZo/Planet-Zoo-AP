@@ -90,9 +90,18 @@ PACK_SRC_FILES = (
     "parksettings.scenario_ap_parksettings.lua",
     "scenarioscripts.scenario_ap_script.lua",
 )
+# Loc keys referenced by the careerdata (one .txt per key; built into a Loc.ovl
+# that install() mirrors into every language leaf Content0 ships - the career UI
+# localises title/label/description, plain strings render empty).
+PACK_LOC_SRC_FILES = (
+    "frontendmenu_scenariodetails_scenario_ap.txt",
+    "frontendmenu_scenarioname_scenario_ap.txt",
+    "frontendmenu_scenariotitle_scenario_ap.txt",
+)
 CONTENT0_SRC_FILES = (
     "scenarioscripts.scenarioscriptutils.lua",
 )
+SRC_SUFFIXES = (".lua", ".txt")
 
 
 # ---------------------------------------------------------------------------
@@ -116,18 +125,19 @@ def src_dir() -> Path:
 
 
 def src_files(directory: Path) -> "List[Path]":
-    """The .lua modules of one shell subdir (sorted). Only .lua is built/digested -
-    the tree also holds a README that must never reach an ovl."""
+    """The source files of one shell subdir (sorted). Only SRC_SUFFIXES are
+    built/digested - the tree also holds a README that must never reach an ovl."""
     if not directory.is_dir():
         return []
-    return sorted(f for f in directory.iterdir() if f.is_file() and f.suffix == ".lua")
+    return sorted(f for f in directory.iterdir() if f.is_file() and f.suffix in SRC_SUFFIXES)
 
 
 def check_src_complete() -> None:
     """Fail loudly when the bundled shell sources are incomplete."""
     root = src_dir()
     missing = []
-    for sub, names in (("pack", PACK_SRC_FILES), ("content0", CONTENT0_SRC_FILES)):
+    for sub, names in (("pack", PACK_SRC_FILES), ("pack_loc", PACK_LOC_SRC_FILES),
+                       ("content0", CONTENT0_SRC_FILES)):
         have = {f.name for f in src_files(root / sub)}
         missing += [f"{sub}/{n}" for n in names if n not in have]
     if missing:
@@ -319,19 +329,35 @@ def _ensure_vanilla_backup(st: OvlStatus, ovl: Path, backup: Path, stamp_path: P
     return sha256_file(backup)
 
 
+def _loc_leafs(game: Path) -> "List[Path]":
+    """Content0's Localised language/region leaf dirs (the ones holding a Loc.ovl)
+    - the set of languages this install ships; our pack mirrors it."""
+    root = game / "win64" / "ovldata" / "Content0" / "Localised"
+    if not root.is_dir():
+        return []
+    return sorted(p.parent.relative_to(root) for p in root.rglob("Loc.ovl"))
+
+
 def _build_and_deploy(game: Path, ovl: Path, backup: Path, log: LogFn,
                       build: Callable[[Path, Path, LogFn], None],
-                      build_pack: Callable[[Path, LogFn], None]) -> Path:
-    """Build BOTH artifacts to temp paths, then deploy. A failure leaves the
-    install untouched. The pack is fast; build it first. Returns the pack dir."""
+                      build_pack: Callable[[Path, LogFn], None],
+                      build_loc: Callable[[Path, LogFn], None]) -> Path:
+    """Build ALL artifacts to temp paths, then deploy. A failure leaves the
+    install untouched. The pack/loc builds are fast; do them first.
+    Returns the pack dir."""
     pack_dir = game / PACK_REL_DIR
     pack_tmp = ovl.with_name("pack.ovl.apnew")
+    loc_tmp = ovl.with_name("loc.ovl.apnew")
     out = ovl.with_name(ovl.name + ".apnew")
     try:
         log("Building the PZArchipelago content pack (career entry + scenario)...")
         build_pack(pack_tmp, log)
         if not pack_tmp.is_file() or pack_tmp.stat().st_size == 0:
             raise OvlInstallError("Content-pack build produced no output - aborting (game files untouched).")
+        log("Building the pack localisation (menu name/description)...")
+        build_loc(loc_tmp, log)
+        if not loc_tmp.is_file() or loc_tmp.stat().st_size == 0:
+            raise OvlInstallError("Localisation build produced no output - aborting (game files untouched).")
         log("Building the patched Content0 ovl from your install (takes a few minutes)...")
         build(backup, out, log)
         if not out.is_file() or out.stat().st_size < ovl.stat().st_size // 2:
@@ -339,10 +365,15 @@ def _build_and_deploy(game: Path, ovl: Path, backup: Path, log: LogFn,
         log("Deploying...")
         pack_dir.mkdir(parents=True, exist_ok=True)
         (pack_dir / "Manifest.xml").write_text(PACK_MANIFEST, encoding="utf-8")
+        # Same (English) strings into every language leaf the install ships.
+        for leaf in _loc_leafs(game):
+            dest = pack_dir / "Localised" / leaf
+            dest.mkdir(parents=True, exist_ok=True)
+            shutil.copyfile(loc_tmp, dest / "Loc.ovl")
         os.replace(pack_tmp, pack_dir / MAIN_OVL_NAME)
         os.replace(out, ovl)
     finally:
-        for tmp in (pack_tmp, out):
+        for tmp in (pack_tmp, loc_tmp, out):
             if tmp.is_file():
                 tmp.unlink()
     return pack_dir
@@ -350,11 +381,12 @@ def _build_and_deploy(game: Path, ovl: Path, backup: Path, log: LogFn,
 
 def install(game_dir: Optional[Path] = None, log: LogFn = logger.info,
             build: Optional[Callable[[Path, Path, LogFn], None]] = None,
-            build_pack: Optional[Callable[[Path, LogFn], None]] = None) -> OvlStatus:
-    """Back up vanilla (if needed), build both shell artifacts from the bundled
-    sources, and deploy: the PZArchipelago content pack (fast, additive) and the
-    Content0 inject (the scriptutils hijack, ~minutes). ``build``/``build_pack``
-    are injectable for tests."""
+            build_pack: Optional[Callable[[Path, LogFn], None]] = None,
+            build_loc: Optional[Callable[[Path, LogFn], None]] = None) -> OvlStatus:
+    """Back up vanilla (if needed), build the shell artifacts from the bundled
+    sources, and deploy: the PZArchipelago content pack + its localisation
+    (fast, additive) and the Content0 inject (the scriptutils hijack, ~minutes).
+    ``build``/``build_pack``/``build_loc`` are injectable for tests."""
     st = status(game_dir)
     if st.state == "no-game":
         raise OvlInstallError(st.detail)
@@ -367,7 +399,8 @@ def install(game_dir: Optional[Path] = None, log: LogFn = logger.info,
     ovl, backup, stamp_path = _paths(game)
     vanilla_hash = _ensure_vanilla_backup(st, ovl, backup, stamp_path, log)
     pack_dir = _build_and_deploy(game, ovl, backup, log,
-                                 build or build_patched, build_pack or build_pack_ovl)
+                                 build or build_patched, build_pack or build_pack_ovl,
+                                 build_loc or build_loc_ovl)
     stamp = {
         "created": time.strftime("%Y-%m-%d %H:%M:%S"),
         "vanilla_sha256": vanilla_hash,
@@ -453,6 +486,11 @@ def build_patched(base: Path, out: Path, log: LogFn = logger.info) -> None:
 def build_pack_ovl(out: Path, log: LogFn = logger.info) -> None:
     """cobra new: ovl_src/pack -> the PZArchipelago content-pack Main.ovl at ``out``."""
     _run_cobra_child("new", src_dir() / "pack", out, None, log)
+
+
+def build_loc_ovl(out: Path, log: LogFn = logger.info) -> None:
+    """cobra new: ovl_src/pack_loc -> the pack's Loc.ovl at ``out``."""
+    _run_cobra_child("new", src_dir() / "pack_loc", out, None, log)
 
 
 def _inject_child_main(argv: List[str]) -> int:

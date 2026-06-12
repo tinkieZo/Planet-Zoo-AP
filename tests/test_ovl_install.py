@@ -21,13 +21,22 @@ PATCHED = b"PATCHED-OVL-CONTENT" * 16
 PACK = b"PACK-OVL"
 
 
+LOC = b"LOC-OVL"
+LOC_LEAFS = (Path("English") / "UnitedKingdom", Path("German") / "Germany")
+
+
 @pytest.fixture
 def game(tmp_path, monkeypatch):
-    """A fake Planet Zoo install with a vanilla Main.ovl; game not running."""
+    """A fake Planet Zoo install with a vanilla Main.ovl + Content0 localisation
+    leafs; game not running."""
     game_dir = tmp_path / "Planet Zoo"
     ovl_path = game_dir / ovl.OVL_REL_PATH
     ovl_path.parent.mkdir(parents=True)
     ovl_path.write_bytes(VANILLA)
+    for leaf in LOC_LEAFS:
+        d = ovl_path.parent / "Localised" / leaf
+        d.mkdir(parents=True)
+        (d / "Loc.ovl").write_bytes(b"vanilla loc")
     monkeypatch.setattr(ovl, "game_running", lambda: False)
     return game_dir
 
@@ -41,6 +50,10 @@ def fake_build_pack(out: Path, log) -> None:
     out.write_bytes(PACK)
 
 
+def fake_build_loc(out: Path, log) -> None:
+    out.write_bytes(LOC)
+
+
 def paths(game_dir):
     return ovl._paths(game_dir)
 
@@ -49,6 +62,7 @@ def install(game_dir, **kw):
     kw.setdefault("log", lambda m: None)
     kw.setdefault("build", fake_build)
     kw.setdefault("build_pack", fake_build_pack)
+    kw.setdefault("build_loc", fake_build_loc)
     return ovl.install(game_dir, **kw)
 
 
@@ -73,18 +87,22 @@ def test_src_digest_tracks_content(tmp_path):
     assert ovl.src_digest(root) != first
 
 
-def test_src_digest_ignores_non_lua(tmp_path):
+def test_src_digest_ignores_non_source_files(tmp_path):
     root = make_src(tmp_path)
     before = ovl.src_digest(root)
     (root / "README.md").write_text("docs change")
-    (root / "pack" / "notes.txt").write_text("scratch")
+    (root / "pack" / "notes.md").write_text("scratch")
     assert ovl.src_digest(root) == before
+    # .txt IS a source suffix (loc strings) - it must affect the digest.
+    (root / "pack" / "x.txt").write_text("loc")
+    assert ovl.src_digest(root) != before
 
 
 def test_bundled_src_complete():
-    # The bundled tree must contain exactly the two manifests' .lua modules.
+    # The bundled tree must contain exactly the manifests' source files.
     ovl.check_src_complete()
     assert tuple(f.name for f in ovl.src_files(ovl.src_dir() / "pack")) == ovl.PACK_SRC_FILES
+    assert tuple(f.name for f in ovl.src_files(ovl.src_dir() / "pack_loc")) == ovl.PACK_LOC_SRC_FILES
     assert tuple(f.name for f in ovl.src_files(ovl.src_dir() / "content0")) == ovl.CONTENT0_SRC_FILES
 
 
@@ -196,6 +214,9 @@ def test_install_from_vanilla(game):
     pack_dir = game / ovl.PACK_REL_DIR
     assert (pack_dir / "Main.ovl").read_bytes() == PACK
     assert ovl.PACK_NAME in (pack_dir / "Manifest.xml").read_text()
+    # The loc ovl is mirrored into every language leaf Content0 ships.
+    for leaf in LOC_LEAFS:
+        assert (pack_dir / "Localised" / leaf / "Loc.ovl").read_bytes() == LOC
     stamp = json.loads(stamp_path.read_text())
     assert stamp["vanilla_sha256"] == ovl.hashlib.sha256(VANILLA).hexdigest()
     assert stamp["patched_sha256"] == ovl.hashlib.sha256(PATCHED).hexdigest()

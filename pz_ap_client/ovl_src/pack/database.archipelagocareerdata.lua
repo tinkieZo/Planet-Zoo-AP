@@ -20,9 +20,14 @@ ArchipelagoCareerData.tScenarioData = {
     code = "Scenario_01_Empty",
     parkImages = {"scenarioPreview_01"},
     icon = {"scenarioIcon_01"},
-    title = "ARCHIPELAGO",
-    label = "ARCHIPELAGO ZOO",
-    description = "Archipelago multiworld scenario (AP shell v19).",
+    -- Bracketed loc keys: the career UI localises these (plain strings render
+    -- EMPTY); the strings ship in our pack's Localised tree (ovl_src/pack_loc/).
+    -- The scenario-name key also natively names new parks "ARCHIPELAGO ZOO"
+    -- (careerselectmode: SetParkName(GetLocalisedText(name key))) = the AP
+    -- session marker; the scenario script re-plants it as belt-and-braces.
+    title = "[FrontEndMenu_ScenarioTitle_Scenario_AP]",
+    label = "[FrontEndMenu_ScenarioName_Scenario_AP]",
+    description = "[FrontEndMenu_ScenarioDetails_Scenario_AP]",
     creator = "[FrontEndMenu_ParkCreator1]",
     parkToLoad = "/run/Zoos/Scenarios_Empty/Scenario_01_Empty.bin",
     parkToLoadTerrainOnly = "/run/Zoos/Scenarios_Empty/Scenario_01_Empty.bin",

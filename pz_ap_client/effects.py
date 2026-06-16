@@ -84,3 +84,9 @@ class ConsoleEffectApplier(EffectApplier):
 
     def on_enrichment_pack(self, item: "Item") -> bool:
         return self._log(item, "grant enrichment item pack")
+
+    def on_research_reward(self, item: "Item") -> bool:
+        return self._log(item, f"grant research reward {item.effect_args.get('content')!r}")
+
+    def on_progressive_research_reward(self, item: "Item") -> bool:
+        return self._log(item, f"grant next {item.effect_args.get('family')!r} research reward")

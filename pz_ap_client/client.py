@@ -200,6 +200,7 @@ class PZContext(CommonContext):
         self.presence_gate = None  # PresenceGate (memory mode); native greyed-button UX for those
         self.terrain_gate = None  # TerrainGate (memory mode); native terrain-tool greying (water_tools)
         self.market_spawner = None  # ScheduleSpawner (memory mode); stocks the scenario market with unlocked species
+        self.reward_granter = None  # RewardGranter (memory mode); grants decoupled research rewards
         self._market_last_spawn: dict = {}  # species_key -> time.monotonic() of the last armed spawn
         self.market_respawn_cooldown: float = 120.0  # seconds before re-offering a missing unlocked species
         self._park_age = None  # ParkAgeReader (memory mode); reads park years-open to detect a fresh save
@@ -314,6 +315,11 @@ class PZContext(CommonContext):
         # resolution shares one snapshot path with the permit gate.
         from .memory.market import ScheduleSpawner
         self.market_spawner = ScheduleSpawner(scanner, research=self.trigger_source.research)
+        # Reward granter - applies decoupled research rewards (research_reward items) by flipping
+        # the content's unlocked byte in the unlockables map. Shares the trigger source's
+        # ResearchReader so it resolves the research system the same way.
+        from .memory.rewards import RewardGranter
+        self.reward_granter = RewardGranter(scanner, research=self.trigger_source.research)
         # AP-session detection - the whole poll tick is a no-op unless the LOADED park is the AP
         # scenario (park-name marker planted by Scenario_AP_Script + scenario-mode market). Keeps the
         # client from gating/awarding inside franchise/sandbox/vanilla-career parks. Escape hatch:
@@ -324,7 +330,8 @@ class PZContext(CommonContext):
         self.applier = MemoryEffectApplier(scanner, anchors, permit_gate=self.permit_gate,
                                            release_gate=self.trigger_source.releases,
                                            facility_gate=self.facility_gate,
-                                           research_gate=self.research_gate)
+                                           research_gate=self.research_gate,
+                                           reward_granter=self.reward_granter)
         # Static seed facts for the conservation gate: is it a gated program here, and/or
         # do we need its release counter for a milestone? (Don't install the blocking hook
         # in a seed that neither gates conservation nor counts releases.)

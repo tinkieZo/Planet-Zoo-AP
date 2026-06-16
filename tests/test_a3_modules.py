@@ -1,4 +1,4 @@
-"""Game-free unit tests for the A3 memory modules (research/permits) - exercises the
+﻿"""Game-free unit tests for the A3 memory modules (research/permits) - exercises the
 real parsing + the restart-stable design (key off the content-stable research-item id,
 resolve the volatile species handle from the map at runtime). No live game needed.
 
@@ -19,8 +19,8 @@ from pz_ap_client.memory.research import ResearchReader, RESEARCH_CHAIN, ITEMS_M
 from pz_ap_client.memory.permits import PermitGate  # noqa: E402
 
 # test welfare item ids (stable) and the per-session handles they resolve to (volatile)
-WELFARE_ITEMS = {"plains_zebra": 0xDAC, "common_warthog": 0x640, "giant_panda": 0xF00,
-                 "saltwater_croc": 0xE00, "lowland_gorilla": 0xE10}
+WELFARE_ITEMS = {"pzebra": 0xDAC, "cwarthog": 0x640, "gpanda": 0xF00,
+                 "scroc": 0xE00, "wgorilla": 0xE10}
 H_ZEBRA, H_WARTHOG, H_PANDA, H_CROC, H_GORILLA = 0x111, 0x222, 0x333, 0x444, 0x555
 
 
@@ -108,29 +108,29 @@ def main() -> None:
     # --- ResearchReader: stable item id -> current handle -> welfare-complete rule ---
     rr = ResearchReader(_build_research_mem(), welfare_items=WELFARE_ITEMS,
                         research_items={"habitat_advanced_barriers": 0xB01, "drink_shops": 0xB02})
-    _check(rr.current_handle("plains_zebra") == H_ZEBRA, "research: item id resolves to current (volatile) handle")
-    _check(rr.is_welfare_complete("plains_zebra"), "research: zebra complete (std levels status 4, advanced ignored)")
-    _check(not rr.is_welfare_complete("common_warthog"), "research: warthog NOT complete (level 5 researching)")
-    _check(not rr.is_welfare_complete("giant_panda"), "research: panda NOT complete (unstarted)")
+    _check(rr.current_handle("pzebra") == H_ZEBRA, "research: item id resolves to current (volatile) handle")
+    _check(rr.is_welfare_complete("pzebra"), "research: zebra complete (std levels status 4, advanced ignored)")
+    _check(not rr.is_welfare_complete("cwarthog"), "research: warthog NOT complete (level 5 researching)")
+    _check(not rr.is_welfare_complete("gpanda"), "research: panda NOT complete (unstarted)")
     _check(not rr.is_welfare_complete("totally_unknown_key"), "research: unmapped key -> False (no crash)")
     # is_research_complete dispatch: welfare keys + mechanic (cat-3, status==4) keys
-    _check(rr.is_research_complete("welfare_plains_zebra"), "dispatch: welfare_plains_zebra -> complete")
-    _check(not rr.is_research_complete("welfare_common_warthog"), "dispatch: welfare_common_warthog -> not complete")
+    _check(rr.is_research_complete("welfare_pzebra"), "dispatch: welfare_pzebra -> complete")
+    _check(not rr.is_research_complete("welfare_cwarthog"), "dispatch: welfare_cwarthog -> not complete")
     _check(rr.is_research_complete("habitat_advanced_barriers"), "dispatch: mechanic (status 4) -> complete")
     _check(not rr.is_research_complete("drink_shops"), "dispatch: mechanic (status 2) -> not complete")
     _check(not rr.is_research_complete("unmapped_key"), "dispatch: unmapped research key -> False")
-    _check(ResearchReader(FakeMem()).is_welfare_complete("plains_zebra") is False,
+    _check(ResearchReader(FakeMem()).is_welfare_complete("pzebra") is False,
            "research: unreadable chain -> False (no false positives)")
 
     # --- PermitGate: gated species' CURRENT handles resolved via the research map ---
     g = PermitGate(_build_research_mem(), research=ResearchReader(_build_research_mem(), welfare_items=WELFARE_ITEMS))
-    g.set_gated(["saltwater_croc", "lowland_gorilla", "american_bison"])  # bison has no welfare item -> unresolvable
+    g.set_gated(["scroc", "wgorilla", "abison"])  # bison has no welfare item -> unresolvable
     _check(sorted(g._blocked_handles()) == sorted([H_CROC, H_GORILLA]),
            "permit: gated species' current handles resolved; unresolvable (bison) skipped; got %s"
            % [hex(b) for b in sorted(g._blocked_handles())])
-    g.unlocked = {"saltwater_croc"}
+    g.unlocked = {"scroc"}
     _check(sorted(g._blocked_handles()) == [H_GORILLA], "permit: unlocking croc leaves only gorilla blocked")
-    g.unlocked = {"saltwater_croc", "lowland_gorilla"}
+    g.unlocked = {"scroc", "wgorilla"}
     _check(g._blocked_handles() == [], "permit: all gated unlocked -> nothing blocked")
 
     # --- MemoryEffectApplier.on_program_unlock: opens the conservation release gate ---
@@ -281,8 +281,8 @@ def main() -> None:
     bd = BirthDetector(_build_research_mem(),
                        research=ResearchReader(_build_research_mem(), welfare_items=WELFARE_ITEMS))
     h2k = bd._handle_to_key()  # {species_handle -> species_key} from the research map
-    _check(h2k.get(H_ZEBRA) == "plains_zebra" and h2k.get(H_PANDA) == "giant_panda"
-           and h2k.get(H_CROC) == "saltwater_croc",
+    _check(h2k.get(H_ZEBRA) == "pzebra" and h2k.get(H_PANDA) == "gpanda"
+           and h2k.get(H_CROC) == "scroc",
            "birth: entity-species-handle reverse-map built from research (handles -> species_keys)")
     _check(BirthDetector(FakeMem())._handle_to_key() == {},
            "birth: reverse-map empty when research map unreadable (no false births)")

@@ -27,12 +27,19 @@ EFFECT_TYPES = {
     "staff_training",
     "marketing",
     "enrichment_pack",
+    # v1.0 reward-decoupling (research-data-layer grant): a completed research no longer
+    # gives its vanilla reward in-game; the reward arrives as an AP item and the client
+    # grants it by flipping the content's unlocked byte (see memory/rewards.py).
+    "research_reward",          # effect_args: {content: "<raw token>"} e.g. "EN_Grazing_Ball"
+    "progressive_research_reward",  # effect_args: {family: supplement|education|breeding|exhibit_enrichment}
 }
 
 # Trigger types the client knows how to detect.
 TRIGGER_TYPES = {
     "research_complete",
     "first_breed",
+    "first_acquire",            # a non-newborn animal entering a habitat (BirthDetector)
+    "conservation_release",     # an animal released to the wild (ReleaseDetector); per-species
     "milestone",
 }
 
@@ -62,6 +69,11 @@ class Species:
     name: str
     gate: str
     flagship: bool = False
+    # The engine's interned species token (== research-catalog species key). The client matches
+    # this to a live species symbol (RegistryResolver) to attribute births/acquisitions and resolve
+    # welfare-research handles - the bridge across Track B's abbreviated-stringid vs full-token
+    # namespaces. "" if unknown (then that species can't be registry-attributed).
+    engine_token: str = ""
 
     @property
     def gate_tokens(self) -> tuple:
@@ -204,6 +216,7 @@ def load(path: str | Path | None = None) -> GameData:
             name=s["name"],
             gate=s["gate"],
             flagship=s.get("flagship", False),
+            engine_token=s.get("engine_token", ""),
         )
         for s in raw.get("species", [])
     ]

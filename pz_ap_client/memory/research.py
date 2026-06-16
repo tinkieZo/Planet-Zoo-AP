@@ -62,25 +62,30 @@ ANIMAL_CATEGORY = 7
 STATUS_COMPLETE = 4
 ADVANCED_LEVEL = 10          # levels >= this are "advanced research" (optional, vet-ongoing)
 
-# data.json species_key -> a representative welfare research-item id (its level-0 record).
-# CONTENT-STABLE across restarts (unlike the species handle). Captured via tools/
-# capture_species.py (buy-logger gives the session handle -> look up its records' item ids).
-# KNOWN: zebra/warthog (confirmed identical across a restart). Extend with the gated trio
-# (saltwater_croc/lowland_gorilla/giant_panda) + other welfare species as captured.
+# species_key -> a representative welfare research-item id (its level-0 record). The key is the
+# APWorld species stringid (data/specieses.json) - the unified species-key namespace across the
+# client (permits, births, market) and Track B. CONTENT-STABLE across restarts (unlike the species
+# handle). Captured via tools/capture_species.py (buy-logger gives the session handle -> its
+# records' item ids); welfare levels are a CONSECUTIVE run from this level-0 id, so level N's record
+# = base + (N-1) (validated: the runs below are contiguous).
+#
+# COVERAGE: only the 11 originally-captured species are mapped. The full APWorld roster is 78
+# species; the OTHER 67 need a capture pass (run capture_species.py per species, or a bulk handle
+# sweep) before their welfare / first-breed / first-acquire checks can fire. Detection degrades
+# safely for unmapped species (no false checks) - see is_welfare_complete / current_handle.
 SPECIES_WELFARE_ITEM: Dict[str, int] = {
-    # value = the species' level-0 welfare research-item id (restart-stable content id).
-    "plains_zebra": 0xDAC,      # welfare run 0xDAC..0xDB1
-    "common_warthog": 0x640,    # welfare run 0x640.. - not an AP key
-    "saltwater_croc": 0x10CC,   # gated; run 0x10CC..0x10D2 (+adv 0x10D3)
-    "lowland_gorilla": 0x1450,  # gated; run 0x1450..0x1459 (+adv 0x145A)
-    "giant_panda": 0x834,       # gated; run 0x834..0x83A (+adv 0x83B)
-    "nile_hippo": 0x9C4,        # PZ "Hippopotamus"; run 0x9C4..0x9CB
-    "grey_wolf": 0x1324,        # PZ "Timber Wolf"; run 0x1324..0x132A
-    "american_bison": 0x1F4,    # run 0x1F4..0x1FA
-    "african_elephant": 0x13,   # run 0x13..0x19
-    "bengal_tiger": 0x320,      # run 0x320..0x326
-    "snow_leopard": 0x1194,     # run 0x1194..0x119A
-    # all 10 AP welfare species captured.
+    # key = APWorld stringid; value = level-0 welfare research-item id (restart-stable).
+    "pzebra": 0xDAC,        # Plains Zebra; welfare run 0xDAC..0xDB1
+    "cwarthog": 0x640,      # Common Warthog; run 0x640..
+    "scroc": 0x10CC,        # Saltwater Crocodile (gated); run 0x10CC..0x10D2 (+adv 0x10D3)
+    "wgorilla": 0x1450,     # Western Lowland Gorilla (gated); run 0x1450..0x1459 (+adv 0x145A)
+    "gpanda": 0x834,        # Giant Panda (gated/flagship); run 0x834..0x83A (+adv 0x83B)
+    "hippo": 0x9C4,         # Hippopotamus; run 0x9C4..0x9CB
+    "twolf": 0x1324,        # Timber Wolf; run 0x1324..0x132A
+    "abison": 0x1F4,        # American Bison; run 0x1F4..0x1FA
+    "aelephant": 0x13,      # African Savannah Elephant; run 0x13..0x19
+    "btiger": 0x320,        # Bengal Tiger; run 0x320..0x326
+    "sleopard": 0x1194,     # Snow Leopard; run 0x1194..0x119A
 }
 
 # Non-welfare research keys -> their research-item id (mechanic research = category 3, no
@@ -96,9 +101,15 @@ RESEARCH_ITEM: Dict[str, int] = {
 }
 
 
+def _norm_token(s: str) -> str:
+    """Canonicalise a species name/token for matching (lowercase, alnum only)."""
+    return "".join(ch for ch in s.lower() if ch.isalnum())
+
+
 class ResearchReader:
     def __init__(self, scanner, welfare_items: Optional[Dict[str, int]] = None,
-                 research_items: Optional[Dict[str, int]] = None):
+                 research_items: Optional[Dict[str, int]] = None,
+                 registry=None, token_to_key: Optional[Dict[str, str]] = None):
         self.scanner = scanner
         self.items = dict(SPECIES_WELFARE_ITEM)
         if welfare_items:
@@ -106,6 +117,12 @@ class ResearchReader:
         self.research_items = dict(RESEARCH_ITEM)
         if research_items:
             self.research_items.update(research_items)
+        # Registry-based species resolution (covers ALL species, no per-species capture): a live
+        # species symbol-id (== the research-map handle) resolves to its engine token via the
+        # RegistryResolver; token_to_key maps that token -> data.json species_key. Optional - when
+        # absent the reader falls back to the captured SPECIES_WELFARE_ITEM ids only.
+        self.registry = registry
+        self.token_to_key = {_norm_token(t): k for t, k in (token_to_key or {}).items()}
         self._warned_unmapped: set = set()
         self._rs_cache: Optional[int] = None  # last good research-system address (revalidated each use)
         self._last_scan = 0.0                 # monotonic time of the last vtable heap-scan (throttle)
@@ -226,21 +243,75 @@ class ResearchReader:
             out.append((item, level, status, cat, base + i * REC_STRIDE + REC_STATUS))
         return out
 
-    def _welfare_item(self, species_key: str) -> Optional[int]:
-        i0 = self.items.get(species_key)
-        if i0 is None and species_key not in self._warned_unmapped:
-            self._warned_unmapped.add(species_key)
-            logger.info("research: no welfare item id for %r yet - add it to "
-                        "SPECIES_WELFARE_ITEM (capture via tools/capture_species.py)", species_key)
-        return i0
+    def species_key_for_handle(self, handle: int) -> Optional[str]:
+        """Resolve a live species handle (== registry symbol id) to a data.json species_key via the
+        symbol registry (engine token -> token_to_key). None if no registry / unmapped token."""
+        if not self.registry or not self.token_to_key:
+            return None
+        name = self.registry.id_to_name(handle)
+        if not name:
+            return None
+        return self.token_to_key.get(_norm_token(name))
 
-    def current_handle(self, species_key: str, snap: Optional[Tuple[dict, dict]] = None) -> Optional[int]:
-        """Resolve the species' CURRENT-session handle (volatile) from its stable item id."""
-        i0 = self._welfare_item(species_key)
-        if i0 is None:
+    def handle_key_map(self, snap: Optional[Tuple[dict, dict]] = None) -> Dict[int, str]:
+        """{species_handle -> species_key} for every species present in the research map this
+        session. Built from the registry (covers ALL species); falls back to the captured
+        SPECIES_WELFARE_ITEM ids for any handle the registry can't name."""
+        snap = snap or self._snapshot()
+        if snap is None:
+            return {}
+        out: Dict[int, str] = {}
+        for handle in snap[1]:
+            key = self.species_key_for_handle(handle)
+            if key:
+                out[handle] = key
+        # supplement with captured-id resolution (so it works even if the registry is unavailable)
+        for key, i0 in self.items.items():
+            rec = snap[0].get(i0)
+            if rec and rec[0] not in out:
+                out[rec[0]] = key
+        return out
+
+    def _welfare_item(self, species_key: str, snap: Optional[Tuple[dict, dict]] = None) -> Optional[int]:
+        """The species' level-0 welfare research-item id. Uses the captured map first; otherwise
+        DERIVES it at runtime from the registry-resolved handle (min cat-7 item id), so welfare
+        detection covers every species without a per-species capture. Caches the derived id."""
+        i0 = self.items.get(species_key)
+        if i0 is not None:
+            return i0
+        derived = self._derive_welfare_item(species_key, snap)
+        if derived is not None:
+            self.items[species_key] = derived       # cache for the session
+            return derived
+        if species_key not in self._warned_unmapped:
+            self._warned_unmapped.add(species_key)
+            logger.info("research: no welfare item id for %r (registry couldn't resolve its handle - "
+                        "not in this zoo's research map, or no engine_token)", species_key)
+        return None
+
+    def _derive_welfare_item(self, species_key: str, snap: Optional[Tuple[dict, dict]]) -> Optional[int]:
+        """Find species_key's handle via the registry, then its lowest cat-7 research-item id (the
+        level-0 record). None if the registry can't place it in this snapshot."""
+        if not self.registry or not self.token_to_key:
             return None
         snap = snap or self._snapshot()
         if snap is None:
+            return None
+        by_item = snap[0]
+        target = next((h for h in snap[1] if self.species_key_for_handle(h) == species_key), None)
+        if target is None:
+            return None
+        cat7 = [item for item, (h, lvl, st, cat) in by_item.items()
+                if h == target and cat == ANIMAL_CATEGORY]
+        return min(cat7) if cat7 else None
+
+    def current_handle(self, species_key: str, snap: Optional[Tuple[dict, dict]] = None) -> Optional[int]:
+        """Resolve the species' CURRENT-session handle (volatile) from its stable item id."""
+        snap = snap or self._snapshot()
+        if snap is None:
+            return None
+        i0 = self._welfare_item(species_key, snap)
+        if i0 is None:
             return None
         rec = snap[0].get(i0)
         return rec[0] if rec else None
@@ -248,11 +319,11 @@ class ResearchReader:
     def is_welfare_complete(self, species_key: str, snap: Optional[Tuple[dict, dict]] = None) -> bool:
         """True iff every STANDARD (level<ADVANCED_LEVEL) animal-research record for this
         species is status 4. False if unmapped, unreadable, or incomplete."""
-        i0 = self._welfare_item(species_key)
-        if i0 is None:
-            return False
         snap = snap or self._snapshot()
         if snap is None:
+            return False
+        i0 = self._welfare_item(species_key, snap)
+        if i0 is None:
             return False
         by_item, by_handle = snap
         rec = by_item.get(i0)
@@ -263,10 +334,28 @@ class ResearchReader:
                if cat == ANIMAL_CATEGORY and lvl < ADVANCED_LEVEL]
         return bool(std) and all(st == STATUS_COMPLETE for st in std)
 
-    def is_research_complete(self, research_key: str, snap: Optional[Tuple[dict, dict]] = None) -> bool:
-        """Generic dispatch for any data.json research_key. `welfare_<species>` uses the
-        leveled animal-research rule; a key in RESEARCH_ITEM (e.g. a mechanic research) is
-        complete when its single item's status == 4. Unknown keys -> False."""
+    def is_welfare_level_complete(self, species_key: str, level: int,
+                                  snap: Optional[Tuple[dict, dict]] = None) -> bool:
+        """True iff the species' welfare research at the given 1-based level is status 4. Welfare
+        levels are a consecutive item-id run from the level-0 record, so level N's item = base+(N-1).
+        False if unmapped/unreadable/incomplete (no false positives)."""
+        if not level:
+            return False
+        snap = snap or self._snapshot()
+        if snap is None:
+            return False
+        i0 = self._welfare_item(species_key, snap)
+        if i0 is None:
+            return False
+        rec = snap[0].get(i0 + (level - 1))  # (handle, level, status, category)
+        return rec is not None and rec[2] == STATUS_COMPLETE
+
+    def is_research_complete(self, research_key: str, snap: Optional[Tuple[dict, dict]] = None,
+                             level: Optional[int] = None) -> bool:
+        """Generic dispatch for any data.json research_key. `welfare_<species>` uses the leveled
+        animal-research rule: with a `level` it checks just that level's record (per-level welfare
+        locations); without, it requires ALL standard levels complete. A key in RESEARCH_ITEM (e.g.
+        a mechanic research) is complete when its single item's status == 4. Unknown keys -> False."""
         item = self.research_items.get(research_key)
         if item is not None:
             snap = snap or self._snapshot()
@@ -275,7 +364,10 @@ class ResearchReader:
             rec = snap[0].get(item)  # (handle, level, status, category)
             return rec is not None and rec[2] == STATUS_COMPLETE
         if research_key.startswith("welfare_"):
-            return self.is_welfare_complete(research_key[len("welfare_"):], snap)
+            species = research_key[len("welfare_"):]
+            if level:
+                return self.is_welfare_level_complete(species, level, snap)
+            return self.is_welfare_complete(species, snap)
         if research_key not in self._warned_unmapped:
             self._warned_unmapped.add(research_key)
             logger.info("research: key %r not mapped (add to SPECIES_WELFARE_ITEM or RESEARCH_ITEM)", research_key)

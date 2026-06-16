@@ -32,6 +32,20 @@ SEED = "TESTSEED123"
 SLOT = 1
 
 
+def _load_gd():
+    from pz_ap_client import data as pz_data
+    return pz_data.load()
+
+
+def _eid(gd, effect_type: str, **args) -> int:
+    """First item id with the given effect (and optional effect_args). data.json is regenerated
+    from the APWorld so ids shift - resolve by effect, never hardcode."""
+    for it in gd.items:
+        if it.effect_type == effect_type and all(it.effect_args.get(k) == v for k, v in args.items()):
+            return it.id
+    raise KeyError((effect_type, args))
+
+
 def _make_ctx(applied_log: list, state_dir: Path) -> PZContext:
     # state_dir keeps the idempotency high-water mark file in a temp dir.
     ctx = PZContext(None, None, state_dir=str(state_dir))
@@ -69,11 +83,10 @@ def _simulate_connect(ctx: PZContext, received: list) -> None:
 
     ctx.on_package("RoomInfo", {"seed_name": SEED})
     ctx.slot_data = {}
+    # Goal: breed two species (a 2-location goal so the partial-completion path is exercised). Each
+    # required_breed key resolves to that species' first_breed location.
     ctx.on_package("Connected", {"slot_data": {
-        "goal": {"type": "chain", "args": {
-            "required_research": ["welfare_giant_panda"],
-            "required_breed": ["giant_panda"],
-        }}
+        "goal": {"type": "breed", "args": {"required_breed": ["gpanda", "pzebra"]}}
     }})
     ctx.items_received = [NetworkItem(*r) for r in received]
     ctx.on_package("ReceivedItems", {"index": 0})
@@ -105,9 +118,20 @@ async def main() -> None:
 
     effects.ConsoleEffectApplier._log = counting_log
     try:
-        # --- first connect: receive 3 items (cash 1009, climate 1001, panda permit 1008)
+        # Resolve concrete item/location ids dynamically from data.json (it's regenerated from the
+        # APWorld, so ids shift; never hardcode them). Pick 4 distinct items by effect.
+        gd = _load_gd()
+        i_cash = _eid(gd, "cash")
+        i_fac = _eid(gd, "facility_unlock")
+        i_permit = _eid(gd, "species_unlock")
+        i_cc = _eid(gd, "cc")
+        # goal locations: first_breed for gpanda + pzebra
+        fb = {l.trigger_args.get("species_key"): l.id for l in gd.locations_by_trigger("first_breed")}
+        goal_ids = {fb["gpanda"], fb["pzebra"]}
+
+        # --- first connect: receive 3 items (cash, a facility, a permit)
         ctx = _make_ctx(applied_log, tmp)
-        received = [(1009, 2000, 2, 0), (1001, 2001, 3, 0), (1008, 2002, 4, 0)]
+        received = [(i_cash, 2000, 2, 0), (i_fac, 2001, 3, 0), (i_permit, 2002, 4, 0)]
         _simulate_connect(ctx, received)
         applies = [e for e in applied_log if e[0] == "apply"]
         _check(len(applies) == 3, f"applied all 3 received items on first connect (got {len(applies)})")
@@ -122,18 +146,19 @@ async def main() -> None:
         _check(ctx2.applied_high_water() == 3, "high-water mark still 3 after reconnect")
 
         # --- one more item arrives post-reconnect -> applied exactly once
-        ctx2.items_received.append(NetworkItem(1014, 2003, 5, 0))  # Petty Cash filler
+        ctx2.items_received.append(NetworkItem(i_cc, 2003, 5, 0))  # a filler CC item
         ctx2.on_package("ReceivedItems", {"index": 3})
         _check(len([e for e in applied_log if e[0] == "apply"]) == 1, "new 4th item applied once")
         _check(ctx2.applied_high_water() == 4, "high-water mark advanced to 4")
 
-        # --- goal detection: check the two goal locations
-        # welfare_giant_panda research = 2009, first_breed giant_panda = 2016
-        _check(set(ctx2._goal_location_ids) == {2009, 2016}, "goal resolved to locations 2009 + 2016")
-        ctx2.report_check(2009)
+        # --- goal detection: check the two goal locations (breed gpanda + pzebra)
+        _check(set(ctx2._goal_location_ids) == goal_ids,
+               f"goal resolved to the two first_breed locations (got {ctx2._goal_location_ids})")
+        first, second = sorted(goal_ids)
+        ctx2.report_check(first)
         await _drain(ctx2)  # let the stubbed check task run
         _check(not ctx2.finished_game, "goal not complete with only 1 of 2 locations")
-        ctx2.report_check(2016)
+        ctx2.report_check(second)
         await _drain(ctx2)
         _check(ctx2.finished_game, "goal COMPLETE after both locations checked")
         _check(("status", 30) in applied_log, "CLIENT_GOAL (30) status sent")
@@ -154,26 +179,28 @@ async def main() -> None:
             def live_species(self): return list(self.live)
             def spawn_species_id(self, h, female=None): self.spawned.append(h); return True
 
-        # ctx2 holds the panda permit (1008) -> giant_panda is purchase-unblocked; everything
-        # else stays blocked, so only the panda may be offered on the market.
-        spawner = _FakeSpawner({"giant_panda": 0x834})
+        # ctx2 holds exactly one permit (i_permit) -> that species is purchase-unblocked; every
+        # other species stays blocked, so only it may be offered on the market.
+        unblocked_key = gd.item_by_id[i_permit].effect_args["species_key"]
+        H = 0x999  # arbitrary fake research handle for that species
+        spawner = _FakeSpawner({unblocked_key: H})
         ctx2.market_spawner = spawner
         ctx2._reconcile_market()
-        _check(spawner.spawned == [0x834], "market offers exactly the unlocked species (panda)")
+        _check(spawner.spawned == [H], "market offers exactly the unlocked species")
         ctx2._reconcile_market()
-        _check(spawner.spawned == [0x834], "respawn cooldown prevents immediate re-arm")
+        _check(spawner.spawned == [H], "respawn cooldown prevents immediate re-arm")
         ctx2._market_last_spawn.clear()
-        spawner.live = [0x834]
+        spawner.live = [H]
         ctx2._reconcile_market()
-        _check(spawner.spawned == [0x834], "no re-arm while a live listing exists")
+        _check(spawner.spawned == [H], "no re-arm while a live listing exists")
         ctx2._market_last_spawn.clear()
         spawner.live = []
         spawner.mode = False
         ctx2._reconcile_market()
-        _check(spawner.spawned == [0x834], "no-op outside scenario mode")
+        _check(spawner.spawned == [H], "no-op outside scenario mode")
         spawner.mode = True
         ctx2._reconcile_market()
-        _check(spawner.spawned == [0x834, 0x834], "purchased/expired listing re-offered after cooldown")
+        _check(spawner.spawned == [H, H], "purchased/expired listing re-offered after cooldown")
 
         print("\nALL OFFLINE TESTS PASSED")
     finally:

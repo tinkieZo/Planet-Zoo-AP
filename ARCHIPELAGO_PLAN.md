@@ -202,6 +202,34 @@ is mostly wiring, not debugging two unknowns at once.
 - Within Track A, do the **A2 Cheat-Engine spike first** - it's the make-or-break unknown.
 - Track B depends on nothing from Track A.
 
+### Track A↔B reconciliation to the FULL pool (2026-06-16)
+Track B grew from the slice to the full pool (**229 items / 698 locations / 2 options**); the client
+was resynced to it. `data.json` is no longer hand-maintained - **`tools/build_data_json.py`
+regenerates it from the APWorld** (authoritative ids) + `research_catalog.json`, recovering each
+decoupled-reward's content token by replaying the APWorld's own `convert_readable()`. The species-key
+namespace is unified on the APWorld **stringid** (`pzebra`, `twolf`, `hippo`, `gpanda`, …).
+- New client effect types: `research_reward {content}` (137 - the decoupled rewards, granted by
+  `memory/rewards.py` flipping the content's unlocked byte - the productionised unlock-flip spike) and
+  `progressive_research_reward {family}` (4). New trigger types: `first_acquire` (78, non-newborn
+  insert via the birth hook) and per-species `conservation_release` (78).
+- **Cross-check: 0 id/name mismatches, 0 unknown effect/trigger types; 66 client tests green** (incl. a
+  synthetic-memory unit test for the grant primitive and the regenerated sync guard).
+- **Detection coverage — registry attribution (DONE 2026-06-16):** the per-species *capture* campaign
+  was avoidable and is now removed. The ids are session-dynamic intern indices, but the client resolves
+  them live via `RegistryResolver` (the global symbol registry that drives the market), and the
+  research-map handle == that symbol id. `data.json` species now carry `engine_token` (generator:
+  `norm(label)` + a 5-entry alias for Track B's divergent/typo'd names), and `ResearchReader` +
+  `BirthDetector` resolve any live handle → species_key through it (auto-deriving the welfare item-id
+  run from the handle when not captured). So **welfare per-level (396), first-breed (78), first-acquire
+  (78)** cover all species with no capture (falls back to the captured 11 if the registry is down).
+  Remaining: `conservation_release` (78) needs a hook change (capture the released animal's handle);
+  mechanic research (57) resolves cat-3 ids via the InternRegistry. All detection degrades safely (no
+  false checks). One **live confirm** still wanted: the registry token spellings + `handle == symbol-id`
+  hold across all 78 (it's proven for the slice species). Item *application* was never capture-gated.
+- **Track B bugs to fix:** `Locations.py` uses hardcoded relative `open()` paths (breaks generation
+  unless run from the AP parent dir - `build_data_json.py` reads the data files directly to dodge it);
+  `fill_slot_data` emits only `starting_money` (no `goal`, no `num_starting_species`).
+
 ---
 
 # v1.0 expansion proposal - locations & items

@@ -38,60 +38,70 @@ def _eid(gd, effect_type: str, **args) -> int:
     raise KeyError((effect_type, args))
 
 
+# In the full v1.0 model EVERY species is permit-gated; water-needed species additionally need
+# water_tools. Pick representatives by gate composition so these tests don't hardcode stringids.
+def _permit_only_species(gd):
+    for s in gd.species:
+        t = gd.species_purchase_tokens(s)
+        if len(t) == 1 and t[0].startswith("permit_"):
+            return s.key
+    raise AssertionError("no permit-only species in data.json")
+
+
+def _water_permit_species(gd):
+    for s in gd.species:
+        t = set(gd.species_purchase_tokens(s))
+        if "water_tools" in t and any(x.startswith("permit_") for x in t):
+            return s.key
+    raise AssertionError("no water+permit species in data.json")
+
+
 def test_purchase_tokens(gd) -> None:
     sp = gd.species_by_key
-
-    def toks(key):
-        return gd.species_purchase_tokens(sp[key])
-
-    _check(toks("nile_hippo") == ("water_tools",),
-           f"nile_hippo purchase tokens = (water_tools,) (got {toks('nile_hippo')})")
-    _check(set(toks("saltwater_croc")) == {"water_tools", "permit_saltwater_croc"},
-           f"saltwater_croc tokens = water_tools + permit (got {toks('saltwater_croc')})")
-    _check(toks("bengal_tiger") == ("permit_bengal_tiger",),
-           f"bengal_tiger tokens = (permit_bengal_tiger,) (got {toks('bengal_tiger')})")
-    _check(toks("african_elephant") == (),
-           f"african_elephant (start) has NO purchase tokens (got {toks('african_elephant')})")
-    _check(toks("lowland_gorilla") == ("permit_lowland_gorilla",),
-           f"lowland_gorilla tokens = (permit_lowland_gorilla,) (got {toks('lowland_gorilla')})")
-    # compound gate: a non-purchase token (conservation_program) is NOT purchase-enforced - its own gate handles it
-    _check(toks("giant_panda") == ("permit_giant_panda",),
-           f"giant_panda tokens exclude conservation_program (got {toks('giant_panda')})")
+    pk = _permit_only_species(gd)
+    wk = _water_permit_species(gd)
+    _check(gd.species_purchase_tokens(sp[pk]) == ("permit_" + pk,),
+           f"{pk}: purchase tokens = (permit_{pk},) (got {gd.species_purchase_tokens(sp[pk])})")
+    _check(set(gd.species_purchase_tokens(sp[wk])) == {"water_tools", "permit_" + wk},
+           f"{wk}: tokens = water_tools + permit (got {gd.species_purchase_tokens(sp[wk])})")
+    # the flagship giant panda's conservation_program token is NOT purchase-enforced (its own gate
+    # handles it) - only the permit (+ water if any) shows up as a purchase token.
+    panda = sp.get("gpanda")
+    if panda is not None:
+        _check("conservation_program" not in gd.species_purchase_tokens(panda),
+               f"gpanda tokens exclude conservation_program (got {gd.species_purchase_tokens(panda)})")
 
 
 def test_blocked_sets(gd) -> None:
     water = _eid(gd, "tool_unlock", tool_key="water_tools")
-    croc = _eid(gd, "species_unlock", species_key="saltwater_croc")
-    tiger = _eid(gd, "species_unlock", species_key="bengal_tiger")
+    wk = _water_permit_species(gd)             # needs water_tools AND its permit
+    pk = _permit_only_species(gd)              # needs only its permit
+    wperm = _eid(gd, "species_unlock", species_key=wk)
+    pperm = _eid(gd, "species_unlock", species_key=pk)
 
-    # nothing received -> every gated species blocked, never african_elephant
+    # nothing received -> every gated species blocked == full purchase universe
     none_blocked = gd.purchase_blocked_species([])
-    _check({"nile_hippo", "saltwater_croc", "bengal_tiger"} <= none_blocked,
-           "with no items: aquatic + permit species are blocked")
-    _check("african_elephant" not in none_blocked, "african_elephant (start) never blocked")
+    _check({wk, pk} <= none_blocked, "with no items: permit/aquatic species are blocked")
     _check(none_blocked == gd.purchase_universe(),
            "with no items, blocked set == full purchase universe")
 
-    # water_tools only -> nile_hippo frees; saltwater_croc still needs its permit
+    # water_tools only -> the water+permit species STILL needs its permit (AND-gate)
     w = gd.purchase_blocked_species([water])
-    _check("nile_hippo" not in w, "water_tools unblocks nile_hippo")
-    _check("saltwater_croc" in w, "water_tools alone does NOT unblock saltwater_croc (AND-gate)")
-    _check("bengal_tiger" in w, "water_tools doesn't touch bengal_tiger")
+    _check(wk in w, "water_tools alone does NOT unblock a water+permit species (AND-gate)")
+    _check(pk in w, "water_tools doesn't touch a permit-only species")
 
-    # permit only (no water_tools) -> saltwater_croc STILL blocked (needs the tool too)
-    p = gd.purchase_blocked_species([croc])
-    _check("saltwater_croc" in p, "permit alone does NOT unblock saltwater_croc (still needs water_tools)")
-    _check("nile_hippo" in p, "permit for croc doesn't unblock nile_hippo")
+    # the water species' permit only (no water_tools) -> STILL blocked (needs the tool too)
+    p = gd.purchase_blocked_species([wperm])
+    _check(wk in p, "permit alone does NOT unblock a water+permit species (still needs water_tools)")
 
-    # both -> saltwater_croc frees
-    b = gd.purchase_blocked_species([water, croc])
-    _check("saltwater_croc" not in b, "water_tools + permit unblocks saltwater_croc")
-    _check("nile_hippo" not in b, "and nile_hippo too")
+    # both -> the water+permit species frees
+    b = gd.purchase_blocked_species([water, wperm])
+    _check(wk not in b, "water_tools + permit unblocks the water+permit species")
 
     # an unrelated permit frees only its species
-    t = gd.purchase_blocked_species([tiger])
-    _check("bengal_tiger" not in t, "bengal_tiger permit unblocks bengal_tiger")
-    _check("nile_hippo" in t, "and leaves water-gated species blocked")
+    t = gd.purchase_blocked_species([pperm])
+    _check(pk not in t, "a permit unblocks its own species")
+    _check(wk in t, "and leaves water-gated species blocked")
 
 
 def test_client_reconcile(gd) -> None:
@@ -117,7 +127,8 @@ def test_client_reconcile(gd) -> None:
             return True
 
     water = _eid(gd, "tool_unlock", tool_key="water_tools")
-    croc = _eid(gd, "species_unlock", species_key="saltwater_croc")
+    wk = _water_permit_species(gd)          # needs water_tools AND its permit
+    wperm = _eid(gd, "species_unlock", species_key=wk)
 
     async def _run():
         # PZContext (AP CommonContext) schedules a keep-alive task on construction, so it must be
@@ -133,13 +144,11 @@ def test_client_reconcile(gd) -> None:
                 # blocked = universe - satisfied(reconcile arg)
                 return ctx.permit_gate.gated - ctx.permit_gate.last_reconcile
 
-            _check("nile_hippo" in received([]) and "saltwater_croc" in received([]),
-                   "client reconcile: nothing received -> aquatic species blocked")
-            _check("nile_hippo" not in received([water]), "client reconcile: water_tools frees nile_hippo")
-            _check("saltwater_croc" in received([water]),
-                   "client reconcile: water_tools alone keeps saltwater_croc blocked")
-            _check("saltwater_croc" not in received([water, croc]),
-                   "client reconcile: water_tools + permit frees saltwater_croc")
+            _check(wk in received([]), "client reconcile: nothing received -> water+permit species blocked")
+            _check(wk in received([water]),
+                   "client reconcile: water_tools alone keeps the water+permit species blocked")
+            _check(wk not in received([water, wperm]),
+                   "client reconcile: water_tools + permit frees the water+permit species")
         finally:
             task = ctx.keep_alive_task
             if task is not None:

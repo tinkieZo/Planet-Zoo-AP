@@ -71,53 +71,61 @@ class BirthDetector:
         return self.installed
 
     def _handle_to_key(self) -> dict:
-        """Build {species_handle -> species_key} from the research map (one snapshot). Handles are
-        per-session but resolved live, so this is restart-correct + covers every welfare species."""
-        snap = self.research._snapshot()
-        if snap is None:
-            return {}
-        out = {}
-        for key in self.research.items:  # SPECIES_WELFARE_ITEM keys
-            h = self.research.current_handle(key, snap)
-            if h is not None:
-                out[h] = key
-        return out
+        """Build {species_handle -> species_key} for this session. Uses the research reader's
+        registry-backed map (covers ALL species via the symbol registry, falling back to the
+        captured welfare ids), so birth/acquisition attribution isn't limited to the 11 captured
+        species. Handles are per-session but resolved live, so this is restart-correct."""
+        return self.research.handle_key_map()
 
     def poll(self) -> List[str]:
-        """Drain new inserts; return species_keys of those that were BIRTHS (newborns)."""
+        """Drain new inserts; return species_keys of those that were BIRTHS (newborns).
+        (Back-compat: first_breed detection. Use poll_events for births + acquisitions.)"""
+        return self.poll_events()[0]
+
+    def poll_events(self) -> "tuple[List[str], List[str]]":
+        """Drain new inserts once; return (born_keys, acquired_keys). A newborn (life-stage 0)
+        insert is a BIRTH; any other insert of a mapped species is an ACQUISITION (market buy,
+        trade, transfer). Same hook, classified per event so first_breed and first_acquire share
+        one drain (the cursor must only advance once per tick)."""
         if not self.ensure_installed() or self.scratch is None:
-            return []
+            return [], []
         try:
             self.cursor, events = read_insert_events(self.scanner, self.scratch, self.cursor)
         except Exception:
-            return []
+            return [], []
         if not events:
-            return []
+            return [], []
         handle2key = self._handle_to_key()
-        out = [key for e in events if (key := self._attribute_birth(e, handle2key))]
-        return out
+        born: List[str] = []
+        acquired: List[str] = []
+        for e in events:
+            key, newborn = self._attribute(e, handle2key)
+            if key is None:
+                continue
+            (born if newborn else acquired).append(key)
+        return born, acquired
 
-    def _attribute_birth(self, e: dict, handle2key: dict) -> Optional[str]:
-        """Classify one insert event: returns its species_key iff it was a BIRTH of a mapped
-        welfare species, else None (logging buys/unknown-handles are skipped silently / once)."""
+    def _attribute(self, e: dict, handle2key: dict) -> "tuple[Optional[str], bool]":
+        """Classify one insert: returns (species_key, is_newborn) for a mapped species, else
+        (None, False). Unknown handles / unresolved entities are skipped (logged once)."""
         entity = self.resolver.resolve_entity(e.get("r13", 0), e.get("handle", 0))
         if entity is None:
-            return None
-        if self.resolver.life_stage(entity) != LIFE_STAGE_NEWBORN:  # buy/grown -> not a birth
-            return None
+            return None, False
+        newborn = self.resolver.life_stage(entity) == LIFE_STAGE_NEWBORN
         sh = self.resolver.species_handle(entity)
         key = handle2key.get(sh) if sh is not None else None
         if key:
-            logger.info("Detected BIRTH: %s (species handle 0x%X)", key, sh)
-            return key
+            logger.info("Detected %s: %s (species handle 0x%X)",
+                        "BIRTH" if newborn else "ACQUISITION", key, sh)
+            return key, newborn
         if sh is not None and sh not in self._unknown_logged:
             self._unknown_logged.add(sh)
             known = {k: "0x%X" % h for h, k in handle2key.items()}
-            logger.info("BIRTH of species handle 0x%X not in the research map (non-welfare species, "
-                        "or the entity/research handle namespaces diverged this session). "
+            logger.info("insert of species handle 0x%X not in the research map (unmapped species - "
+                        "needs a welfare-id capture - or handle namespaces diverged this session). "
                         "Research-map handles: %s", sh,
                         known or "<EMPTY - research chain didn't resolve / not in a loaded zoo>")
-        return None
+        return None, False
 
     def shutdown(self) -> None:
         try:

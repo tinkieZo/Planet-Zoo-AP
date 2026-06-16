@@ -44,13 +44,21 @@ class MemoryTriggerSource:
         self.game_data = game_data
         self.report_check = report_check
         # A3 research_complete: reads the research-system items map via a stable master-root
-        # chain (research record +0x10 = species handle, +0x49 = status; see research.py).
-        self.research = ResearchReader(scanner)
+        # chain (research record +0x10 = species handle, +0x49 = status; see research.py). The
+        # RegistryResolver + engine_token map let the reader attribute/locate EVERY species via the
+        # live symbol registry (not just the captured ones) - the namespace bridge across Track B's
+        # abbreviated stringids and the engine's full tokens.
+        from .registry import RegistryResolver
+        token_to_key = {s.engine_token: s.key for s in game_data.species if s.engine_token}
+        self.research = ResearchReader(scanner, registry=RegistryResolver(scanner),
+                                       token_to_key=token_to_key)
         # A3 birth detection: software-detour on the add-animal insert + life-stage classification
         # (newborn vs bought); species attributed via entity+0x50 reverse-mapped through the
         # research handle table (shared reader). See births.py / the A2 spike.
         self.births = BirthDetector(scanner, research=self.research)
-        self._bred_species: set = set()  # species_keys observed born (cumulative)
+        self._bred_species: set = set()      # species_keys observed born (cumulative)
+        self._acquired_species: set = set()  # species_keys observed acquired (cumulative)
+        self._warned_release_attr = False    # one-shot notice that per-species release is unmapped
         # A3 conservation_release: software-detour on the release-to-wild executor that
         # counts releases (no stable game counter exists - see releases.py / the A2 spike).
         self.releases = ReleaseDetector(scanner)
@@ -63,7 +71,10 @@ class MemoryTriggerSource:
         if not self.scanner.attached and not self.scanner.attach():
             return []
         fired: List[int] = []
-        for sub in (self._poll_research, self._poll_first_breed, self._poll_milestones):
+        # _poll_inserts drains births+acquisitions once and updates the cumulative sets that
+        # _poll_first_breed / _poll_first_acquire read (the insert ring must be drained once/tick).
+        for sub in (self._poll_research, self._poll_inserts, self._poll_first_breed,
+                    self._poll_first_acquire, self._poll_conservation_release, self._poll_milestones):
             try:
                 fired += sub(already_checked)
             except Exception:
@@ -87,32 +98,53 @@ class MemoryTriggerSource:
             if loc.id in already:
                 continue
             key = loc.trigger_args.get("research_key") or ""
-            if self.research.is_research_complete(key, snap):
-                logger.info("Detected research complete: %s", key)
+            level = loc.trigger_args.get("level")  # per-level welfare locations carry a 1-based level
+            if self.research.is_research_complete(key, snap, level=level):
+                logger.info("Detected research complete: %s%s", key, f" L{level}" if level else "")
                 out.append(loc.id)
         return out
 
-    # -- first breed -----------------------------------------------------------
+    # -- inserts (births + acquisitions share one drain) -----------------------
+
+    def _poll_inserts(self, already: set) -> List[int]:
+        """Drain the add-animal insert ring once per tick and update the cumulative bred/acquired
+        sets. Fires nothing itself - _poll_first_breed / _poll_first_acquire read the sets."""
+        born, acquired = self.births.poll_events()
+        self._bred_species.update(born)
+        self._acquired_species.update(acquired)
+        return []
 
     def _poll_first_breed(self, already: set) -> List[int]:
-        """Detect births via the add-animal insert detour + newborn classification
-        (BirthDetector), then fire the first_breed location for each bred species.
-
-        The detector resolves each inserted animal and reports the species_key only
-        when it's a newborn (life-stage 0), so market purchases never trigger this.
-        We accumulate bred species and match them to first_breed locations.
-        """
-        for key in self.births.poll():
-            self._bred_species.add(key)
+        """Fire first_breed for each species observed born (newborn insert, life-stage 0), so
+        market purchases never trigger it. Reads the set _poll_inserts maintains."""
         if not self._bred_species:
             return []
-        out = []
-        for loc in self.game_data.locations_by_trigger("first_breed"):
-            if loc.id in already:
-                continue
-            if loc.trigger_args.get("species_key") in self._bred_species:
-                out.append(loc.id)
-        return out
+        return [loc.id for loc in self.game_data.locations_by_trigger("first_breed")
+                if loc.id not in already and loc.trigger_args.get("species_key") in self._bred_species]
+
+    def _poll_first_acquire(self, already: set) -> List[int]:
+        """Fire first_acquire for each species observed acquired (a non-newborn insert: market
+        buy/trade/transfer). Reads the set _poll_inserts maintains."""
+        if not self._acquired_species:
+            return []
+        return [loc.id for loc in self.game_data.locations_by_trigger("first_acquire")
+                if loc.id not in already and loc.trigger_args.get("species_key") in self._acquired_species]
+
+    def _poll_conservation_release(self, already: set) -> List[int]:
+        """Per-species conservation_release (cr_<species>) locations. The ReleaseDetector counts
+        releases but does NOT attribute species (the release hook doesn't capture the animal handle
+        yet), so we cannot tell WHICH species was released - these can't fire correctly and are left
+        un-detected (no false checks). Unlock: extend ReleaseDetector to resolve the released
+        animal's species like births (capture/RE-gated). Logged once when a release is seen."""
+        locs = self.game_data.locations_by_trigger("conservation_release")
+        if not locs or self._warned_release_attr:
+            return []
+        if self.releases.count() > 0:
+            self._warned_release_attr = True
+            logger.info("conservation_release: %d per-species locations present and a release was "
+                        "observed, but the release detector has no species attribution yet - these "
+                        "checks won't fire until that RE lands (see releases.py).", len(locs))
+        return []
 
     def close(self) -> None:
         """Restore the code-patch detours (call on disconnect / shutdown)."""

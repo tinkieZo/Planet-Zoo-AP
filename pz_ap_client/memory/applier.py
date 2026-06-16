@@ -36,13 +36,14 @@ class MemoryEffectApplier(EffectApplier):
     RESEARCH_FACILITIES = frozenset({"research_centre", "workshop"})
 
     def __init__(self, scanner: MemoryScanner, anchors: AnchorTable, permit_gate=None,
-                 release_gate=None, facility_gate=None, research_gate=None):
+                 release_gate=None, facility_gate=None, research_gate=None, reward_granter=None):
         self.scanner = scanner
         self.anchors = anchors
         self.permit_gate = permit_gate      # PermitGate; enforces species_unlock permits
         self.release_gate = release_gate    # ReleaseDetector; enforces the conservation program
         self.facility_gate = facility_gate  # FacilityGate; enforces facility_unlock placement
         self.research_gate = research_gate  # ResearchGate; enforces research_centre/workshop
+        self.reward_granter = reward_granter  # RewardGranter; flips decoupled research rewards
 
     def _ensure_attached(self) -> bool:
         if self.scanner.attached:
@@ -166,6 +167,35 @@ class MemoryEffectApplier(EffectApplier):
         self.release_gate.set_locked(False)
         logger.info("[apply] %s: conservation program unlocked (releases enabled)", item.name)
         return True
+
+    def on_research_reward(self, item: "Item") -> bool:
+        """Grant a decoupled research reward (enrichment item, shop, barrier, theme set...) by
+        flipping its content's unlocked byte in the unlockables map (see rewards.py). The reward
+        is content the AP item pool carries instead of the in-game research giving it directly."""
+        if not self._ensure_attached():
+            return False
+        content = item.effect_args.get("content")
+        if not content:
+            logger.error("research_reward item %s has no content in effect_args", item.id)
+            return False
+        if self.reward_granter is None:
+            logger.warning("research_reward %r: no RewardGranter wired - cannot apply", content)
+            return False
+        return self.reward_granter.grant(content)
+
+    def on_progressive_research_reward(self, item: "Item") -> bool:
+        """Grant the next tier of a progressive reward family (supplement/education/breeding/
+        exhibit enrichment) - flips the lowest still-locked content of that record type."""
+        if not self._ensure_attached():
+            return False
+        family = item.effect_args.get("family")
+        if not family:
+            logger.error("progressive_research_reward item %s has no family in effect_args", item.id)
+            return False
+        if self.reward_granter is None:
+            logger.warning("progressive_research_reward %r: no RewardGranter wired - cannot apply", family)
+            return False
+        return self.reward_granter.grant_progressive(family)
 
     def on_staff_training(self, item: "Item") -> bool:
         return self._unsupported(item, "staff_training")

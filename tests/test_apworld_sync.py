@@ -4,9 +4,13 @@ item/location id<->name mappings.
 A mismatch here is the bug where the server (authoritative, using the APWorld's ids) hands the client
 an item id that data.json resolves to a DIFFERENT item -> the wrong effect is applied (e.g. the server
 sends "Permit: Bengal Tiger" but the client grants Saltwater Crocodile). The APWorld assigns ids
-positionally: item id = 1000 + index of data/items.json, location id = 2000 + index of data/location.json.
+positionally:
+  item id     = 1000 + index of (data/items.json + data/old_items.json)   [Items.item_name_to_id]
+  location id = 2000 + index of (data/specieslocations.json + data/mech_n_milestones.json), keyed by
+                each entry's `stringid` (== the location NAME the client uses)  [Locations]
 
-Skips if the APWorld tree isn't checked out next to this repo (set PZ_APWORLD_DATA to its data/ dir).
+data.json is regenerated from exactly these by tools/build_data_json.py. Skips if the APWorld tree
+isn't checked out next to this repo (set PZ_APWORLD_DATA to its data/ dir).
 """
 from __future__ import annotations
 
@@ -25,7 +29,7 @@ def _apworld_data_dir():
         repo / "vendor" / "Archipelago" / "worlds" / "planetzoo" / "data",
     ]
     for c in candidates:
-        if (c / "items.json").exists() and (c / "location.json").exists():
+        if (c / "items.json").exists() and (c / "specieslocations.json").exists():
             return c
     return None
 
@@ -34,12 +38,12 @@ _DATA = _apworld_data_dir()
 pytestmark = pytest.mark.skipif(_DATA is None, reason="Planet Zoo APWorld not found (set PZ_APWORLD_DATA)")
 
 
-def _names(path: Path):
-    return [e["name"] for e in json.loads(path.read_text(encoding="utf-8"))]
+def _field(path: Path, key: str):
+    return [e[key] for e in json.loads(path.read_text(encoding="utf-8"))]
 
 
 def test_item_ids_match_apworld(gd):
-    ap = _names(_DATA / "items.json")
+    ap = _field(_DATA / "items.json", "name") + _field(_DATA / "old_items.json", "name")
     by_id = {it.id: it.name for it in gd.items}
     assert len(gd.items) == len(ap), f"item-table size {len(gd.items)} != APWorld {len(ap)}"
     for i, name in enumerate(ap):
@@ -48,9 +52,20 @@ def test_item_ids_match_apworld(gd):
 
 
 def test_location_ids_match_apworld(gd):
-    ap = _names(_DATA / "location.json")
+    ap = _field(_DATA / "specieslocations.json", "stringid") + \
+        _field(_DATA / "mech_n_milestones.json", "stringid")
     by_id = {loc.id: loc.name for loc in gd.locations}
     assert len(gd.locations) == len(ap), f"location count {len(gd.locations)} != APWorld {len(ap)}"
-    for i, name in enumerate(ap):
-        assert by_id.get(2000 + i) == name, \
-            f"location id {2000 + i}: client {by_id.get(2000 + i)!r} != APWorld {name!r}"
+    for i, stringid in enumerate(ap):
+        assert by_id.get(2000 + i) == stringid, \
+            f"location id {2000 + i}: client {by_id.get(2000 + i)!r} != APWorld {stringid!r}"
+
+
+def test_every_permit_has_a_species(gd):
+    """Every species_unlock item's species_key must be a real species in data.json (so the
+    permit/market gates can resolve it)."""
+    keys = {s.key for s in gd.species}
+    for it in gd.items:
+        if it.effect_type == "species_unlock":
+            sk = it.effect_args.get("species_key")
+            assert sk in keys, f"permit {it.name!r} -> unknown species_key {sk!r}"

@@ -325,6 +325,9 @@ def make_release_gate(region: int, scratch: int, resume_addr: int, original: byt
     body += b"\x83\x78\x04\x00"                         # cmp dword [rax+4], 0   (lock flag)
     jne_at = len(body); body += b"\x75\x00"             # jne LOCKED             (patch rel8)
     body += b"\xFF\x00"                                 # inc dword [rax]        (release count)
+    body += b"\x48\x89\x48\x10"                         # mov [rax+0x10], rcx    (manager ptr, for
+    #   species attribution: rcx = the release manager at entry, captured for the Python poll to
+    #   chase to the released animal's species. RELEASE_GATE_MGR. Single live-reg store - can't fault.)
     body += original                                    # mov [rsp+0x10],rbx     (rsp clean)
     jmp_at = _emit_jmp(body)   # jmp resume
     locked_at = len(body)
@@ -332,6 +335,32 @@ def make_release_gate(region: int, scratch: int, resume_addr: int, original: byt
     body[jne_at + 1] = (locked_at - (jne_at + 2)) & 0xFF
     _patch_jmp(body, jmp_at, region, resume_addr)
     return bytes(body)
+
+
+# The live release gate also records rcx (manager) at scratch+0x10 (RELEASE_GATE_MGR) for
+# per-species attribution; same offset/meaning as the probe's RELEASE_CAP_MGR.
+RELEASE_GATE_MGR = 0x10
+
+# Release species-capture probe scratch (within the 0x40 block):
+#   [scratch+0x00] u32 release-fn entry count
+#   [scratch+0x10] u64 manager pointer (rcx at the release executor entry)
+# rcx at FUN_145D84690 entry = the release manager; capturing it lets the Python probe chase the
+# selection/listing to find the released animal's species (read-only, off the live process).
+RELEASE_CAP_COUNT = 0x00
+RELEASE_CAP_MGR = 0x10
+
+
+def make_release_capture(region: int, scratch: int, resume_addr: int, original: bytes) -> bytes:
+    """PROBE-ONLY detour for the release executor (`FUN_145D84690` entry `mov [rsp+0x10],rbx`).
+    Counts entries and records rcx (the manager) into scratch+0x10, then runs the original + jmps
+    back. Captures only an already-live register (no derefs in asm -> cannot fault); the species
+    discovery is done Python-side from the manager pointer. Does NOT gate (releases proceed)."""
+    body = bytearray()
+    body += b"\x48\xB8" + struct.pack("<Q", scratch)      # movabs rax, scratch
+    body += b"\xFF\x00"                                   # inc dword [rax]        (entry count)
+    body += b"\x48\x89\x48\x10"                           # mov [rax+0x10], rcx    (manager ptr)
+    body += original                                     # mov [rsp+0x10],rbx     (rsp-clean entry)
+    return _final_jmp(body, region, resume_addr)
 
 
 def make_value_gate(region: int, scratch: int, resume_addr: int, original: bytes,

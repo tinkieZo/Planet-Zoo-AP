@@ -511,6 +511,9 @@ class PZContext(CommonContext):
             return applied
         if pending:
             return applied                                            # this fresh save already handled
+        # First handling of this fresh park: set the room's starting cash baseline, then arm the
+        # re-award (which re-applies all received items, incl. cash, on top of that baseline).
+        self._apply_starting_money()
         if applied > 0 and not self._fresh_reset_done:
             self._fresh_reset_done = True
             self.state.set(seed, self.slot, 0)
@@ -518,6 +521,23 @@ class PZContext(CommonContext):
             logger.info("Fresh zoo detected (Year 1, %d years open) - re-awarding all received items", years)
         self.state.set_fresh_pending(seed, self.slot, True)           # mark this fresh save handled
         return applied
+
+    def _apply_starting_money(self) -> None:
+        """Override the scenario's default starting cash with the room's ``starting_money`` (slot_data,
+        whole dollars). Once per fresh park (folded into the fresh-reset). The ovl ships a fixed
+        starting cash; the room's per-seed value is applied here. No-op in console mode / if the room
+        sent no starting_money / if the cash anchor isn't resolvable."""
+        amount = self.slot_data.get("starting_money")
+        if amount is None:
+            return
+        anchors = getattr(self.applier, "anchors", None)
+        scanner = getattr(self.applier, "scanner", None)
+        if anchors is None or scanner is None:
+            return  # console applier (no game) - nothing to write
+        if anchors.write(scanner, "cash", amount):
+            logger.info("Starting money set to $%s (room slot_data)", amount)
+        else:
+            logger.info("Could not set starting money (cash anchor unresolved) - will retry next fresh detect")
 
     def applied_high_water(self) -> int:
         if self.state is None or self.slot is None:

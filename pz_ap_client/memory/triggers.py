@@ -58,6 +58,8 @@ class MemoryTriggerSource:
         self.births = BirthDetector(scanner, research=self.research)
         self._bred_species: set = set()      # species_keys observed born (cumulative)
         self._acquired_species: set = set()  # species_keys observed acquired (cumulative)
+        self._released_species: set = set()  # species_keys observed released (cumulative)
+        self._last_release_count = 0         # release-count high-water (attribute only NEW releases)
         self._warned_release_attr = False    # one-shot notice that per-species release is unmapped
         # A3 conservation_release: software-detour on the release-to-wild executor that
         # counts releases (no stable game counter exists - see releases.py / the A2 spike).
@@ -131,20 +133,30 @@ class MemoryTriggerSource:
                 if loc.id not in already and loc.trigger_args.get("species_key") in self._acquired_species]
 
     def _poll_conservation_release(self, already: set) -> List[int]:
-        """Per-species conservation_release (cr_<species>) locations. The ReleaseDetector counts
-        releases but does NOT attribute species (the release hook doesn't capture the animal handle
-        yet), so we cannot tell WHICH species was released - these can't fire correctly and are left
-        un-detected (no false checks). Unlock: extend ReleaseDetector to resolve the released
-        animal's species like births (capture/RE-gated). Logged once when a release is seen."""
+        """Per-species conservation_release (cr_<species>). On each NEW release the gate captures the
+        manager; ReleaseDetector follows RELEASE_SPECIES_PATH to the released animal's species handle,
+        which we resolve to a species_key via the registry (same path as births). Accumulates released
+        species and fires their cr_ locations. Degrades to nothing (no false checks) while
+        RELEASE_SPECIES_PATH is unset (probe pending) - logged once."""
         locs = self.game_data.locations_by_trigger("conservation_release")
-        if not locs or self._warned_release_attr:
+        if not locs:
             return []
-        if self.releases.count() > 0:
-            self._warned_release_attr = True
-            logger.info("conservation_release: %d per-species locations present and a release was "
-                        "observed, but the release detector has no species attribution yet - these "
-                        "checks won't fire until that RE lands (see releases.py).", len(locs))
-        return []
+        count = self.releases.count()
+        if count > self._last_release_count:
+            self._last_release_count = count
+            handle = self.releases.last_release_species_handle()
+            key = self.research.species_key_for_handle(handle) if handle else None
+            if key:
+                self._released_species.add(key)
+            elif not self._warned_release_attr:
+                self._warned_release_attr = True
+                logger.info("conservation_release: release observed but species attribution is "
+                            "unavailable (RELEASE_SPECIES_PATH unset / handle unresolved) - cr_ checks "
+                            "won't fire until tools/release_probe.py pins the offset (see releases.py).")
+        if not self._released_species:
+            return []
+        return [loc.id for loc in locs
+                if loc.id not in already and loc.trigger_args.get("species_key") in self._released_species]
 
     def close(self) -> None:
         """Restore the code-patch detours (call on disconnect / shutdown)."""

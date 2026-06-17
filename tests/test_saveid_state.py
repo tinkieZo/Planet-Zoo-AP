@@ -24,8 +24,10 @@ FRESH, OLD = 0, FRESH_YEARS          # Year 1 == 0 years open (fresh); >= FRESH_
 
 
 def _client(state, slot=1):
-    """Minimal stand-in carrying only what _maybe_fresh_reset touches (it's a plain method)."""
-    return types.SimpleNamespace(state=state, slot=slot, _fresh_reset_done=False)
+    """Minimal stand-in carrying only what _maybe_fresh_reset touches (it's a plain method).
+    _apply_starting_money is stubbed no-op (its own behaviour is covered in test_starting_money)."""
+    return types.SimpleNamespace(state=state, slot=slot, _fresh_reset_done=False,
+                                 _apply_starting_money=lambda: None)
 
 
 def test_fresh_reset_zeroes_mark_and_latches(tmp_path):

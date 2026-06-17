@@ -25,6 +25,13 @@ local function _appcall(_sStage, _fn)
 end
 Scenario_AP_Script.Init = function(self, _iScenarioScriptManager, _tSave)
   SUPER.Init(self, _iScenarioScriptManager, _tSave)
+  -- NOT a tutorial. ScenarioScriptManager calls _EnableScenarioScopedSettings(not complete and
+  -- oActiveScript.isTutorial) right AFTER this Init; a truthy isTutorial FREEZES the park
+  -- (SetPlayerAnimalMovementEnabled(false) + disables mating/ageing/death/breakdowns), which greys
+  -- out "Release to Wild" ("Animal must stay in zoo for this scenario") and blocks the AP
+  -- conservation loop (the cr_<species> checks). An AP challenge zoo is normal play, so clear the
+  -- flag -> the engine runs the else branch (movement + death + ageing + breakdowns all enabled).
+  self.isTutorial = false
   self.startParams = {
     placementRestricted = false,
     browserHideAll = false,
@@ -49,6 +56,14 @@ Scenario_AP_Script.Init = function(self, _iScenarioScriptManager, _tSave)
     local tWorldAPIs = (api.world.GetWorldAPIs)()
     local parkAPI = tWorldAPIs.park
     parkAPI:SetParkName("ARCHIPELAGO ZOO")
+  end)
+  -- ANIMAL MOVEMENT: belt-and-braces alongside isTutorial=false - explicitly enable player animal
+  -- movement so Release to Wild / trade are available (the AP conservation loop needs releases),
+  -- in case the scoped-settings pass is skipped on some load path.
+  _appcall("animalmovement", function()
+    local tWorldAPIs = (api.world.GetWorldAPIs)()
+    tWorldAPIs.animals:SetPlayerAnimalMovementEnabled(true)
+    tWorldAPIs.exhibits:SetPlayerAnimalMovementEnabled(true)
   end)
   -- ANIMAL MARKET: deliberately NO market calls here (v16-stable). Probe history
   -- v11-v15 (detail in ap-custom-scenario memory): markets are natively EMPTY in
@@ -77,6 +92,38 @@ Scenario_AP_Script.Init = function(self, _iScenarioScriptManager, _tSave)
       end)
     end
   end
+  -- OBJECTIVE MANAGER ENABLE: in a normal scenario the ScenarioIntroManager enables it
+  -- (scenariointromanager.dec Activate line 56 / post-cinematic line 100:
+  -- ObjectiveManager:SetEnabled(true, sCode, ...)). Our hijacked empty bin never runs that
+  -- intro/activate path, so bEnabled stays FALSE and the engine's IsMovementForAnimalAllowed
+  -- (objectivemanager.dec line 1435: "if not self.bEnabled then return false") short-circuits
+  -- to false for EVERY animal -> "Release to Wild"/Quick-Trade greyed ("Animal must stay in
+  -- zoo for this scenario"), which blocks the AP conservation loop (cr_<species> checks).
+  -- Fix: enable it ourselves. Deferred a few frames so it lands AFTER any scenario-activate
+  -- pass (which would set bEnabled=false for us); one proper SetEnabled(true) loads the
+  -- objectives GUI, then we hold bEnabled true against a late override (field-only re-assert,
+  -- no GUI reload; a no-op if the world API is a proxy rather than the lua component table).
+  -- The release gate (IsMovementForAnimalAllowed, objectivemanager.dec line 1435) short-circuits
+  -- to false unless ObjectiveManager.bEnabled is true. Our hijacked bin never runs
+  -- ScenarioIntroManager's enable (Activate ln56 / post-cinematic ln100), so it stays false ->
+  -- "Release to Wild" greyed, blocking the AP conservation loop. SetEnabled(true) throws here (it
+  -- loads the objectives GUI we never set up), so set the field DIRECTLY. Done SYNCHRONOUSLY in
+  -- Init using the same GetWorldAPIs() objmerge proved resolves the PARK manager - a deferred
+  -- api.task runs in the frontend-pinned context where GetWorldAPIs().ObjectiveManager is nil
+  -- (the v1 deferred attempt never fired). Report the real gate state (bEnabled / OM type /
+  -- GetMoveableAnimals) before+after so a heap scan tells us exactly what happened.
+  _appcall("objenable", function()
+    local tWorldAPIs = (api.world.GetWorldAPIs)()
+    local OM = tWorldAPIs.ObjectiveManager
+    local tM = nil
+    global.pcall(function()
+      tM = (OM:GetMoveableAnimals())
+    end)
+    _apnote("APDBG:objstate bEnabled=" .. tostring(OM.bEnabled) .. " type=" .. global.type(OM)
+      .. " moveable=" .. tostring(tM))
+    OM.bEnabled = true
+    _apnote("APDBG:objset after=" .. tostring(OM.bEnabled))
+  end)
   local function _apApplySettings(_sm)
     local tSettings = _sm:GetSettings()
     tSettings.bCanHireNewStaff = true

@@ -31,13 +31,21 @@ import logging
 import struct
 from typing import Optional
 
-from .hook import HookManager, make_release_gate
+from .hook import HookManager, make_release_gate, RELEASE_GATE_MGR
 
 logger = logging.getLogger("PZClient")
 
 RELEASE_RVA = 0x5D84690
 RELEASE_ORIG = bytes.fromhex("48895c2410")  # mov [rsp+0x10],rbx (5B, rsp-relative entry)
 RELEASE_LOCK_OFF = 4   # scratch+4 u32: 1 = conservation program LOCKED (releases aborted)
+
+# Per-species attribution path: offsets from the captured manager (scratch+RELEASE_GATE_MGR) to the
+# released animal's SPECIES HANDLE (a registry symbol id). The release executor resolves the animal
+# through the cobra VM, so this chain is not known from the decompile alone - tools/release_probe.py
+# discovers it live (scan the manager for a value the registry resolves to a species). FILL the chain
+# here from the probe output to enable per-species conservation_release checks. None => attribution is
+# off and cr_<species> checks don't fire (the release COUNT/gate still work).
+RELEASE_SPECIES_PATH: "Optional[tuple]" = None  # e.g. (0x10, 0x0): manager->[+0x10]->[+0x0]=handle
 
 
 class ReleaseDetector:
@@ -95,6 +103,37 @@ class ReleaseDetector:
             return struct.unpack("<I", self.scanner.read_bytes(self.scratch, 4))[0]
         except Exception:
             return 0
+
+    def _captured_manager(self) -> "Optional[int]":
+        """The release manager pointer (rcx) recorded by the gate at the last release entry."""
+        if not self.ensure_installed() or self.scratch is None:
+            return None
+        try:
+            mgr = struct.unpack("<Q", self.scanner.read_bytes(self.scratch + RELEASE_GATE_MGR, 8))[0]
+            return mgr or None
+        except Exception:
+            return None
+
+    def last_release_species_handle(self) -> "Optional[int]":
+        """The species HANDLE of the most recently released animal, by following RELEASE_SPECIES_PATH
+        from the captured manager. None if the path isn't determined yet (probe pending), the manager
+        isn't captured, or the read fails - so per-species attribution degrades to nothing (no false
+        checks), while the release COUNT + gate keep working. Caller maps handle -> species_key via the
+        research registry resolver."""
+        if RELEASE_SPECIES_PATH is None:
+            return None
+        addr = self._captured_manager()
+        if addr is None:
+            return None
+        try:
+            for off in RELEASE_SPECIES_PATH[:-1]:
+                addr = struct.unpack("<Q", self.scanner.read_bytes(addr + off, 8))[0]
+                if not (0x10000 < addr < (1 << 47)):
+                    return None
+            handle = struct.unpack("<I", self.scanner.read_bytes(addr + RELEASE_SPECIES_PATH[-1], 4))[0]
+            return handle or None
+        except Exception:
+            return None
 
     def shutdown(self) -> None:
         try:

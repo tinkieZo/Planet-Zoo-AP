@@ -95,9 +95,19 @@ SPECIES_WELFARE_ITEM: Dict[str, int] = {
 # sorted cat-3 item-ids (consecutive block = one research's levels):
 #   Barriers     = 0x2793..0x2794 (2 levels); "Advanced Barriers" = the advanced level 0x2794
 #   Drink Shops  = 0x2727..0x272D (7 levels); fully researched = level 7 = 0x272D
+#
+# MECHANIC LOCATIONS (apworld): the per-item mechanic-research locations use research_key = the
+# location stringid (drink_shop1..7, barrier1..6, food_shop1..6, africa1..4, ... - 57 total).
+# is_research_complete already fires any key in THIS map when its cat-3 record hits status 4, so
+# enabling mechanic checks is purely DATA: map each stringid -> its cat-3 research-item id. Those ids
+# are runtime intern indices (not in static files); tools/mechanic_probe.py dumps the live cat-3 runs
+# (+ tries name resolution) so the per-stringid ids can be filled here. Until then mechanic checks
+# degrade to not-firing (no false checks). NOTE the two seed entries below use OLD keys that no apworld
+# location references (drink shops run 0x2727..0x272D, barriers 0x2793..0x2794) - kept as the known
+# run anchors for the probe-to-map step; replace with the drink_shopN / barrierN stringid entries.
 RESEARCH_ITEM: Dict[str, int] = {
-    "habitat_advanced_barriers": 0x2794,   # Barriers advanced/final level
-    "drink_shops": 0x272D,                 # Drink Shops final level (fully researched)
+    "habitat_advanced_barriers": 0x2794,   # Barriers advanced/final level (known anchor; unused key)
+    "drink_shops": 0x272D,                 # Drink Shops final level (known anchor; unused key)
 }
 
 

@@ -17,7 +17,15 @@ local ArchipelagoCareerData = module(...)
 
 ArchipelagoCareerData.tScenarioData = {
   {
-    code = "Scenario_01_Empty",
+    -- BASE-SWAP (session 7): was Scenario_01_Empty (a SANDBOX save -> Release-to-Wild blocked
+    -- "must stay in zoo", killing the conservation loop). Scenario_15_Empty is equally blank
+    -- (identical entity-type ref counts, 0 animals) BUT carries 14 BAKED career objectives, which
+    -- is what makes the ObjectiveManager properly release-enabled at WorldLoad (runtime-merged
+    -- objectives don't - proven across the whole runtime-lever exhaustion). Its sScriptType
+    -- scenario_15_script is already in our scriptutils whitelist. Code "Scenario_15_Empty" is
+    -- unclaimed ("Scenario_15" is the claimed DLC scenario; the _Empty terrain bin isn't a
+    -- registered scenario).
+    code = "Scenario_15_Empty",
     parkImages = {"scenarioPreview_01"},
     icon = {"scenarioIcon_01"},
     -- Bracketed loc keys: the career UI localises these (plain strings render
@@ -29,8 +37,8 @@ ArchipelagoCareerData.tScenarioData = {
     label = "[FrontEndMenu_ScenarioName_Scenario_AP]",
     description = "[FrontEndMenu_ScenarioDetails_Scenario_AP]",
     creator = "[FrontEndMenu_ParkCreator1]",
-    parkToLoad = "/run/Zoos/Scenarios_Empty/Scenario_01_Empty.bin",
-    parkToLoadTerrainOnly = "/run/Zoos/Scenarios_Empty/Scenario_01_Empty.bin",
+    parkToLoad = "/run/Zoos/Scenarios_Content11_Empty/Scenario_15_Empty.bin",
+    parkToLoadTerrainOnly = "/run/Zoos/Scenarios_Content11_Empty/Scenario_15_Empty.bin",
     parkSettings = "ParkSettings.Scenario_AP_ParkSettings",
     objectiveSettings = "ObjectiveSettings.Scenario_AP_Objectives",
     longitude = 8.0,
@@ -48,7 +56,7 @@ ArchipelagoCareerData.tScenarioData = {
 ArchipelagoCareerData.tSetData = {
   -- Set-code merge: only `parks` is replaced on the vanilla PRKG set (shallow
   -- merge keeps every other field). Slot 4 = the ARCHIPELAGO entry.
-  {code = "PRKG", parks = {"Scenario_01", "Scenario_02", "Scenario_03", "Scenario_01_Empty"}}
+  {code = "PRKG", parks = {"Scenario_01", "Scenario_02", "Scenario_03", "Scenario_15_Empty"}}
 }
 
 ArchipelagoCareerData.AddCareerData = function(_fnAddScenario, _fnAddSet, _fnAddPack)

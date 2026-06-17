@@ -65,6 +65,21 @@ Scenario_AP_Script.Init = function(self, _iScenarioScriptManager, _tSave)
     tWorldAPIs.animals:SetPlayerAnimalMovementEnabled(true)
     tWorldAPIs.exhibits:SetPlayerAnimalMovementEnabled(true)
   end)
+  -- RELEASE-TO-WILD ENABLE (the working lever): register an objective hint carrying
+  -- playerAnimalMovement=true. ScenarioScriptManager.AddObjectiveTrigger stores it as
+  -- tHintData.bPlayerAnimalMovement (scenarioscriptmanager.dec ln992), and
+  -- _ValidateScriptStateAfterLoad - run right after this Init (bValidateScriptState set at
+  -- InitScript ln670) - applies the current objective's hints via the ACTIVE manager
+  -- (ln379: animals/exhibits:SetPlayerAnimalMovementEnabled(true)). So gate A is set true on the
+  -- ACTIVE world APIs the release UI actually checks (animaldatabasetab.dec ln248), skipping the
+  -- whole "must stay in zoo" block. This is the in-the-right-context fix: our Init/GetWorldAPIs
+  -- runs in the loading env and can't reach the active OM/animals, but the trigger is processed
+  -- by the active ScenarioScriptManager. (Supersedes the loading-env animalmovement call above +
+  -- the objenable override experiment below, which never reached the active instances.)
+  _appcall("movementtrigger", function()
+    self:AddObjectiveTrigger({difficulty = 1, objective = 1, playerAnimalMovement = true})
+    _apnote("APDBG:movementtrigger registered (obj 1, playerAnimalMovement=true)")
+  end)
   -- ANIMAL MARKET: deliberately NO market calls here (v16-stable). Probe history
   -- v11-v15 (detail in ap-custom-scenario memory): markets are natively EMPTY in
   -- this scenario until any Set*ActiveWhitelist call activates them - then they
@@ -112,17 +127,82 @@ Scenario_AP_Script.Init = function(self, _iScenarioScriptManager, _tSave)
   -- api.task runs in the frontend-pinned context where GetWorldAPIs().ObjectiveManager is nil
   -- (the v1 deferred attempt never fired). Report the real gate state (bEnabled / OM type /
   -- GetMoveableAnimals) before+after so a heap scan tells us exactly what happened.
+  -- Do NOT set bEnabled=true: that hard-crashes on load (v3) - downstream load code does
+  -- `if self.bEnabled then ... guiWrapper:X()` and our guiWrapper is nil (SetEnabled's GUI setup
+  -- never ran). Instead OVERRIDE the single gate the release/trade UI calls -
+  -- IsMovementForAnimalAllowed (objectivemanager.dec ln1435; it returns false while bEnabled is
+  -- false) - so it always permits movement. Pure-lua instance-method override (the v3 crash on a
+  -- field WRITE proved OM is a table): shadows the class method for THIS OM only, no mid-load side
+  -- effect (nothing calls it during load), no GUI, no bEnabled change.
   _appcall("objenable", function()
     local tWorldAPIs = (api.world.GetWorldAPIs)()
+    -- gate B: ObjectiveManager:IsMovementForAnimalAllowed (animaldatabasetab.dec ln252 -> the
+    -- "bBlockedByScenario" / "must stay in zoo" issue). Override -> always allow. A v4 INSTANCE
+    -- override on GetWorldAPIs().ObjectiveManager didn't reach the UI, so the UI's OM is a
+    -- DIFFERENT instance (loading-world vs active-world). Override the CLASS via the instance
+    -- metatable (__index) so EVERY instance of that class inherits it. fnAllow logs its first call
+    -- so a heap scan tells us whether the UI actually hits our override.
+    local fnAllow = function(_self, _nAnimalID, _sDest)
+      if not Scenario_AP_Script._bMoveCalled then
+        Scenario_AP_Script._bMoveCalled = true
+        _apnote("APDBG:moveallow CALLED dest=" .. global.tostring(_sDest))
+      end
+      return true
+    end
     local OM = tWorldAPIs.ObjectiveManager
-    local tM = nil
+    _apnote("APDBG:objstate type=" .. global.type(OM))
+    if global.type(OM) == "table" then
+      OM.IsMovementForAnimalAllowed = fnAllow                       -- this instance
+      local mt = global.getmetatable(OM)
+      local cls = mt and mt.__index
+      if global.type(cls) == "table" then
+        cls.IsMovementForAnimalAllowed = fnAllow                    -- the class -> all instances
+        _apnote("APDBG:objpatch class+instance set")
+      else
+        _apnote("APDBG:objpatch instance only (cls=" .. global.tostring(cls) .. ")")
+      end
+    end
+    -- gate A: animals:IsPlayerAnimalMovementEnabled (animaldatabasetab.dec ln248). TRUE there
+    -- skips the whole per-animal block. Likely native userdata (override a no-op) but harmless.
     global.pcall(function()
-      tM = (OM:GetMoveableAnimals())
+      local an = tWorldAPIs.animals
+      if global.type(an) == "table" then
+        an.IsPlayerAnimalMovementEnabled = function()
+          return true
+        end
+        _apnote("APDBG:objpatch animals gateA set")
+      else
+        _apnote("APDBG:objpatch animals type=" .. global.type(an))
+      end
     end)
-    _apnote("APDBG:objstate bEnabled=" .. tostring(OM.bEnabled) .. " type=" .. global.type(OM)
-      .. " moveable=" .. tostring(tM))
-    OM.bEnabled = true
-    _apnote("APDBG:objset after=" .. tostring(OM.bEnabled))
+  end)
+  -- DIAGNOSTIC: report the LIVE game mode via IScenarioManager (the interface DOES expose
+  -- GetGameMode/IsScenarioCareerMode/IsSandboxMode/IsScenarioEditMode). This tells us whether our
+  -- scenario is truly ScenarioCareer at runtime (=> objectives SHOULD enable via ScenarioIntroManager;
+  -- fix = force the enable) or stuck Sandbox (=> fix = the mode). smp was resolved above; re-resolve
+  -- fresh if nil.
+  _appcall("ps_modereport", function()
+    local sm = smp
+    if sm == nil and tCtx and tCtx.env then
+      global.pcall(function()
+        sm = (tCtx.env):RequireInterface("Interfaces.IScenarioManager")
+      end)
+      if sm == nil then
+        global.pcall(function()
+          sm = (tCtx.env):RequestInterface("Interfaces.IScenarioManager")
+        end)
+      end
+    end
+    if sm ~= nil then
+      _apnote("APDBG:mode gm=" .. tostring(sm:GetGameMode())
+        .. " career=" .. tostring(sm:IsScenarioCareerMode())
+        .. " sandbox=" .. tostring(sm:IsSandboxMode())
+        .. " edit=" .. tostring(sm:IsScenarioEditMode())
+        .. " scen=" .. tostring(sm:IsScenarioMode())
+        .. " code=" .. tostring(sm:GetScenarioCode()))
+    else
+      _apnote("APDBG:mode UNRESOLVED (no IScenarioManager handle at Init)")
+    end
   end)
   local function _apApplySettings(_sm)
     local tSettings = _sm:GetSettings()

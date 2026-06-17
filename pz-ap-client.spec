@@ -44,6 +44,17 @@ try:
     gui_excludes += _kv.get("excludes", [])
     kivy_hookspath = kv_hookspath()
     kivy_runtime_hooks = kv_runtime_hooks()
+    # CLEAN-MACHINE FIX (2026-06-17): kivy's runtime hook points KIVY_DATA_DIR at <bundle>/data,
+    # but the kivy PyInstaller hook does not reliably land kivy/data there - a clean-machine run
+    # crashed with FileNotFoundError on _internal/data/glsl/header.vs (the default shader header).
+    # Collect kivy's data dir (glsl/fonts/images/...) explicitly to "data" so the runtime path is
+    # satisfied regardless of the hook's behavior.
+    import kivy as _kv_mod
+    _kv_data = getattr(_kv_mod, "kivy_data_dir", "")
+    if _kv_data and os.path.isdir(_kv_data):
+        gui_datas += _tree(_kv_data, "data")
+    else:
+        print("pz-ap-client.spec: WARNING kivy_data_dir not found (%r) - GUI shaders may be missing." % _kv_data)
     _d, _b, _h = collect_all("kivymd")
     gui_datas += _d
     gui_binaries += _b

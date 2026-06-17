@@ -57,8 +57,8 @@ ScenarioScriptUtils.ScenarioScriptTypes = function()
       end)
       return {sCode = nwdm:GetScenarioCode(), env = env, scenarioManager = sm}
     end)
-    if bOK and tCtx and tCtx.sCode == "Scenario_01_Empty" then
-      tScenarioScriptTypes["scenarioscripts.scenario_01_script"] = oAP
+    if bOK and tCtx and tCtx.sCode == "Scenario_15_Empty" then
+      tScenarioScriptTypes["scenarioscripts.scenario_15_script"] = oAP
       oAP._tAPContext = tCtx
       -- belt-and-braces: also stash in _G in case the module table seen here is not
       -- the one the AP script's Init closure reads (per-env module registries)

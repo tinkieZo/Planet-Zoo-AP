@@ -54,6 +54,10 @@ REC_LEVEL = 0x0C            # u32 level
 REC_SPECIES = 0x10           # u32 species handle (per-session; resolve at runtime)
 REC_CATEGORY = 0x3C          # byte: 7 = animal research
 REC_STATUS = 0x49            # byte: 4 = ResearchedAndCompleted
+REC_NAME_INTERN = 0x08       # u32 the item NAME's content-intern id (registry.id_to_name). This is the
+                             # name bridge for MECHANIC research - the item-id at +0x00 is a DIFFERENT,
+                             # non-intern namespace (0xDAC+0x00 -> 'cc_arbours' garbage; +0x08 -> the
+                             # real 'PlainsZebraVetLevel1'). Verified live (tools/mechanic_probe.py).
 ANIMAL_CATEGORY = 7
 # ResearchStatus enum: 0 NotStarted, 1 Researchable, 2 Researching, 3 ResearchedButNotCompleted
 # (researched but reward not yet "Collect"-ed), 4 ResearchedAndCompleted (collected). We treat
@@ -110,6 +114,49 @@ RESEARCH_ITEM: Dict[str, int] = {
     "drink_shops": 0x272D,                 # Drink Shops final level (known anchor; unused key)
 }
 
+# apworld mechanic-research location stringid -> engine research-item NAME. The 57 mechanic locations
+# (drink_shop1..7, barrier1..6, the theme-set/shop/transport/staff branches) are resolved by NAME, not
+# id: the runtime item-id (+0x00) is a non-intern namespace and the per-branch level item-ids are
+# SCATTERED (barriers split across 0x2793 + 0x32C9), so a static id map is wrong - we resolve each
+# record's name via +0x08 (registry.id_to_name) and match here. Generated from tools/research_catalog.json
+# (each branch's entry-level -> next chain order); positional keyN = Nth level, staff facilities by name.
+# Verified live: every name resolves (tools/mechanic_probe.py). is_research_complete fires the location
+# when its named record's status == 4; a name absent from this scenario's map degrades to not-firing.
+MECHANIC_RESEARCH_NAME: Dict[str, str] = {
+    "africa1": "AfricaThemeSetsScenery", "africa2": "AfricaThemeSetsBlueprintsL1",
+    "africa3": "AfricaThemeSetsBlueprintsL2", "africa4": "AfricaThemeSetsBlueprintsL3",
+    "classic1": "ClassicThemeSetsScenery", "classic2": "ClassicThemeSetsBlueprintsL1",
+    "classic3": "ClassicThemeSetsBlueprintsL2", "classic4": "ClassicThemeSetsBlueprintsL3",
+    "indian1": "IndiaThemeSetsScenery", "indian2": "IndiaThemeSetsBlueprintsL1",
+    "indian3": "IndiaThemeSetsBlueprintsL2", "indian4": "IndiaThemeSetsBlueprintsL3",
+    "modern1": "ModernThemeSetsScenery", "modern2": "ModernThemeSetsBlueprintsL1",
+    "modern3": "ModernThemeSetsBlueprintsL2", "modern4": "ModernThemeSetsBlueprintsL3",
+    "orient1": "OrientThemeSetsScenery", "orient2": "OrientThemeSetsBlueprintsL1",
+    "orient3": "OrientThemeSetsBlueprintsL2", "orient4": "OrientThemeSetsBlueprintsL3",
+    "barrier1": "BarriersRebarStoneCages", "barrier2": "BarriersChainSteelPosts",
+    "barrier3": "BarriersConcrete", "barrier4": "BarriersElectric",
+    "barrier5": "BarriersOneWayGlass", "barrier6": "BarriersThickGlass",
+    "drink_shop1": "DrinkShopsGulpeeSlush", "drink_shop2": "DrinkShopsPipshotWater",
+    "drink_shop3": "DrinkShopsFoxyCoffee", "drink_shop4": "DrinkShopsCosmicCowMilkshakes",
+    "drink_shop5": "DrinkShopsPipshotJuice", "drink_shop6": "DrinkShopsGulpeeEnergy",
+    "drink_shop7": "DrinkShopsPipshotSmoothies",
+    "food_shop1": "FoodShopsHotdogSquad", "food_shop2": "FoodShopsPizzaPen",
+    "food_shop3": "FoodShopsCosmicCowIceCream", "food_shop4": "FoodShopsMissyGood",
+    "food_shop5": "FoodShopsMexelente", "food_shop6": "FoodShopsMonsieurFrites",
+    "habitat1": "HabitatsHabitatBlueprintsL1", "habitat2": "HabitatsHabitatBlueprintsL2",
+    "habitat3": "HabitatsHabitatBlueprintsL3",
+    "shelter1": "SheltersShelterBlueprintsL1", "shelter2": "SheltersShelterBlueprintsL2",
+    "shelter3": "SheltersShelterBlueprintsL3",
+    "power1": "PowerWindTurbine", "power2": "PowerSolarPanel",
+    "souvenir_shop1": "SouvenirShopsJustAMomento", "souvenir_shop2": "SouvenirShopsHatsFantastic",
+    "transport1": "TransportBoatRideStation", "transport2": "TransportSuspendedGondola",
+    "transport3": "TransportSteamTrainStation", "transport4": "TransportSafariJeepStation",
+    "sf_keeperhut_l": "StaffFacilitiesKeeperHutLarge",
+    "sf_staff_room_l": "StaffFacilitiesStaffCentreLarge",
+    "sf_quarantine_l": "StaffFacilitiesQuarantineLarge",
+    "sf_research_centre_l": "StaffFacilitiesResearchCentreLarge",
+}
+
 
 def _norm_token(s: str) -> str:
     """Canonicalise a species name/token for matching (lowercase, alnum only)."""
@@ -136,6 +183,7 @@ class ResearchReader:
         self._warned_unmapped: set = set()
         self._rs_cache: Optional[int] = None  # last good research-system address (revalidated each use)
         self._last_scan = 0.0                 # monotonic time of the last vtable heap-scan (throttle)
+        self._mech_item_cache: Optional[Dict[str, int]] = None  # {norm name -> item id} for cat-3 (session-stable)
 
     def _map_ok(self, rs: int) -> bool:
         """Cheap check that rs+ITEMS_MAP_OFF is a readable items map - lets us tell the real research
@@ -253,6 +301,42 @@ class ResearchReader:
             out.append((item, level, status, cat, base + i * REC_STRIDE + REC_STATUS))
         return out
 
+    def _mechanic_item_map(self) -> Dict[str, int]:
+        """{normalized item-name -> research-item id} for cat-3 (mechanic) records, the name resolved
+        via the record's name-intern id (+0x08) through the registry. Restart-stable (names + ids are
+        fixed for a build / scenario), so cached for the session after the first full read. Empty (and
+        NOT cached) until the map + registry are both readable, so a too-early call just retries."""
+        if self._mech_item_cache is not None:
+            return self._mech_item_cache
+        if not self.registry:
+            return {}
+        rs = self._research_system()
+        if not rs:
+            return {}
+        try:
+            cap = struct.unpack("<q", self.scanner.read_bytes(rs + ITEMS_MAP_OFF + 0x10, 8))[0]
+            bk = struct.unpack("<Q", self.scanner.read_bytes(rs + ITEMS_MAP_OFF + 0x18, 8))[0]
+            if cap <= 0 or cap > (1 << 20) or not (0x10000 < bk < (1 << 47)):
+                return {}
+            bm = ((cap >> 3) + 7) & ~7
+            bitmap = self.scanner.read_bytes(bk, bm)
+            recs = self.scanner.read_bytes(bk + bm, cap * REC_STRIDE)
+        except Exception:
+            return {}
+        out: Dict[str, int] = {}
+        for i in range(cap):
+            if not ((bitmap[i >> 3] >> (i & 7)) & 1):
+                continue
+            r = recs[i * REC_STRIDE:(i + 1) * REC_STRIDE]
+            if r[REC_CATEGORY] != MECHANIC_CATEGORY:
+                continue
+            name = self.registry.id_to_name(struct.unpack_from("<I", r, REC_NAME_INTERN)[0])
+            if name:
+                out[_norm_token(name)] = struct.unpack_from("<I", r, REC_ITEMID)[0]
+        if out:
+            self._mech_item_cache = out   # cache only a populated map (registry was ready)
+        return out
+
     def species_key_for_handle(self, handle: int) -> Optional[str]:
         """Resolve a live species handle (== registry symbol id) to a data.json species_key via the
         symbol registry (engine token -> token_to_key). None if no registry / unmapped token."""
@@ -360,27 +444,37 @@ class ResearchReader:
         rec = snap[0].get(i0 + (level - 1))  # (handle, level, status, category)
         return rec is not None and rec[2] == STATUS_COMPLETE
 
+    def _item_id_complete(self, item: Optional[int], snap: Optional[Tuple[dict, dict]]) -> bool:
+        """A specific research-item id is complete iff its record's status == COMPLETE. Handles a None
+        item (unresolved mechanic name) and an unreadable snapshot as 'not complete' (no false positive)."""
+        if item is None:
+            return False
+        snap = snap or self._snapshot()
+        if snap is None:
+            return False
+        rec = snap[0].get(item)  # (handle, level, status, category)
+        return rec is not None and rec[2] == STATUS_COMPLETE
+
     def is_research_complete(self, research_key: str, snap: Optional[Tuple[dict, dict]] = None,
                              level: Optional[int] = None) -> bool:
-        """Generic dispatch for any data.json research_key. `welfare_<species>` uses the leveled
-        animal-research rule: with a `level` it checks just that level's record (per-level welfare
-        locations); without, it requires ALL standard levels complete. A key in RESEARCH_ITEM (e.g.
-        a mechanic research) is complete when its single item's status == 4. Unknown keys -> False."""
-        item = self.research_items.get(research_key)
-        if item is not None:
-            snap = snap or self._snapshot()
-            if snap is None:
-                return False
-            rec = snap[0].get(item)  # (handle, level, status, category)
-            return rec is not None and rec[2] == STATUS_COMPLETE
+        """Generic dispatch for any data.json research_key. A key in RESEARCH_ITEM is complete when its
+        single item's status == 4. A MECHANIC_RESEARCH_NAME key resolves its engine item NAME to a
+        cat-3 record (via +0x08) and checks that record's status. `welfare_<species>` uses the leveled
+        animal-research rule: with a `level` it checks just that level's record; without, it requires
+        ALL standard levels complete. Unknown keys -> False (logged once)."""
+        if research_key in self.research_items:
+            return self._item_id_complete(self.research_items[research_key], snap)
+        if research_key in MECHANIC_RESEARCH_NAME:
+            item = self._mechanic_item_map().get(_norm_token(MECHANIC_RESEARCH_NAME[research_key]))
+            return self._item_id_complete(item, snap)
         if research_key.startswith("welfare_"):
             species = research_key[len("welfare_"):]
-            if level:
-                return self.is_welfare_level_complete(species, level, snap)
-            return self.is_welfare_complete(species, snap)
+            return (self.is_welfare_level_complete(species, level, snap) if level
+                    else self.is_welfare_complete(species, snap))
         if research_key not in self._warned_unmapped:
             self._warned_unmapped.add(research_key)
-            logger.info("research: key %r not mapped (add to SPECIES_WELFARE_ITEM or RESEARCH_ITEM)", research_key)
+            logger.info("research: key %r not mapped (add to SPECIES_WELFARE_ITEM, RESEARCH_ITEM, "
+                        "or MECHANIC_RESEARCH_NAME)", research_key)
         return False
 
 

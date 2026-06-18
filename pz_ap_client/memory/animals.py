@@ -78,9 +78,13 @@ class AnimalResolver:
             if i == start:
                 return None
 
-    def resolve_entity(self, zoo: int, handle: int) -> Optional[int]:
-        """handle -> animal entity address (or None)."""
-        mgr = self.scanner.read_qword(zoo + OFF_ZOO_ANIMAL_MGR)
+    def resolve_entity_via_manager(self, mgr: int, handle: int) -> Optional[int]:
+        """handle -> animal entity address using the animal-roster MANAGER directly (or None).
+        The hashmap cap must be a power of two (the structure's invariant); when it isn't, ``mgr``
+        is the wrong object (a garbage read), so we bail with None instead of indexing a bogus
+        table. This guard is what lets callers safely *try* a candidate pointer (e.g. a value
+        captured at the release site) as a manager - a wrong guess resolves to nothing, never to a
+        false entity."""
         if not mgr:
             return None
         cap = self.scanner.read_qword(mgr + OFF_MGR_HASHMAP + OFF_MAP_CAP)
@@ -88,10 +92,19 @@ class AnimalResolver:
         table = self.scanner.read_qword(mgr + OFF_MGR_TABLE)
         if not cap or not buckets or not table:
             return None
+        if cap > (1 << 24) or (cap & (cap - 1)) != 0:   # power-of-two invariant; reject a wrong mgr
+            return None
         idx = self._lookup_index(buckets, cap, handle)
         if idx is None:
             return None
         return table + idx * RECORD_STRIDE
+
+    def resolve_entity(self, zoo: int, handle: int) -> Optional[int]:
+        """handle -> animal entity address via the ZOO (manager = *(zoo+0x2F8)), or None."""
+        if not zoo:
+            return None
+        mgr = self.scanner.read_qword(zoo + OFF_ZOO_ANIMAL_MGR)
+        return self.resolve_entity_via_manager(mgr, handle) if mgr else None
 
     def life_stage(self, entity: int) -> Optional[int]:
         try:

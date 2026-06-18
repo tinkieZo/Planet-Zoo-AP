@@ -47,6 +47,8 @@ HOOKS: List[HookSite] = [
              aob="0F B6 83 10 02 00 00 84 C0 74 64 4C 8B 83 08 02 00 00 49 F7 D8 49 8B 97 10 01 00 00"),
     HookSite("release", 0x5D84690, "48895c2410",
              "ReleaseAnimalIntoWild entry (conservation gate)", script_name="ReleaseAnimalIntoWild"),
+    HookSite("release_species", 0x5D8478F, "488b4d484889f2",
+             "ReleaseAnimalIntoWild call-prep (released-species capture; entry+0xFF)"),
     HookSite("birth_insert", 0xC82168, "488bbdd8000000",
              "add-animal insert instrument (BirthDetector)",
              aob="48 8B BD D8 00 00 00 4D 85 F6 75 3E 44 38 B5 F8 00 00 00 75 2A 49 8B 8D F8 04 00 00"),

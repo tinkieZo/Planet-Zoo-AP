@@ -163,44 +163,35 @@ async def main() -> None:
         _check(ctx2.finished_game, "goal COMPLETE after both locations checked")
         _check(("status", 30) in applied_log, "CLIENT_GOAL (30) status sent")
 
-        # --- market reconciler: stocks the scenario market with unlocked species only
-        class _FakeResearch:
-            def __init__(self, handles): self._h = handles
-            def _snapshot(self): return object()
-            def current_handle(self, key, _snap): return self._h.get(key)
-
-        class _FakeSpawner:
+        # --- market reconciler: restricts the autofill market to the unlocked species via the
+        #     include-set allow-list, expiring already-listed blocked species (SpeciesMarketGate).
+        class _FakeGate:
             def __init__(self, handles):
-                self.research = _FakeResearch(handles)
-                self.live = []
-                self.spawned = []
+                self._h = handles          # species_key -> resolved id
                 self.mode = True
+                self.applied = []          # id-lists passed to apply_unlocked
+                self.expired = []          # id-lists passed to expire_blocked_listings
             def scenario_mode(self): return self.mode
-            def live_species(self): return list(self.live)
-            def spawn_species_id(self, h, female=None): self.spawned.append(h); return True
+            def _resolve_handles(self, keys): return [self._h[k] for k in keys if k in self._h]
+            def apply_unlocked(self, ids): self.applied.append(list(ids)); return True
+            def expire_blocked_listings(self, ids): self.expired.append(list(ids)); return len(ids)
 
         # ctx2 holds exactly one permit (i_permit) -> that species is purchase-unblocked; every
-        # other species stays blocked, so only it may be offered on the market.
+        # other species stays blocked, so only it is in the market allow-list.
         unblocked_key = gd.item_by_id[i_permit].effect_args["species_key"]
         H = 0x999  # arbitrary fake research handle for that species
-        spawner = _FakeSpawner({unblocked_key: H})
-        ctx2.market_spawner = spawner
+        gate = _FakeGate({unblocked_key: H})
+        ctx2.market_gate = gate
+        ctx2._market_last_allowed = None
         ctx2._reconcile_market()
-        _check(spawner.spawned == [H], "market offers exactly the unlocked species")
+        _check(gate.applied == [[H]], "market allow-list = exactly the unlocked species")
+        _check(gate.expired == [[H]], "blocked live listings expired when the gate is applied")
         ctx2._reconcile_market()
-        _check(spawner.spawned == [H], "respawn cooldown prevents immediate re-arm")
-        ctx2._market_last_spawn.clear()
-        spawner.live = [H]
+        _check(gate.applied == [[H]], "unchanged unlocked set -> not re-applied (no redundant rebuild)")
+        gate.mode = False
+        ctx2._market_last_allowed = None     # force a re-eval
         ctx2._reconcile_market()
-        _check(spawner.spawned == [H], "no re-arm while a live listing exists")
-        ctx2._market_last_spawn.clear()
-        spawner.live = []
-        spawner.mode = False
-        ctx2._reconcile_market()
-        _check(spawner.spawned == [H], "no-op outside scenario mode")
-        spawner.mode = True
-        ctx2._reconcile_market()
-        _check(spawner.spawned == [H, H], "purchased/expired listing re-offered after cooldown")
+        _check(gate.applied == [[H]], "no-op outside scenario mode")
 
         print("\nALL OFFLINE TESTS PASSED")
     finally:

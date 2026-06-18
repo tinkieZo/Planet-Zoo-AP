@@ -116,8 +116,16 @@ else:
     print("pz-ap-client.spec: no cobra-tools at %r - /pz_install will NOT work in this build "
           "(run build-exe.ps1 to stage it, or set PZ_COBRA_SOURCE)." % COBRA_SOURCE)
 
+# Archipelago's GUI (kvui) loads its layouts/fonts via Utils.local_path("data", ...), which in a
+# FROZEN exe resolves to <bundle>/data (sys._MEIPASS), NOT the vendored tree's data/. So the AP
+# data/ (client.kv, launcher.kv, fonts, ...) must ALSO land at "data" - else the GUI crashes
+# (clean-machine: FileNotFoundError _internal/data/client.kv). Merges cleanly with the kivy data
+# also placed at "data" (verified no overlapping files).
+ap_data_datas = _tree(os.path.join(AP_SOURCE, "data"), "data") if os.path.isdir(os.path.join(AP_SOURCE, "data")) else []
+
 datas = (
     _tree(AP_SOURCE, "vendor/Archipelago")
+    + ap_data_datas
     + cobra_datas
     + [("data.json", "."), ("pz_ap_client/memory/anchors.json", "pz_ap_client/memory"),
        ("pz_ap_client/ovl_src", "pz_ap_client/ovl_src")]

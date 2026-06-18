@@ -133,30 +133,70 @@ class MemoryTriggerSource:
                 if loc.id not in already and loc.trigger_args.get("species_key") in self._acquired_species]
 
     def _poll_conservation_release(self, already: set) -> List[int]:
-        """Per-species conservation_release (cr_<species>). On each NEW release the gate captures the
-        manager; ReleaseDetector follows RELEASE_SPECIES_PATH to the released animal's species handle,
-        which we resolve to a species_key via the registry (same path as births). Accumulates released
-        species and fires their cr_ locations. Degrades to nothing (no false checks) while
-        RELEASE_SPECIES_PATH is unset (probe pending) - logged once."""
+        """Per-species conservation_release (cr_<species>). On each NEW release (entry-gate count
+        rises) the species-capture detour has, in the same call, recorded the released animal's
+        handle + the manager it was resolved through; we resolve that to a species_key (same
+        entity->+0x50->research-map path as births) and accumulate it, firing the matching cr_
+        locations. Degrades to nothing (no false checks) if attribution fails - logged once."""
         locs = self.game_data.locations_by_trigger("conservation_release")
         if not locs:
             return []
         count = self.releases.count()
         if count > self._last_release_count:
             self._last_release_count = count
-            handle = self.releases.last_release_species_handle()
-            key = self.research.species_key_for_handle(handle) if handle else None
+            key = self._attribute_release()
             if key:
                 self._released_species.add(key)
             elif not self._warned_release_attr:
                 self._warned_release_attr = True
-                logger.info("conservation_release: release observed but species attribution is "
-                            "unavailable (RELEASE_SPECIES_PATH unset / handle unresolved) - cr_ checks "
-                            "won't fire until tools/release_probe.py pins the offset (see releases.py).")
+                logger.info("conservation_release: release #%d observed but species attribution "
+                            "failed (handle unresolved against any animal manager - entity already "
+                            "freed, or species-capture hook not installed). cr_ checks won't fire "
+                            "for it; the milestone (count) still works.", count)
         if not self._released_species:
             return []
         return [loc.id for loc in locs
                 if loc.id not in already and loc.trigger_args.get("species_key") in self._released_species]
+
+    def _attribute_release(self) -> "str | None":
+        """Resolve the last released animal handle -> species_key. None if it can't be attributed.
+
+        PRIMARY (race-free): the births insert-cache, which recorded handle->species_key when the
+        animal ENTERED the zoo. A release removes the animal within tens of ms (deferred message),
+        but the client polls ~1s, so resolving the roster live at release time almost always finds
+        the entity already freed - whereas the cache was filled long before. The AP scenario starts
+        empty, so every releasable animal was inserted (bought/traded/born) while attached.
+
+        FALLBACK (best-effort): live resolution via the release site's captured ``*(rbp+0x48)`` (as
+        zoo, then manager) then the births-captured zoo - covers an animal already present at attach
+        (never inserted), though it may miss if the entity was freed before this tick."""
+        handle = self.releases.last_released_handle()
+        if not handle:
+            return None
+        cached = self.births.handle_species.get(handle)
+        if cached:
+            logger.info("conservation_release: attributed released handle 0x%X -> %s (insert cache)",
+                        handle, cached)
+            return cached
+        resolver = self.births.resolver
+        handle2key = self.research.handle_key_map()
+        mgr_cand = self.releases.last_release_manager()
+        candidates = []
+        if mgr_cand:
+            candidates.append(resolver.resolve_entity(mgr_cand, handle))             # *(rbp+0x48) as zoo
+            candidates.append(resolver.resolve_entity_via_manager(mgr_cand, handle))  # ... as manager
+        if self.births.last_zoo:
+            candidates.append(resolver.resolve_entity(self.births.last_zoo, handle))  # births zoo
+        for entity in candidates:
+            if entity is None:
+                continue
+            sh = resolver.species_handle(entity)
+            key = handle2key.get(sh) if sh is not None else None
+            if key:
+                logger.info("conservation_release: attributed released handle 0x%X -> %s "
+                            "(live resolve, species handle 0x%X)", handle, key, sh)
+                return key
+        return None
 
     def close(self) -> None:
         """Restore the code-patch detours (call on disconnect / shutdown)."""

@@ -51,6 +51,13 @@ OFF_MGR_ACTIVATION = 0x210        # u8: pool-rebuild runs only when set
 OFF_MGR_POOL_DIRTY = 0x211        # u8: write 0 -> Advance rebuilds the candidate pool next tick
 OFF_MGR_MODE = 0x41C             # u8: 0=scenario 1=sandbox 2=challenge/franchise 3=off
 OFF_MGR_DEFAULT_WHITELIST = 0x3C0  # the default whitelist OBJECT (used when active id misses)
+# Active-whitelist SELECTION (FUN_14a098760): the rebuild uses the ACTIVE whitelist, chosen by an id
+# field looked up in the map @mgr+0x390; on a MISS it returns the default @+0x3c0. The id field is
+# +0x418 in sandbox (mode 1) and +0x3b8 otherwise (incl. scenario mode 0). Clearing the id so the
+# lookup misses routes the rebuild to the default whitelist (what apply_unlocked writes) - the
+# memory-only equivalent of the script's SetLocalAnimalExchangeActiveWhitelist("").
+OFF_MGR_ACTIVE_WL_ID_SCEN = 0x3B8     # i32 active whitelist id (mode != 1)
+OFF_MGR_ACTIVE_WL_ID_SANDBOX = 0x418  # i32 active whitelist id (mode == 1)
 
 # whitelist-object field offsets (relative to the whitelist object base)
 WL_INCLUDE_ACTIVE = 0x28          # u8: 1 = include-set is an allow-list filter
@@ -65,6 +72,21 @@ OFF_MGR_SCHED_DATA = 0x280        # ptr: schedule array, stride 0x260
 
 SCHED_STRIDE = 0x260
 LIVE_STRIDE = 0x240
+LIVE_ENT_EXPIRY = 0x214           # f32 listing time-left; Advance removes a listing once this goes <0
+                                  # (FUN_140ea1080 lines 248-265 -> FUN_140ea88e0). The gate only
+                                  # filters FUTURE autofill spawns, so already-spawned listings of a
+                                  # now-blocked species must be expired to clear them from the UI.
+
+# -- autofill candidate POOL (the include-set filters THIS during the rebuild FUN_140ea0740) ----
+# The mode-0 Advance also autofills listings from this pool (FUN_140ea1080 lines 124-155), so on a
+# base whose GetReadyAnimalsForExchange query is non-empty (Scenario_15_Empty, unlike Scenario_01),
+# gating the pool gates the market. Rebuild adds species `s` iff (include-active==0 OR s in include-
+# set) AND s not in exclude-set, then appends (weight f32 @+0, species i32 @+4, name i32 @+8).
+OFF_MGR_POOL_COUNT = 0x2A0        # i64 candidate-pool count
+OFF_MGR_POOL_DATA = 0x2A8         # ptr candidate-pool array
+OFF_MGR_POOL_CAP = 0x2B0          # i64 candidate-pool capacity
+POOL_STRIDE = 0x0C
+POOL_ENT_SPECIES = 0x04           # i32 species symbol id within a pool entry
 
 # schedule/listing entry field offsets (relative to the entry base)
 ENT_SPECIES = 0x10                # i32 species symbol id (== research-map handle)
@@ -186,6 +208,82 @@ class SpeciesMarketGate:
             self._mgr_cache = resolve_exchange_mgr(self.scanner)
         return self._mgr_cache
 
+    def scenario_mode(self) -> bool:
+        """True iff the market is in scenario mode (mode byte 0). On Scenario_15_Empty this is the
+        autofill-driven market the gate restricts; also the AP-session mode_check."""
+        mgr = self.exchange_mgr()
+        if mgr is None:
+            return False
+        try:
+            return self.scanner.read_bytes(mgr + OFF_MGR_MODE, 1)[0] == 0
+        except Exception:
+            return False
+
+    def expire_blocked_listings(self, allowed_ids: Sequence[int]) -> int:
+        """Force every LIVE listing whose species isn't in ``allowed_ids`` to expire on the next
+        Advance tick (timer +0x214 := very negative -> the engine removes it natively, no leak/refcount
+        breakage). The autofill then refills the freed slots from the gated pool. Returns the count
+        marked. Idempotent: a market already showing only allowed species marks none. This is what
+        makes the gate visible IMMEDIATELY rather than only as listings slowly expire."""
+        mgr = self.exchange_mgr()
+        if mgr is None:
+            return 0
+        allowed = {int(i) & 0xFFFFFFFF for i in allowed_ids}
+        try:
+            count = self.scanner.read_i64(mgr + OFF_MGR_LIVE_COUNT)
+            data = self.scanner.read_qword(mgr + OFF_MGR_LIVE_DATA)
+        except Exception:
+            return 0
+        if not data or not 0 <= count <= 1024:
+            return 0
+        marked = 0
+        for i in range(count):
+            ent = data + i * LIVE_STRIDE
+            try:
+                if (self.scanner.read_i32(ent + ENT_SPECIES) & 0xFFFFFFFF) not in allowed:
+                    self.scanner.write_bytes(ent + LIVE_ENT_EXPIRY, struct.pack("<f", -1.0e9))
+                    marked += 1
+            except Exception:
+                continue
+        if marked:
+            logger.info("market: expired %d live listing(s) of now-blocked species", marked)
+        return marked
+
+    def disable(self) -> bool:
+        """Turn the gate OFF: clear include-active so the default whitelist stops filtering, and
+        request a rebuild -> the autofill pool returns to the full 'ready' set. Used to restore an
+        unrestricted market (e.g. no AP session)."""
+        mgr = self.exchange_mgr()
+        if mgr is None:
+            return False
+        try:
+            self.scanner.write_bytes(mgr + OFF_MGR_DEFAULT_WHITELIST + WL_INCLUDE_ACTIVE, b"\x00")
+            self.scanner.write_bytes(mgr + OFF_MGR_POOL_DIRTY, b"\x00")
+        except Exception as e:
+            logger.warning("market: failed to disable gate: %s", e)
+            return False
+        return True
+
+    def pool_species(self) -> List[int]:
+        """Species ids in the autofill CANDIDATE POOL (mgr+0x2a8). This is what the include-set
+        gate filters during the rebuild, so it's the direct read-back that proves the gate took:
+        after apply_unlocked + a rebuild tick, the pool should equal the allow-list. [] if empty/
+        unresolvable (sane count 0..4096)."""
+        mgr = self.exchange_mgr()
+        if mgr is None:
+            return []
+        try:
+            count = self.scanner.read_i64(mgr + OFF_MGR_POOL_COUNT)
+            data = self.scanner.read_qword(mgr + OFF_MGR_POOL_DATA)
+        except Exception:
+            return []
+        if not data or not 0 <= count <= 4096:
+            return []
+        try:
+            return [self.scanner.read_i32(data + i * POOL_STRIDE + POOL_ENT_SPECIES) for i in range(count)]
+        except Exception:
+            return []
+
     # -- the gate --------------------------------------------------------------
 
     def _alloc_buffer(self, size: int) -> Optional[int]:
@@ -203,6 +301,24 @@ class SpeciesMarketGate:
             self._buffer = int(got)
             self._buffer_cap = max(size, 0x1000)
         return self._buffer
+
+    def use_default_whitelist(self) -> bool:
+        """Route the autofill rebuild to the DEFAULT whitelist (mgr+0x3c0, the one apply_unlocked
+        writes) by clearing the active-whitelist id so FUN_14a098760's map lookup MISSES and returns
+        the default. Without this the scenario's active whitelist (include-active=0 = no filter) is
+        used and the gate is ignored. Memory-only equivalent of SetLocalAnimalExchangeActiveWhitelist("").
+        Sets pool-dirty so the next Advance rebuilds against the default."""
+        mgr = self.exchange_mgr()
+        if mgr is None:
+            return False
+        try:
+            self.scanner.write_i32(mgr + OFF_MGR_ACTIVE_WL_ID_SCEN, 0)
+            self.scanner.write_i32(mgr + OFF_MGR_ACTIVE_WL_ID_SANDBOX, 0)
+            self.scanner.write_bytes(mgr + OFF_MGR_POOL_DIRTY, b"\x00")
+        except Exception as e:
+            logger.warning("market: failed to clear active whitelist id: %s", e)
+            return False
+        return True
 
     def apply_unlocked(self, species_ids: Sequence[int]) -> bool:
         """Install the allow-list: only ``species_ids`` (their symbol ids) may spawn as listings.
@@ -227,6 +343,8 @@ class SpeciesMarketGate:
             self.scanner.write_i64(inc + SET_CAP, cap)
             self.scanner.write_i64(inc + SET_COUNT, len({int(s) & 0xFFFFFFFF for s in species_ids}))
             self.scanner.write_bytes(wl + WL_INCLUDE_ACTIVE, b"\x01")    # include-set is now an allow-list
+            self.scanner.write_i32(mgr + OFF_MGR_ACTIVE_WL_ID_SCEN, 0)     # route the rebuild to THIS default
+            self.scanner.write_i32(mgr + OFF_MGR_ACTIVE_WL_ID_SANDBOX, 0)  # whitelist (else a scenario one wins)
             self.scanner.write_bytes(mgr + OFF_MGR_POOL_DIRTY, b"\x00")  # Advance rebuilds the pool
         except Exception as e:
             logger.warning("market: failed to write species gate: %s", e)

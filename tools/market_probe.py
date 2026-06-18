@@ -57,10 +57,14 @@ def main() -> None:
     ap = argparse.ArgumentParser()
     ap.add_argument("--registry", type=int, default=0, metavar="N", help="dump first N registry names")
     ap.add_argument("--resolve", metavar="NAME", help="resolve a species name -> id")
-    ap.add_argument("--apply", metavar="A,B,C", help="APPLY allow-list for these species names (WRITES)")
+    keys_meta = "A,B,C"
+    ap.add_argument("--apply", metavar=keys_meta, help="APPLY allow-list for these species names (WRITES)")
     ap.add_argument("--schedule", action="store_true", help="dump the scenario schedule array")
     ap.add_argument("--live", action="store_true", help="dump the live listings (species ids)")
-    ap.add_argument("--spawn", metavar="A,B,C", help="ARM schedule slots for these species keys (WRITES)")
+    ap.add_argument("--pool", action="store_true", help="dump the autofill candidate pool (what the gate filters)")
+    ap.add_argument("--spawn", metavar=keys_meta, help="ARM schedule slots for these species keys (WRITES)")
+    ap.add_argument("--expire", metavar=keys_meta, help="EXPIRE live listings NOT in these species keys (WRITES)")
+    ap.add_argument("--disable", action="store_true", help="turn the gate OFF (unrestricted market) (WRITES)")
     args = ap.parse_args()
 
     s = MemoryScanner(PROCESS_NAME)
@@ -70,43 +74,69 @@ def main() -> None:
     print(f"attached, module base 0x{s.module_base:X}")
 
     reg = RegistryResolver(s)
-    nm = reg.build_name_map()
-    print(f"registry: {len(nm)} interned names")
-    if args.registry:
-        for name, sid in sorted(nm.items())[:args.registry]:
-            print(f"  {sid:6d}  {name}")
-    if args.resolve:
-        print(f"resolve {args.resolve!r} -> {reg.name_to_id(args.resolve)}")
+    print(f"registry: {len(reg.build_name_map())} interned names")
+    _run_registry_cmds(reg, args)
 
-    gate = mk.SpeciesMarketGate(s, registry=reg)
+    # Build the gate's ResearchReader WITH token_to_key (from data.json) - same as the real client -
+    # so species_key -> handle resolution covers every species (the bare reader only knows the ~11
+    # captured welfare ids). Without this the probe can't resolve uncaptured species like 'aardvark'.
+    from pz_ap_client import data as gamedata
+    from pz_ap_client.memory.research import ResearchReader
+    gd = gamedata.load()
+    token_to_key = {sp.engine_token: sp.key for sp in gd.species if sp.engine_token}
+    research = ResearchReader(s, registry=reg, token_to_key=token_to_key)
+    gate = mk.SpeciesMarketGate(s, research=research, registry=reg)
     mgr = gate.exchange_mgr()
     if mgr is None:
         print("exchange manager UNRESOLVED (not in a loaded zoo, or PARK chain stale - re-derive)")
         return
     _dump_mgr_fields(s, mgr)
+    _run_market_cmds(s, reg, gate, mgr, args)
 
+
+def _run_registry_cmds(reg: RegistryResolver, args) -> None:
+    if args.registry:
+        for name, sid in sorted(reg.build_name_map().items())[:args.registry]:
+            print(f"  {sid:6d}  {name}")
+    if args.resolve:
+        print(f"resolve {args.resolve!r} -> {reg.name_to_id(args.resolve)}")
+
+
+def _print_species(label: str, ids, reg: RegistryResolver, distinct: bool = False) -> None:
+    shown = sorted(set(ids)) if distinct else ids
+    extra = f", {len(set(ids))} distinct" if distinct else ""
+    print(f"\n{label}: {len(ids)} entries{extra}")
+    for sid in shown:
+        print(f"  species=0x{sid:X} ({reg.id_to_name(sid) or '?'})")
+
+
+def _run_market_cmds(s: MemoryScanner, reg: RegistryResolver, gate, mgr: int, args) -> None:
     if args.apply:
         keys = [k.strip() for k in args.apply.split(",") if k.strip()]
         print(f"\nAPPLYING allow-list for {keys} (research-map resolution) ...")
-        ok = gate.apply_unlocked_keys(keys)
-        print(f"apply_unlocked_keys -> {ok}")
+        print(f"apply_unlocked_keys -> {gate.apply_unlocked_keys(keys)}")
         _dump_set(s, mgr + mk.OFF_MGR_DEFAULT_WHITELIST + mk.WL_INCLUDE_SET, "include-set (after)")
-        print("now run the script whitelist(\"\") activation (or --activate) and watch the market UI.")
-
+        print("now unpause the game so the pool rebuilds, then re-run with --pool / --live.")
     spawner = mk.ScheduleSpawner(s, research=gate.research)
     spawner._mgr_cache = mgr
     if args.schedule:
         _dump_schedule(s, reg, spawner, mgr)
     if args.live:
-        ids = spawner.live_species()
-        print(f"\nlive listings: {len(ids)}")
-        for sid in ids:
-            print(f"  species=0x{sid:X} ({reg.id_to_name(sid) or '?'})")
+        _print_species("live listings", spawner.live_species(), reg)
+    if args.pool:
+        _print_species("autofill candidate pool", gate.pool_species(), reg, distinct=True)
     if args.spawn:
         keys = [k.strip() for k in args.spawn.split(",") if k.strip()]
         print(f"\nARMING schedule slots for {keys} (research-map resolution) ...")
-        armed = spawner.spawn_keys(keys)
-        print(f"spawn_keys -> {armed} slot(s) armed; unpause the game, then re-run with --live")
+        print(f"spawn_keys -> {spawner.spawn_keys(keys)} slot(s) armed; unpause, then re-run with --live")
+    if args.expire:
+        keys = [k.strip() for k in args.expire.split(",") if k.strip()]
+        allowed = gate._resolve_handles(keys)
+        print(f"\nEXPIRING live listings NOT in {keys} (allowed ids {[hex(i) for i in allowed]}) ...")
+        print(f"expire_blocked_listings -> {gate.expire_blocked_listings(allowed)} marked; unpause, "
+              "then check the market UI / --live")
+    if args.disable:
+        print(f"\nDISABLING gate (unrestricted market) -> {gate.disable()}; unpause to rebuild the full pool")
 
 
 def _dump_mgr_fields(s: MemoryScanner, mgr: int) -> None:
@@ -117,6 +147,12 @@ def _dump_mgr_fields(s: MemoryScanner, mgr: int) -> None:
             print(f"  {name} = {s.read_bytes(mgr + off, 1)[0]}")
         except Exception as e:
             print(f"  {name}: unreadable ({e})")
+    try:
+        print(f"  active-wl-id scen(+0x3B8)={s.read_i32(mgr + mk.OFF_MGR_ACTIVE_WL_ID_SCEN)} "
+              f"sandbox(+0x418)={s.read_i32(mgr + mk.OFF_MGR_ACTIVE_WL_ID_SANDBOX)} "
+              f"(0/miss -> default whitelist is used by the rebuild)")
+    except Exception:
+        pass
     wl = mgr + mk.OFF_MGR_DEFAULT_WHITELIST
     try:
         print(f"  default-whitelist @0x{wl:X}  include-active(+0x28)={s.read_bytes(wl + mk.WL_INCLUDE_ACTIVE, 1)[0]}")

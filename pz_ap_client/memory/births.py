@@ -48,6 +48,17 @@ class BirthDetector:
         self.installed = False
         self.scratch: Optional[int] = None
         self._unknown_logged: set = set()
+        # The most recently captured ZOO (insert fn param_1 / r13). It's a session-stable singleton,
+        # so the last value seen at any insert is the live zoo - reused by the release detector to
+        # resolve a released animal handle when the release site's own manager candidate doesn't.
+        self.last_zoo: Optional[int] = None
+        # {animal handle -> species_key} for every animal seen ENTERING the zoo (buy/trade/birth).
+        # This is how conservation_release attributes a released species RACE-FREE: a release removes
+        # the animal within tens of ms (deferred message), but the client polls every ~1s, so a live
+        # roster lookup at release time almost always finds the entity gone. The animal's species was
+        # already recorded here when it entered, so the release handler just looks it up. Handle reuse
+        # is safe - a reused handle gets a fresh insert that overwrites the entry before any release.
+        self.handle_species: dict = {}
 
     def ensure_installed(self) -> bool:
         if self.installed:
@@ -99,9 +110,13 @@ class BirthDetector:
         born: List[str] = []
         acquired: List[str] = []
         for e in events:
+            z = e.get("r13", 0)
+            if z:
+                self.last_zoo = z   # remember the live zoo for cross-detector handle resolution
             key, newborn = self._attribute(e, handle2key)
             if key is None:
                 continue
+            self.handle_species[e.get("handle", 0)] = key  # race-free source for release attribution
             (born if newborn else acquired).append(key)
         return born, acquired
 
@@ -133,3 +148,4 @@ class BirthDetector:
         except Exception:
             pass
         self.installed = False
+        self.handle_species.clear()   # handles are per-session; drop the cache on disconnect

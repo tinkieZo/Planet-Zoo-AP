@@ -133,7 +133,7 @@ class ApSessionDetector:
     """is_ap_session() = park-name marker present AND the exchange manager runs in scenario mode.
 
     ``mode_check`` is a zero-arg callable returning True iff the animal exchange is in scenario mode
-    (ScheduleSpawner.scenario_mode) - injected so this module stays decoupled from market internals.
+    (SpeciesMarketGate.scenario_mode) - injected so this module stays decoupled from market internals.
     Logs every session-state transition once instead of spamming each poll tick.
     """
 

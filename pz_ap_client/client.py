@@ -199,10 +199,9 @@ class PZContext(CommonContext):
         self.research_gate = None  # ResearchGate (memory mode); enforces research_centre/workshop
         self.presence_gate = None  # PresenceGate (memory mode); native greyed-button UX for those
         self.terrain_gate = None  # TerrainGate (memory mode); native terrain-tool greying (water_tools)
-        self.market_spawner = None  # ScheduleSpawner (memory mode); stocks the scenario market with unlocked species
+        self.market_gate = None  # SpeciesMarketGate (memory mode); restricts the autofill market to unlocked species
         self.reward_granter = None  # RewardGranter (memory mode); grants decoupled research rewards
-        self._market_last_spawn: dict = {}  # species_key -> time.monotonic() of the last armed spawn
-        self.market_respawn_cooldown: float = 120.0  # seconds before re-offering a missing unlocked species
+        self._market_last_allowed = None  # last unlocked-species key set applied (re-apply only on change)
         self._park_age = None  # ParkAgeReader (memory mode); reads park years-open to detect a fresh save
         self._session = None  # ApSessionDetector (memory mode); is the LOADED park the AP scenario?
         self._scanner = None  # the shared MemoryScanner (memory mode)
@@ -309,12 +308,15 @@ class PZContext(CommonContext):
         # purchase-block proxy, which stays as belt-and-suspenders for the water-gated species).
         self.terrain_gate = TerrainGate(scanner)
         self.terrain_gate.set_gated(self.game_data.tool_keys())
-        # Scenario-market spawner - the AP scenario's market is natively EMPTY (its schedule is
-        # dormant), so the client stocks it with exactly the unlocked species (the Goodwin House
-        # hijack; see memory/market.py). Reuses the trigger source's ResearchReader so species-id
-        # resolution shares one snapshot path with the permit gate.
-        from .memory.market import ScheduleSpawner
-        self.market_spawner = ScheduleSpawner(scanner, research=self.trigger_source.research)
+        # Scenario-market gate - the AP base (Scenario_15_Empty) AUTOFILLS its market from a candidate
+        # pool (mode 0), unlike the old empty-schedule base. The client restricts that pool to the
+        # unlocked species via the LocalAnimalExchange include-set (routing the rebuild to the default
+        # whitelist) and expires already-listed blocked species, so only unlocked species are offered.
+        # Reuses the trigger source's ResearchReader so species-id resolution shares one snapshot path
+        # with the permit gate. (The old additive ScheduleSpawner is retained in market.py for bases
+        # with a dormant autofill + a baked schedule, but this base needs the subtractive gate.)
+        from .memory.market import SpeciesMarketGate
+        self.market_gate = SpeciesMarketGate(scanner, research=self.trigger_source.research)
         # Reward granter - applies decoupled research rewards (research_reward items) by flipping
         # the content's unlocked byte in the unlockables map. Shares the trigger source's
         # ResearchReader so it resolves the research system the same way.
@@ -326,7 +328,7 @@ class PZContext(CommonContext):
         # PZAP_NO_SESSION_GATE=1 restores the old gate-whatever-is-loaded behaviour (debugging, or an
         # ovl that predates the SetParkName marker).
         from .memory.session import ApSessionDetector
-        self._session = ApSessionDetector(scanner, mode_check=self.market_spawner.scenario_mode)
+        self._session = ApSessionDetector(scanner, mode_check=self.market_gate.scenario_mode)
         self.applier = MemoryEffectApplier(scanner, anchors, permit_gate=self.permit_gate,
                                            release_gate=self.trigger_source.releases,
                                            facility_gate=self.facility_gate,
@@ -671,35 +673,24 @@ class PZContext(CommonContext):
             logger.exception("presence reconcile failed")
 
     def _reconcile_market(self) -> None:
-        """Keep the scenario animal market stocked with the unlocked species (and ONLY them).
-        The AP scenario's market is natively empty - its schedule never fires - so everything the
-        player can buy goes through us: for each purchase-unblocked species with no live listing,
-        arm a schedule slot (native generation; see memory/market.py). A wall-clock cooldown per
-        species stops paused-game re-arms from flooding and re-offers a purchased/expired listing
-        at a sane rate. No-op outside scenario mode (sandbox/franchise markets are engine-driven)."""
-        if self.market_spawner is None or not self.market_spawner.scenario_mode():
+        """Restrict the AP scenario's animal market to the unlocked species (and ONLY them). This
+        base autofills its market from a candidate pool, so the client installs an include-set
+        allow-list (the unlocked species) on the LocalAnimalExchange - routing the autofill rebuild
+        to that whitelist - and expires any already-listed blocked species, so future autofill only
+        spawns unlocked species. Re-applied only when the unlocked set CHANGES (each apply forces a
+        pool rebuild). No-op outside scenario mode (sandbox/franchise markets are engine-driven)."""
+        if self.market_gate is None or not self.market_gate.scenario_mode():
             return
         received_ids = [ni.item for ni in self.items_received]
         allowed = self.game_data.purchase_universe() - self.game_data.purchase_blocked_species(received_ids)
-        if not allowed:
-            return
-        snap = self.market_spawner.research._snapshot()
-        if snap is None:
-            return
-        now = time.monotonic()
-        live = None  # read lazily: most ticks nothing is missing/cooled-down
-        for key in sorted(allowed):
-            if now - self._market_last_spawn.get(key, -self.market_respawn_cooldown) < self.market_respawn_cooldown:
-                continue
-            handle = self.market_spawner.research.current_handle(key, snap)
-            if handle is None:
-                continue
-            if live is None:
-                live = set(self.market_spawner.live_species())
-            if handle in live:
-                continue
-            if self.market_spawner.spawn_species_id(handle):
-                self._market_last_spawn[key] = now
+        if allowed == self._market_last_allowed:
+            return  # unchanged since last apply; don't re-trigger a pool rebuild every tick
+        allowed_ids = self.market_gate._resolve_handles(sorted(allowed))
+        if not allowed_ids and allowed:
+            return  # research snapshot not ready yet - retry next tick (don't mark this set applied)
+        if self.market_gate.apply_unlocked(allowed_ids):
+            self._market_last_allowed = set(allowed)
+            self.market_gate.expire_blocked_listings(allowed_ids)  # clear stale blocked listings now
 
     def _run_preflight(self) -> None:
         """Once, on first successful attach: run the signatures self-check and log a health report.

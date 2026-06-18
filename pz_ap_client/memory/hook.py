@@ -363,6 +363,40 @@ def make_release_capture(region: int, scratch: int, resume_addr: int, original: 
     return _final_jmp(body, region, resume_addr)
 
 
+# Release SPECIES-capture detour scratch (SECOND hook, at the release executor's call-prep
+# 0x145D8478F = entry+0xFF, just before `thunk_FUN_146f10ad0(*(lVar4+0x48), lVar5)`):
+#   [scratch+0x00] u32 capture count (paired 1:1 with the entry-gate count - no early return between
+#                      the entry and this site, so a fresh handle is always present when count++)
+#   [scratch+0x08] u64 released animal HANDLE (rsi = arg2 = lVar5 = nAnimalID, an entity handle)
+#   [scratch+0x10] u64 candidate animal-manager/zoo (*(rbp+0x48) = the rcx passed to the real
+#                      release fn, which resolves the handle - so it's the manager or zoo)
+# The Python poll resolves handle -> entity -> species (AnimalResolver), exactly as births does.
+RELEASE_SP_COUNT = 0x00
+RELEASE_SP_HANDLE = 0x08
+RELEASE_SP_MGR = 0x10
+
+
+def make_release_species_capture(region: int, scratch: int, resume_addr: int, original: bytes) -> bytes:
+    """CAPTURE detour at the release executor's call-prep (0x145D8478F). ``original`` is
+    ``mov rcx,[rbp+0x48]`` (4B) + ``mov rdx,rsi`` (3B). Records the released animal HANDLE
+    (rsi=arg2=nAnimalID) and ``[rbp+0x48]`` (the manager/zoo the real release resolves the handle
+    through). Runs the first mov (rcx:=[rbp+0x48]), captures rsi+rcx, then the second mov and jmps
+    back. Not rsp-relative (rbp/rsi/rcx); rax saved/restored; the only derefs are stores to our own
+    scratch + reads of an already-valid frame -> cannot fault the resume path. Flags are clobbered by
+    `inc` but the resume code (two movs + a call) doesn't read incoming flags (same as the probe,
+    which released animals cleanly)."""
+    body = bytearray()
+    body += original[:4]                                # mov rcx,[rbp+0x48]   (rcx := candidate mgr/zoo)
+    body += b"\x50"                                     # push rax
+    body += b"\x48\xB8" + struct.pack("<Q", scratch)    # movabs rax, scratch
+    body += b"\xFF\x00"                                 # inc dword [rax]            (capture count)
+    body += b"\x48\x89\x70\x08"                         # mov [rax+8], rsi          (animal handle)
+    body += b"\x48\x89\x48\x10"                         # mov [rax+0x10], rcx       (*(rbp+0x48))
+    body += b"\x58"                                     # pop rax
+    body += original[4:]                                # mov rdx,rsi
+    return _final_jmp(body, region, resume_addr)
+
+
 def make_value_gate(region: int, scratch: int, resume_addr: int, original: bytes,
                     locked_ret: int = 0) -> bytes:
     """GATE detour for a facility getter/predicate native reached via its script-binding

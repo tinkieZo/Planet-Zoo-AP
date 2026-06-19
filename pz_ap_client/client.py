@@ -37,9 +37,11 @@ os.environ.setdefault("SKIP_REQUIREMENTS_UPDATE", "1")
 # GPU-specific desktop-GL issues. ANGLE is the standard Windows reliability backend (Chromium uses it)
 # and is verified working here on both NVIDIA and an AMD RX 6900 XT. Set BEFORE any kivy import (the
 # backend is locked when kivy.core.window loads in run_gui). Override with KIVY_GL_BACKEND=glew.
-# NOTE: the clean-machine "GUI closes on startup" bug was NOT the GL backend - it was a PACKAGING
-# issue (building under uv's python-build-standalone interpreter); see docs/PACKAGING.md +
-# build-exe.ps1's guard. Kept this default as cheap insurance since it's verified harmless.
+# NOTE: the clean-machine "GUI closes on startup" bug was NOT the GL backend - it was a STALE C/C++
+# RUNTIME bundled from the build machine (ucrtbase / MSVCP140 / VCRUNTIME140 too old for Python 3.13 /
+# kivy / SDL2, which then fail to load when frozen); see docs/PACKAGING.md and the build-time GUI
+# self-test (build-exe.ps1 runs `--selftest` -> _gui_selftest). Kept this ANGLE default as cheap
+# insurance since it's verified harmless.
 if sys.platform == "win32":
     os.environ.setdefault("KIVY_GL_BACKEND", "angle_sdl2")
 
@@ -795,6 +797,44 @@ def _gui_available() -> bool:
     return importlib.util.find_spec("kivy") is not None
 
 
+def _gui_selftest() -> int:
+    """Load the full GUI native stack, print a parseable pass/fail marker, and return an exit code.
+
+    BUILD-TIME GUARD for the silent "frozen GUI closes on startup" failure. That failure is a STALE C/C++
+    runtime (ucrtbase / MSVCP140 / VCRUNTIME140) bundled from the build machine: Python 3.13 / kivy / SDL2
+    fail to load against it and the process dies with no window and no traceback. The frozen exe uses its
+    OWN BUNDLED runtime, so running ``pz-ap-client.exe --selftest`` on the build machine reproduces the
+    target condition - build-exe.ps1 runs it after every build so a broken runtime is caught BEFORE shipping
+    (which is how the original bug went undiagnosed for so long: nothing exercised the bundled runtime).
+
+    Prints exactly one of ``PZAP_SELFTEST: OK`` / ``SKIP`` / ``FAIL``. A stale runtime can also hard-exit
+    with NO marker at all, so the caller treats a missing OK/SKIP as failure too."""
+    if not _gui_available():
+        print("PZAP_SELFTEST: SKIP (no GUI bundled - console-only build)", flush=True)
+        return 0
+    os.environ.setdefault("KIVY_NO_ARGS", "1")  # don't let kivy try to parse our argv (--selftest)
+    try:
+        import kvui  # noqa: F401 - mirrors run_gui's import chain (kivy.app + kivymd)
+        # Importing kivy.core.window CREATES the Window singleton, which loads the SDL2 / GL native
+        # DLLs that link MSVCP140/VCRUNTIME140 - exactly the load that fails against a stale runtime.
+        from kivy.core.window import Window
+        if Window is None:
+            print("PZAP_SELFTEST: FAIL (no window provider - kivy.core.window.Window is None)", flush=True)
+            return 3
+    except Exception as e:
+        # A catchable GUI-load failure (e.g. ImportError / OSError from a DLL that won't load). A *fatally*
+        # stale runtime can't be caught here at all - the process aborts with no Python exception; that case
+        # is handled by build-exe.ps1 treating a missing OK/SKIP marker as failure. KeyboardInterrupt /
+        # SystemExit deliberately propagate.
+        import traceback
+        print("PZAP_SELFTEST: FAIL (%r)" % (e,), flush=True)
+        traceback.print_exc()
+        return 3
+    print("PZAP_SELFTEST: OK (GUI native stack loaded; window provider=%s)" % type(Window).__name__,
+          flush=True)
+    return 0
+
+
 def _prompt_missing(parsed) -> None:
     """Fill in connection details interactively so a double-clicked exe needs no flags.
     Anything passed on the command line is respected and skips the matching prompt; an empty
@@ -902,6 +942,13 @@ def _watch_gui_task(ctx) -> None:
 
 
 def main(args=None):
+    # Build-time GUI smoke test (build-exe.ps1 runs `--selftest`). Handle it before the normal startup
+    # flow so it neither prompts for a connection nor spins up the asyncio client - it just loads the
+    # GUI native stack and exits with a parseable marker. See _gui_selftest.
+    _argv = list(sys.argv[1:] if args is None else args)
+    if "--selftest" in _argv:
+        sys.exit(_gui_selftest())
+
     async def _run(args):
         ctx = PZContext(args.connect, args.password, data_path=getattr(args, "data", None))
         ctx.auth = args.name

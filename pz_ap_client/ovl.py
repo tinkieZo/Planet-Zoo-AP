@@ -58,6 +58,12 @@ OVL_REL_PATH = Path("win64") / "ovldata" / "Content0" / MAIN_OVL_NAME
 BACKUP_SUFFIX = ".apbak"
 STAMP_SUFFIX = ".apstamp.json"
 COBRA_GAME_LABEL = "Planet Zoo"
+# cobra-tools needs the proprietary Oodle compressor to read/write Planet Zoo ovls, and loads it from a
+# FIXED path inside its own tree (oodle.py: os.path.dirname(__file__)/oo2core_8_win64.dll). We do NOT
+# redistribute it (it's RAD/Epic's, shipped with the game) - the release bundles cobra-tools WITHOUT it
+# and we copy it from the user's own Planet Zoo install at /pz_install (see _ensure_oodle).
+OODLE_DLL_NAME = "oo2core_8_win64.dll"
+OODLE_REL_IN_COBRA = Path("modules") / "formats" / "utils" / "oodle" / OODLE_DLL_NAME
 # Steam browser-protocol launch with the intro-skip arg (the engine otherwise
 # hard-falls-back to the Scenario_01 intro cinematic for our career entry).
 LAUNCH_URL = f"steam://run/{STEAM_APP_ID}//-skipScenarioIntro/"
@@ -222,6 +228,34 @@ def find_cobra_dir() -> Optional[Path]:
         if (c / "ovl_tool_cmd.py").is_file():
             return c
     return None
+
+
+def _ensure_oodle(cobra: Path, game_dir: Optional[Path] = None) -> None:
+    """Make sure cobra-tools has the Oodle compressor it loads at import time. The release ships
+    cobra-tools WITHOUT the proprietary ``oo2core_8_win64.dll`` (we don't own redistribution rights);
+    instead we copy it from the user's OWN Planet Zoo install, which provides the byte-identical DLL,
+    into cobra's fixed path on first use. Idempotent - a no-op once the DLL is in place."""
+    target = cobra / OODLE_REL_IN_COBRA
+    if target.is_file():
+        return
+    game_dir = game_dir or find_game_dir()
+    if game_dir is None:
+        raise OvlInstallError(
+            "Planet Zoo install not found - it provides the Oodle compressor (%s) the ovl builder needs. "
+            "Set PZAP_GAME_DIR if your install isn't auto-detected." % OODLE_DLL_NAME)
+    src = game_dir / OODLE_DLL_NAME
+    if not src.is_file():
+        raise OvlInstallError(
+            "%s not found in the Planet Zoo install (%s) - the game provides the Oodle compressor the ovl "
+            "builder needs (a game update may have changed it)." % (OODLE_DLL_NAME, game_dir))
+    try:
+        target.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(src, target)
+    except OSError as e:
+        raise OvlInstallError(
+            "Could not place the Oodle compressor at %s (%s). If the client is in a protected folder "
+            "(e.g. Program Files), move it somewhere writable and retry." % (target, e)) from e
+    logger.debug("Oodle: copied %s -> %s", src, target)
 
 
 def game_running() -> bool:
@@ -457,6 +491,7 @@ def _run_cobra_child(op: str, src: Path, out: Path, base: Optional[Path], log: L
     cobra = find_cobra_dir()
     if cobra is None:
         raise OvlInstallError("cobra-tools not found (vendor/cobra-tools missing and PZAP_COBRA_DIR unset).")
+    _ensure_oodle(cobra)  # copy the Oodle compressor from the user's game (not redistributed) before cobra imports it
     check_src_complete()
     argv = _child_argv(op, cobra, src, out, base)
     logger.debug("cobra child: %s", argv)

@@ -214,7 +214,7 @@ namespace is unified on the APWorld **stringid** (`pzebra`, `twolf`, `hippo`, `g
   insert via the birth hook) and per-species `conservation_release` (78).
 - **Cross-check: 0 id/name mismatches, 0 unknown effect/trigger types; 66 client tests green** (incl. a
   synthetic-memory unit test for the grant primitive and the regenerated sync guard).
-- **Detection coverage — registry attribution (DONE 2026-06-16):** the per-species *capture* campaign
+- **Detection coverage, registry attribution (DONE 2026-06-16):** the per-species *capture* campaign
   was avoidable and is now removed. The ids are session-dynamic intern indices, but the client resolves
   them live via `RegistryResolver` (the global symbol registry that drives the market), and the
   research-map handle == that symbol id. `data.json` species now carry `engine_token` (generator:

@@ -145,15 +145,16 @@ a = Analysis(
     noarchive=False,
     optimize=0,
 )
-# Do NOT bundle the OS-provided Universal CRT (api-ms-win-*.dll + ucrtbase.dll). On Win10+ (which Planet
-# Zoo requires) the target always has a current UCRT in System32; bundling the BUILD machine's copy means
-# a stale/mismatched UCRT can fail to load the newer Python 3.13 / kivy / SDL2 DLLs at frozen runtime -
-# confirmed on a clean machine (2026-06-19): the GUI closed on startup with an older bundled UCRT, while
-# the identical spec built on a machine with a current UCRT worked. Keep VCRUNTIME140/MSVCP140 (the VC++
-# redistributable) bundled, since the target may not have those.
-a.binaries = [b for b in a.binaries
-              if not (os.path.basename(b[0]).lower().startswith('api-ms-win-')
-                      or os.path.basename(b[0]).lower() == 'ucrtbase.dll')]
+# RUNTIME NOTE (the "frozen GUI closes on startup, runs fine from source" bug): the bundle is deliberately
+# SELF-CONTAINED - PyInstaller bundles the Microsoft C/C++ runtime (ucrtbase.dll + api-ms-win-*.dll +
+# MSVCP140/VCRUNTIME140) from the BUILD MACHINE. Python 3.13 / kivy / SDL2 are built against a CURRENT
+# runtime, so if the build machine's runtime is stale those DLLs fail to load at frozen runtime and the
+# GUI closes with no traceback. CONFIRMED 2026-06-19 by transplanting a current build's runtime DLLs into a
+# broken build's _internal: the window then stayed open. THE FIX IS BUILD-SIDE, not spec-side - build on a
+# machine with a current runtime (Windows Update + latest "Microsoft Visual C++ Redistributable x64"); see
+# docs/PACKAGING.md. We do NOT strip the runtime here: a self-contained bundle (current runtime included)
+# is what has been verified to run on clean target machines, whereas relying on the target's System32
+# runtime failed on a target whose own System32 copy was stale.
 
 pyz = PYZ(a.pure)
 

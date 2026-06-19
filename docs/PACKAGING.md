@@ -9,15 +9,27 @@ installing Python or Archipelago.
 - **Python 3.11.x–3.13.x from python.org** (`py -3.11 -m venv .venv`; `ModuleUpdate` hard-rejects 3.10).
   python.org is recommended (build-exe.ps1 refuses `uv`/python-build-standalone interpreters), though the
   STALE-RUNTIME bug below was the real "GUI closes on startup" cause, not the interpreter.
-- **CRITICAL (the "frozen GUI closes on startup, runs fine from source" bug):** PyInstaller bundles the
-  *build machine's* Universal CRT (`ucrtbase.dll` + `api-ms-win-*.dll`). If that copy is older than the
-  bundled Python 3.13 / kivy / SDL2 expect, those DLLs fail to load at frozen runtime and the GUI closes
-  with no traceback (confirmed 2026-06-19 by diffing a working vs broken `_internal`: only the UCRT DLLs
-  differed). The spec now **excludes the OS UCRT from the bundle** so the exe uses the target's current
-  System32 UCRT (always present on Win10+, which the game requires). No action needed beyond using the
-  current spec; VCRUNTIME140/MSVCP140 stay bundled.
-  GPU note: the GUI defaults to the ANGLE (Direct3D) GL backend on Windows (`client.py`
-  `KIVY_GL_BACKEND=angle_sdl2`) as a precaution; override with `KIVY_GL_BACKEND=glew`.
+- **The "frozen GUI closes on startup, runs fine from source" bug, now auto-guarded.** The bundle is
+  self-contained, so PyInstaller bundles the C/C++ runtime (`MSVCP140.dll`, `VCRUNTIME140.dll`,
+  `ucrtbase.dll`, `api-ms-win-*.dll`). The trap: PyInstaller may grab a **stale** copy that a binary wheel
+  vendored into the build env (e.g. `numpy.libs\msvcp140-<hash>.dll`, which is `14.40`) or an old SDK on
+  PATH *even when the machine's actual System32 runtime is current*. Python 3.13 / kivy / SDL2 then fail
+  to load against that stale copy when frozen and the GUI closes silently (no window, no traceback,
+  exit 0). **Confirmed 2026-06-19**: a build whose bundled `MSVCP140.dll` was `563,944 B` (an old version)
+  closed on startup; transplanting a current copy into `_internal` made the window stay open, proving the
+  bundled runtime, not the interpreter/GPU/AP tree, was the cause.
+  - **`build-exe.ps1` now auto-fixes this:** after building it refreshes each bundled runtime DLL from
+    `System32` whenever System32's copy is newer (strictly version-gated, it never downgrades a build made
+    on an up-to-date machine), then runs a GUI self-test to confirm the runtime loads. So the only
+    requirement is a **current System32 runtime**, which **Windows Update** keeps current.
+  - **If the VC++ Redistributable installer reports `0x80070666` "Another version of this product is
+    already installed", that's FINE, not an error to fight.** It means your System32 VC++ runtime is
+    *already current*, which is exactly what the build-time refresh needs. No reinstall required.
+  - We do **not** strip the runtime from the bundle: a self-contained build (current runtime included) is
+    what's verified to run on clean targets. Relying on the *target's* System32 runtime instead was tried
+    and **failed** on a target whose own System32 copy was stale.
+  - GPU note: the GUI defaults to the ANGLE (Direct3D) GL backend on Windows (`client.py`
+    `KIVY_GL_BACKEND=angle_sdl2`) as a precaution; override with `KIVY_GL_BACKEND=glew`.
 - The venv + deps + the vendored Archipelago tree, as set up in
   [`pz_ap_client/README.md`](../pz_ap_client/README.md):
   ```powershell
@@ -34,10 +46,17 @@ installing Python or Archipelago.
   # numpy - runtime dep of the vendored cobra-tools (the /pz_install inject engine):
   .\.venv\Scripts\pip install numpy
   ```
-- A **cobra-tools** checkout for the in-client ovl installer. `build-exe.ps1` auto-finds a
-  `cobra-tools-master` folder next to the repo (or pass `-CobraSource <dir>` /
-  `$env:PZ_COBRA_SOURCE`) and stages a trimmed copy into `vendor\cobra-tools` (core code +
-  Planet Zoo hash tables only - no docs/GUI/tests/other games' constants).
+- A **cobra-tools** checkout for the in-client ovl installer. `build-exe.ps1` uses `-CobraSource <dir>` /
+  `$env:PZ_COBRA_SOURCE` / a `cobra-tools-master` folder next to the repo, and **auto-clones
+  `OpenNaja/cobra-tools` if none is found** (same self-vendoring as the Archipelago tree, so a fresh build
+  machine isn't silently shipped without `/pz_install`). It stages a trimmed copy into `vendor\cobra-tools`
+  (core code + Planet Zoo hash tables only - no docs/GUI/tests/other games' constants).
+  - **Oodle is NOT bundled.** cobra-tools needs the proprietary `oo2core_8_win64.dll` (RAD/Epic) to
+    read/write Planet Zoo ovls; we don't redistribute it. `build-exe.ps1` strips it from the staged tree,
+    and the client copies it from the user's **own** Planet Zoo install (which ships the byte-identical
+    DLL) into cobra's fixed path at `/pz_install` (`ovl._ensure_oodle`). Caveat: that copy writes into the
+    client's `_internal\vendor\cobra-tools\...`, so if the client is unzipped into a **protected folder**
+    (e.g. `Program Files`) the first `/pz_install` will error asking you to move it somewhere writable.
 
 ## Build
 
@@ -49,6 +68,20 @@ or directly:
 .\.venv\Scripts\pyinstaller.exe --noconfirm --clean pz-ap-client.spec
 ```
 Output: **`dist\pz-ap-client\`** (~85 MB) containing `pz-ap-client.exe` + `_internal\`.
+
+**Automatic guards against the stale-runtime bug** (run by `build-exe.ps1` after a successful build):
+- It **refreshes the bundled runtime from System32** (`MSVCP140*`, `VCRUNTIME140*`, `ucrtbase`,
+  `concrt140`, `vccorlib140`) whenever System32's copy is newer (version-gated, never downgrades), so a
+  stale copy PyInstaller grabbed from a wheel (`numpy.libs`) or an old SDK is replaced with the current one
+  the machine actually runs with. This is the core fix; the two checks below confirm it.
+- It logs the **bundled C/C++ runtime versions** (`ucrtbase.dll`, `MSVCP140.dll`, `VCRUNTIME140*.dll`) so
+  the build log records exactly what shipped, a future "works on my build, not theirs" question is then
+  a one-line diff instead of a multi-day hunt.
+- It runs a **GUI self-test**: `pz-ap-client.exe --selftest` loads the SDL2/GL native stack *using the
+  bundled runtime* and prints `PZAP_SELFTEST: OK`. Because the frozen exe uses its own bundled runtime,
+  this reproduces the target failure **on the build machine**, a stale runtime fails here, loudly, with
+  the fix printed, instead of silently closing on a user's PC. Bypass with `.\build-exe.ps1 -SkipSelfTest`
+  (e.g. a headless CI agent with no display, where window creation can't succeed).
 
 ### Bundling Archipelago from a different location
 

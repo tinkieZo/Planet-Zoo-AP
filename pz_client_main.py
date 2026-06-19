@@ -6,6 +6,7 @@ frozen package (see pz-ap-client.spec), and client.py adds it to sys.path at imp
 ``Path(__file__).parent.parent / "vendor" / "Archipelago"`` resolves to the bundle dir when frozen.
 """
 import logging
+import os
 import sys
 
 if __name__ == "__main__":
@@ -18,5 +19,5 @@ if __name__ == "__main__":
 
     from pz_ap_client.client import main
 
-    logging.getLogger().setLevel(logging.INFO)
+    logging.getLogger().setLevel(logging.DEBUG if os.environ.get("PZAP_DEBUG") else logging.INFO)
     main(sys.argv[1:])

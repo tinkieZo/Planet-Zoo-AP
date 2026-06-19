@@ -145,6 +145,16 @@ a = Analysis(
     noarchive=False,
     optimize=0,
 )
+# Do NOT bundle the OS-provided Universal CRT (api-ms-win-*.dll + ucrtbase.dll). On Win10+ (which Planet
+# Zoo requires) the target always has a current UCRT in System32; bundling the BUILD machine's copy means
+# a stale/mismatched UCRT can fail to load the newer Python 3.13 / kivy / SDL2 DLLs at frozen runtime -
+# confirmed on a clean machine (2026-06-19): the GUI closed on startup with an older bundled UCRT, while
+# the identical spec built on a machine with a current UCRT worked. Keep VCRUNTIME140/MSVCP140 (the VC++
+# redistributable) bundled, since the target may not have those.
+a.binaries = [b for b in a.binaries
+              if not (os.path.basename(b[0]).lower().startswith('api-ms-win-')
+                      or os.path.basename(b[0]).lower() == 'ucrtbase.dll')]
+
 pyz = PYZ(a.pure)
 
 exe = EXE(

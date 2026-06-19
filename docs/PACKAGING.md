@@ -6,7 +6,18 @@ installing Python or Archipelago.
 
 ## Prerequisites
 
-- **Python 3.11.9–3.13** (Archipelago's `ModuleUpdate` hard-rejects 3.10). 
+- **Python 3.11.x–3.13.x from python.org** (`py -3.11 -m venv .venv`; `ModuleUpdate` hard-rejects 3.10).
+  python.org is recommended (build-exe.ps1 refuses `uv`/python-build-standalone interpreters), though the
+  STALE-RUNTIME bug below was the real "GUI closes on startup" cause, not the interpreter.
+- **CRITICAL (the "frozen GUI closes on startup, runs fine from source" bug):** PyInstaller bundles the
+  *build machine's* Universal CRT (`ucrtbase.dll` + `api-ms-win-*.dll`). If that copy is older than the
+  bundled Python 3.13 / kivy / SDL2 expect, those DLLs fail to load at frozen runtime and the GUI closes
+  with no traceback (confirmed 2026-06-19 by diffing a working vs broken `_internal`: only the UCRT DLLs
+  differed). The spec now **excludes the OS UCRT from the bundle** so the exe uses the target's current
+  System32 UCRT (always present on Win10+, which the game requires). No action needed beyond using the
+  current spec; VCRUNTIME140/MSVCP140 stay bundled.
+  GPU note: the GUI defaults to the ANGLE (Direct3D) GL backend on Windows (`client.py`
+  `KIVY_GL_BACKEND=angle_sdl2`) as a precaution; override with `KIVY_GL_BACKEND=glew`.
 - The venv + deps + the vendored Archipelago tree, as set up in
   [`pz_ap_client/README.md`](../pz_ap_client/README.md):
   ```powershell

@@ -33,6 +33,23 @@ if TYPE_CHECKING:
 # deps (e.g. kivy) at import time - that blocks on input() in a headless run.
 os.environ.setdefault("SKIP_REQUIREMENTS_UPDATE", "1")
 
+# GUI GL backend: default to ANGLE (Direct3D-backed GLES2) on Windows as a precaution against
+# GPU-specific desktop-GL issues. ANGLE is the standard Windows reliability backend (Chromium uses it)
+# and is verified working here on both NVIDIA and an AMD RX 6900 XT. Set BEFORE any kivy import (the
+# backend is locked when kivy.core.window loads in run_gui). Override with KIVY_GL_BACKEND=glew.
+# NOTE: the clean-machine "GUI closes on startup" bug was NOT the GL backend - it was a PACKAGING
+# issue (building under uv's python-build-standalone interpreter); see docs/PACKAGING.md +
+# build-exe.ps1's guard. Kept this default as cheap insurance since it's verified harmless.
+if sys.platform == "win32":
+    os.environ.setdefault("KIVY_GL_BACKEND", "angle_sdl2")
+
+# Diagnostics: PZAP_DEBUG=1 turns on full DEBUG logging (incl. Kivy's, which routes through Python
+# logging) so a packaged GUI failure on another machine logs every init step. Must set KIVY_LOG_LEVEL
+# before kivy imports - the Python log level alone won't surface Kivy DEBUG records Kivy never emits.
+if os.environ.get("PZAP_DEBUG"):
+    os.environ["KIVY_LOG_LEVEL"] = "debug"   # force (a bundled kivy config can pin it otherwise)
+    os.environ["KIVY_NO_FILELOG"] = "0"
+
 # Make the vendored Archipelago tree importable.
 _AP_ROOT = Path(__file__).resolve().parent.parent / "vendor" / "Archipelago"
 if str(_AP_ROOT) not in sys.path:
@@ -858,6 +875,32 @@ def _install_emergency_cleanup(ctx) -> None:
         pass
 
 
+def _watch_gui_task(ctx) -> None:
+    """Surface a crashed GUI task instead of hanging forever on ``exit_event.wait()`` with no window and
+    no traceback. Observed on a Python 3.13 build: Kivy initialises through 'Clipboard: Provider', then
+    the async UI task dies silently (the client is tested/shipped on 3.11.x). The done-callback logs the
+    real exception and trips exit_event so the process exits cleanly (rerun with --nogui for the console
+    UI). On a normal GUI close it just sets exit_event = ordinary shutdown."""
+    task = getattr(ctx, "ui_task", None)
+    if task is None:
+        return
+
+    def _done(t) -> None:
+        try:
+            exc = t.exception()
+        except asyncio.CancelledError:
+            return
+        if exc is not None:
+            logger.error("GUI task crashed (%r) - exiting. Rerun with --nogui for the console UI.",
+                         exc, exc_info=exc)
+        else:
+            logger.error("GUI task ENDED with no exception (window closed or the app stopped itself "
+                         "before/at the main loop) - exiting.")
+        ctx.exit_event.set()
+
+    task.add_done_callback(_done)
+
+
 def main(args=None):
     async def _run(args):
         ctx = PZContext(args.connect, args.password, data_path=getattr(args, "data", None))
@@ -877,6 +920,8 @@ def main(args=None):
                 ctx.run_gui()
             except ImportError as e:
                 logger.info("GUI unavailable (%s) - running headless console. Pass --nogui to skip this.", e)
+            else:
+                _watch_gui_task(ctx)   # a silently-dying UI task must surface + exit, not hang
         ctx.run_cli()
 
         await ctx.exit_event.wait()

@@ -521,60 +521,6 @@
     },
     {
       "id": 1004,
-      "name": "Barriers Chain Steel Posts",
-      "classification": "progression",
-      "effect_type": "research_reward",
-      "effect_args": {
-        "content": "BarriersChainSteelPosts"
-      }
-    },
-    {
-      "id": 1005,
-      "name": "Barriers Concrete",
-      "classification": "progression",
-      "effect_type": "research_reward",
-      "effect_args": {
-        "content": "BarriersConcrete"
-      }
-    },
-    {
-      "id": 1006,
-      "name": "Barriers Electric",
-      "classification": "progression",
-      "effect_type": "research_reward",
-      "effect_args": {
-        "content": "BarriersElectric"
-      }
-    },
-    {
-      "id": 1007,
-      "name": "Barriers One Way Glass",
-      "classification": "progression",
-      "effect_type": "research_reward",
-      "effect_args": {
-        "content": "BarriersOneWayGlass"
-      }
-    },
-    {
-      "id": 1008,
-      "name": "Barriers Rebar Stone Cages",
-      "classification": "progression",
-      "effect_type": "research_reward",
-      "effect_args": {
-        "content": "BarriersRebarStoneCages"
-      }
-    },
-    {
-      "id": 1009,
-      "name": "Barriers Thick Glass",
-      "classification": "progression",
-      "effect_type": "research_reward",
-      "effect_args": {
-        "content": "BarriersThickGlass"
-      }
-    },
-    {
-      "id": 1010,
       "name": "Classic Theme Sets Blueprints Level 1",
       "classification": "useful",
       "effect_type": "research_reward",
@@ -583,7 +529,7 @@
       }
     },
     {
-      "id": 1011,
+      "id": 1005,
       "name": "Classic Theme Sets Blueprints Level 2",
       "classification": "useful",
       "effect_type": "research_reward",
@@ -592,7 +538,7 @@
       }
     },
     {
-      "id": 1012,
+      "id": 1006,
       "name": "Classic Theme Sets Blueprints Level 3",
       "classification": "useful",
       "effect_type": "research_reward",
@@ -601,7 +547,7 @@
       }
     },
     {
-      "id": 1013,
+      "id": 1007,
       "name": "Classic Theme Sets Scenery",
       "classification": "useful",
       "effect_type": "research_reward",
@@ -610,7 +556,7 @@
       }
     },
     {
-      "id": 1014,
+      "id": 1008,
       "name": "Drink Shops Cosmic Cow Milkshakes",
       "classification": "useful",
       "effect_type": "research_reward",
@@ -619,7 +565,7 @@
       }
     },
     {
-      "id": 1015,
+      "id": 1009,
       "name": "Drink Shops Foxy Coffee",
       "classification": "useful",
       "effect_type": "research_reward",
@@ -628,7 +574,7 @@
       }
     },
     {
-      "id": 1016,
+      "id": 1010,
       "name": "Drink Shops Gulpee Energy",
       "classification": "useful",
       "effect_type": "research_reward",
@@ -637,7 +583,7 @@
       }
     },
     {
-      "id": 1017,
+      "id": 1011,
       "name": "Drink Shops Gulpee Slush",
       "classification": "useful",
       "effect_type": "research_reward",
@@ -646,7 +592,7 @@
       }
     },
     {
-      "id": 1018,
+      "id": 1012,
       "name": "Drink Shops Pipshot Juice",
       "classification": "useful",
       "effect_type": "research_reward",
@@ -655,7 +601,7 @@
       }
     },
     {
-      "id": 1019,
+      "id": 1013,
       "name": "Drink Shops Pipshot Smoothies",
       "classification": "useful",
       "effect_type": "research_reward",
@@ -664,7 +610,7 @@
       }
     },
     {
-      "id": 1020,
+      "id": 1014,
       "name": "Drink Shops Pipshot Water",
       "classification": "useful",
       "effect_type": "research_reward",
@@ -673,7 +619,7 @@
       }
     },
     {
-      "id": 1021,
+      "id": 1015,
       "name": "Enrichment: Bamboo Feeder",
       "classification": "useful",
       "effect_type": "research_reward",
@@ -682,7 +628,7 @@
       }
     },
     {
-      "id": 1022,
+      "id": 1016,
       "name": "Enrichment: Beaver Dam",
       "classification": "useful",
       "effect_type": "research_reward",
@@ -691,7 +637,7 @@
       }
     },
     {
-      "id": 1023,
+      "id": 1017,
       "name": "Enrichment: Block of Ice",
       "classification": "useful",
       "effect_type": "research_reward",
@@ -700,7 +646,7 @@
       }
     },
     {
-      "id": 1024,
+      "id": 1018,
       "name": "Enrichment: Block of Ice Fish",
       "classification": "useful",
       "effect_type": "research_reward",
@@ -709,7 +655,7 @@
       }
     },
     {
-      "id": 1025,
+      "id": 1019,
       "name": "Enrichment: Block of Ice Fruit",
       "classification": "useful",
       "effect_type": "research_reward",
@@ -718,7 +664,7 @@
       }
     },
     {
-      "id": 1026,
+      "id": 1020,
       "name": "Enrichment: Blood Pumpkin",
       "classification": "useful",
       "effect_type": "research_reward",
@@ -727,7 +673,7 @@
       }
     },
     {
-      "id": 1027,
+      "id": 1021,
       "name": "Enrichment: Blood Trail",
       "classification": "useful",
       "effect_type": "research_reward",
@@ -736,7 +682,7 @@
       }
     },
     {
-      "id": 1028,
+      "id": 1022,
       "name": "Enrichment: Bobbin",
       "classification": "useful",
       "effect_type": "research_reward",
@@ -745,7 +691,7 @@
       }
     },
     {
-      "id": 1029,
+      "id": 1023,
       "name": "Enrichment: Bobbin Drum",
       "classification": "useful",
       "effect_type": "research_reward",
@@ -754,7 +700,7 @@
       }
     },
     {
-      "id": 1030,
+      "id": 1024,
       "name": "Enrichment: Brachiation Frame 01",
       "classification": "useful",
       "effect_type": "research_reward",
@@ -763,7 +709,7 @@
       }
     },
     {
-      "id": 1031,
+      "id": 1025,
       "name": "Enrichment: Brachiation Frame 02",
       "classification": "useful",
       "effect_type": "research_reward",
@@ -772,7 +718,7 @@
       }
     },
     {
-      "id": 1032,
+      "id": 1026,
       "name": "Enrichment: Brachiation Frame 03",
       "classification": "useful",
       "effect_type": "research_reward",
@@ -781,7 +727,7 @@
       }
     },
     {
-      "id": 1033,
+      "id": 1027,
       "name": "Enrichment: Brachiation Frame 04",
       "classification": "useful",
       "effect_type": "research_reward",
@@ -790,7 +736,7 @@
       }
     },
     {
-      "id": 1034,
+      "id": 1028,
       "name": "Enrichment: Brachiation Frame Extension",
       "classification": "useful",
       "effect_type": "research_reward",
@@ -799,7 +745,7 @@
       }
     },
     {
-      "id": 1035,
+      "id": 1029,
       "name": "Enrichment: Cardboard Box",
       "classification": "useful",
       "effect_type": "research_reward",
@@ -808,7 +754,7 @@
       }
     },
     {
-      "id": 1036,
+      "id": 1030,
       "name": "Enrichment: Chew Toy",
       "classification": "useful",
       "effect_type": "research_reward",
@@ -817,7 +763,7 @@
       }
     },
     {
-      "id": 1037,
+      "id": 1031,
       "name": "Enrichment: Disco Ball",
       "classification": "useful",
       "effect_type": "research_reward",
@@ -826,7 +772,7 @@
       }
     },
     {
-      "id": 1038,
+      "id": 1032,
       "name": "Enrichment: Dog Ball Feeder",
       "classification": "useful",
       "effect_type": "research_reward",
@@ -835,7 +781,7 @@
       }
     },
     {
-      "id": 1039,
+      "id": 1033,
       "name": "Enrichment: Fire Hose Ball",
       "classification": "useful",
       "effect_type": "research_reward",
@@ -844,7 +790,7 @@
       }
     },
     {
-      "id": 1040,
+      "id": 1034,
       "name": "Enrichment: Float Buoy Submarine",
       "classification": "useful",
       "effect_type": "research_reward",
@@ -853,7 +799,7 @@
       }
     },
     {
-      "id": 1041,
+      "id": 1035,
       "name": "Enrichment: Forage Box",
       "classification": "useful",
       "effect_type": "research_reward",
@@ -862,7 +808,7 @@
       }
     },
     {
-      "id": 1042,
+      "id": 1036,
       "name": "Enrichment: Forage Pool",
       "classification": "useful",
       "effect_type": "research_reward",
@@ -871,7 +817,7 @@
       }
     },
     {
-      "id": 1043,
+      "id": 1037,
       "name": "Enrichment: Fruit Spike Tree",
       "classification": "useful",
       "effect_type": "research_reward",
@@ -880,7 +826,7 @@
       }
     },
     {
-      "id": 1044,
+      "id": 1038,
       "name": "Enrichment: Grab Ball",
       "classification": "useful",
       "effect_type": "research_reward",
@@ -889,7 +835,7 @@
       }
     },
     {
-      "id": 1045,
+      "id": 1039,
       "name": "Enrichment: Grazing Ball",
       "classification": "useful",
       "effect_type": "research_reward",
@@ -898,7 +844,7 @@
       }
     },
     {
-      "id": 1046,
+      "id": 1040,
       "name": "Enrichment: Gyro",
       "classification": "useful",
       "effect_type": "research_reward",
@@ -907,7 +853,7 @@
       }
     },
     {
-      "id": 1047,
+      "id": 1041,
       "name": "Enrichment: Hanging Barrel Feeder",
       "classification": "useful",
       "effect_type": "research_reward",
@@ -916,7 +862,7 @@
       }
     },
     {
-      "id": 1048,
+      "id": 1042,
       "name": "Enrichment: Hanging Grazer",
       "classification": "useful",
       "effect_type": "research_reward",
@@ -925,7 +871,7 @@
       }
     },
     {
-      "id": 1049,
+      "id": 1043,
       "name": "Enrichment: Herbs",
       "classification": "useful",
       "effect_type": "research_reward",
@@ -934,7 +880,7 @@
       }
     },
     {
-      "id": 1050,
+      "id": 1044,
       "name": "Enrichment: Hot Water Tap",
       "classification": "useful",
       "effect_type": "research_reward",
@@ -943,7 +889,7 @@
       }
     },
     {
-      "id": 1051,
+      "id": 1045,
       "name": "Enrichment: Hot Water Tap Big",
       "classification": "useful",
       "effect_type": "research_reward",
@@ -952,7 +898,7 @@
       }
     },
     {
-      "id": 1052,
+      "id": 1046,
       "name": "Enrichment: Large Ball",
       "classification": "useful",
       "effect_type": "research_reward",
@@ -961,7 +907,7 @@
       }
     },
     {
-      "id": 1053,
+      "id": 1047,
       "name": "Enrichment: Large Ball Snow",
       "classification": "useful",
       "effect_type": "research_reward",
@@ -970,7 +916,7 @@
       }
     },
     {
-      "id": 1054,
+      "id": 1048,
       "name": "Enrichment: Large Barrel Feeder",
       "classification": "useful",
       "effect_type": "research_reward",
@@ -979,7 +925,7 @@
       }
     },
     {
-      "id": 1055,
+      "id": 1049,
       "name": "Enrichment: Melon",
       "classification": "useful",
       "effect_type": "research_reward",
@@ -988,7 +934,7 @@
       }
     },
     {
-      "id": 1056,
+      "id": 1050,
       "name": "Enrichment: Mirror Mobile",
       "classification": "useful",
       "effect_type": "research_reward",
@@ -997,7 +943,7 @@
       }
     },
     {
-      "id": 1057,
+      "id": 1051,
       "name": "Enrichment: Mud Bath",
       "classification": "useful",
       "effect_type": "research_reward",
@@ -1006,7 +952,7 @@
       }
     },
     {
-      "id": 1058,
+      "id": 1052,
       "name": "Enrichment: Musical Keyboard",
       "classification": "useful",
       "effect_type": "research_reward",
@@ -1015,7 +961,7 @@
       }
     },
     {
-      "id": 1059,
+      "id": 1053,
       "name": "Enrichment: Natural Water Jet",
       "classification": "useful",
       "effect_type": "research_reward",
@@ -1024,7 +970,7 @@
       }
     },
     {
-      "id": 1060,
+      "id": 1054,
       "name": "Enrichment: Pinata",
       "classification": "useful",
       "effect_type": "research_reward",
@@ -1033,7 +979,7 @@
       }
     },
     {
-      "id": 1061,
+      "id": 1055,
       "name": "Enrichment: Pinata Pronghorn",
       "classification": "useful",
       "effect_type": "research_reward",
@@ -1042,7 +988,7 @@
       }
     },
     {
-      "id": 1062,
+      "id": 1056,
       "name": "Enrichment: Plant Screen",
       "classification": "useful",
       "effect_type": "research_reward",
@@ -1051,7 +997,7 @@
       }
     },
     {
-      "id": 1063,
+      "id": 1057,
       "name": "Enrichment: Present",
       "classification": "useful",
       "effect_type": "research_reward",
@@ -1060,7 +1006,7 @@
       }
     },
     {
-      "id": 1064,
+      "id": 1058,
       "name": "Enrichment: Prey Scented Sack",
       "classification": "useful",
       "effect_type": "research_reward",
@@ -1069,7 +1015,7 @@
       }
     },
     {
-      "id": 1065,
+      "id": 1059,
       "name": "Enrichment: Restraint Feeder",
       "classification": "useful",
       "effect_type": "research_reward",
@@ -1078,7 +1024,7 @@
       }
     },
     {
-      "id": 1066,
+      "id": 1060,
       "name": "Enrichment: Rotation Line Feeder",
       "classification": "useful",
       "effect_type": "research_reward",
@@ -1087,7 +1033,7 @@
       }
     },
     {
-      "id": 1067,
+      "id": 1061,
       "name": "Enrichment: Rubber Duck",
       "classification": "useful",
       "effect_type": "research_reward",
@@ -1096,7 +1042,7 @@
       }
     },
     {
-      "id": 1068,
+      "id": 1062,
       "name": "Enrichment: Rubbing Pad",
       "classification": "useful",
       "effect_type": "research_reward",
@@ -1105,7 +1051,7 @@
       }
     },
     {
-      "id": 1069,
+      "id": 1063,
       "name": "Enrichment: Rubbing Pad Bark",
       "classification": "useful",
       "effect_type": "research_reward",
@@ -1114,7 +1060,7 @@
       }
     },
     {
-      "id": 1070,
+      "id": 1064,
       "name": "Enrichment: Rubbing Pillar",
       "classification": "useful",
       "effect_type": "research_reward",
@@ -1123,7 +1069,7 @@
       }
     },
     {
-      "id": 1071,
+      "id": 1065,
       "name": "Enrichment: Scratching Post",
       "classification": "useful",
       "effect_type": "research_reward",
@@ -1132,7 +1078,7 @@
       }
     },
     {
-      "id": 1072,
+      "id": 1066,
       "name": "Enrichment: Scratching Tree Scots Pine 01",
       "classification": "useful",
       "effect_type": "research_reward",
@@ -1141,7 +1087,7 @@
       }
     },
     {
-      "id": 1073,
+      "id": 1067,
       "name": "Enrichment: Scratching Tree Tamarind 01",
       "classification": "useful",
       "effect_type": "research_reward",
@@ -1150,7 +1096,7 @@
       }
     },
     {
-      "id": 1074,
+      "id": 1068,
       "name": "Enrichment: Skittle",
       "classification": "useful",
       "effect_type": "research_reward",
@@ -1159,7 +1105,7 @@
       }
     },
     {
-      "id": 1075,
+      "id": 1069,
       "name": "Enrichment: Skittle Feeder",
       "classification": "useful",
       "effect_type": "research_reward",
@@ -1168,7 +1114,7 @@
       }
     },
     {
-      "id": 1076,
+      "id": 1070,
       "name": "Enrichment: Skittle Snowman",
       "classification": "useful",
       "effect_type": "research_reward",
@@ -1177,7 +1123,7 @@
       }
     },
     {
-      "id": 1077,
+      "id": 1071,
       "name": "Enrichment: Slow Feeder",
       "classification": "useful",
       "effect_type": "research_reward",
@@ -1186,7 +1132,7 @@
       }
     },
     {
-      "id": 1078,
+      "id": 1072,
       "name": "Enrichment: Small Ball",
       "classification": "useful",
       "effect_type": "research_reward",
@@ -1195,7 +1141,7 @@
       }
     },
     {
-      "id": 1079,
+      "id": 1073,
       "name": "Enrichment: Small Ball Ice",
       "classification": "useful",
       "effect_type": "research_reward",
@@ -1204,7 +1150,7 @@
       }
     },
     {
-      "id": 1080,
+      "id": 1074,
       "name": "Enrichment: Small Ball South America",
       "classification": "useful",
       "effect_type": "research_reward",
@@ -1213,7 +1159,7 @@
       }
     },
     {
-      "id": 1081,
+      "id": 1075,
       "name": "Enrichment: Small Barrel Feeder",
       "classification": "useful",
       "effect_type": "research_reward",
@@ -1222,7 +1168,7 @@
       }
     },
     {
-      "id": 1082,
+      "id": 1076,
       "name": "Enrichment: Small Fixed Roller Feeder",
       "classification": "useful",
       "effect_type": "research_reward",
@@ -1231,7 +1177,7 @@
       }
     },
     {
-      "id": 1083,
+      "id": 1077,
       "name": "Enrichment: Sprinkler",
       "classification": "useful",
       "effect_type": "research_reward",
@@ -1240,7 +1186,7 @@
       }
     },
     {
-      "id": 1084,
+      "id": 1078,
       "name": "Enrichment: Suspended Forager",
       "classification": "useful",
       "effect_type": "research_reward",
@@ -1249,7 +1195,7 @@
       }
     },
     {
-      "id": 1085,
+      "id": 1079,
       "name": "Enrichment: Suspended High Grazer",
       "classification": "useful",
       "effect_type": "research_reward",
@@ -1258,7 +1204,7 @@
       }
     },
     {
-      "id": 1086,
+      "id": 1080,
       "name": "Enrichment: Termite Mound",
       "classification": "useful",
       "effect_type": "research_reward",
@@ -1267,7 +1213,7 @@
       }
     },
     {
-      "id": 1087,
+      "id": 1081,
       "name": "Enrichment: Tool Puzzle Feeder",
       "classification": "useful",
       "effect_type": "research_reward",
@@ -1276,7 +1222,7 @@
       }
     },
     {
-      "id": 1088,
+      "id": 1082,
       "name": "Enrichment: Tree Forager",
       "classification": "useful",
       "effect_type": "research_reward",
@@ -1285,7 +1231,7 @@
       }
     },
     {
-      "id": 1089,
+      "id": 1083,
       "name": "Enrichment: Tree Scatter Feeder",
       "classification": "useful",
       "effect_type": "research_reward",
@@ -1294,7 +1240,7 @@
       }
     },
     {
-      "id": 1090,
+      "id": 1084,
       "name": "Enrichment: Tyre",
       "classification": "useful",
       "effect_type": "research_reward",
@@ -1303,7 +1249,7 @@
       }
     },
     {
-      "id": 1091,
+      "id": 1085,
       "name": "Enrichment: Tyre Large",
       "classification": "useful",
       "effect_type": "research_reward",
@@ -1312,7 +1258,7 @@
       }
     },
     {
-      "id": 1092,
+      "id": 1086,
       "name": "Enrichment: Water Jet",
       "classification": "useful",
       "effect_type": "research_reward",
@@ -1321,7 +1267,7 @@
       }
     },
     {
-      "id": 1093,
+      "id": 1087,
       "name": "Enrichment: Water Pool",
       "classification": "useful",
       "effect_type": "research_reward",
@@ -1330,7 +1276,7 @@
       }
     },
     {
-      "id": 1094,
+      "id": 1088,
       "name": "Enrichment: Waterfall And Metal Frame",
       "classification": "useful",
       "effect_type": "research_reward",
@@ -1339,7 +1285,7 @@
       }
     },
     {
-      "id": 1095,
+      "id": 1089,
       "name": "Enrichment: Wind Chimes",
       "classification": "useful",
       "effect_type": "research_reward",
@@ -1348,7 +1294,7 @@
       }
     },
     {
-      "id": 1096,
+      "id": 1090,
       "name": "Food Shops Cosmic Cow Ice Cream",
       "classification": "useful",
       "effect_type": "research_reward",
@@ -1357,7 +1303,7 @@
       }
     },
     {
-      "id": 1097,
+      "id": 1091,
       "name": "Food Shops Hotdog Squad",
       "classification": "useful",
       "effect_type": "research_reward",
@@ -1366,7 +1312,7 @@
       }
     },
     {
-      "id": 1098,
+      "id": 1092,
       "name": "Food Shops Mexelente",
       "classification": "useful",
       "effect_type": "research_reward",
@@ -1375,7 +1321,7 @@
       }
     },
     {
-      "id": 1099,
+      "id": 1093,
       "name": "Food Shops Missy Good",
       "classification": "useful",
       "effect_type": "research_reward",
@@ -1384,7 +1330,7 @@
       }
     },
     {
-      "id": 1100,
+      "id": 1094,
       "name": "Food Shops Monsieur Frites",
       "classification": "useful",
       "effect_type": "research_reward",
@@ -1393,7 +1339,7 @@
       }
     },
     {
-      "id": 1101,
+      "id": 1095,
       "name": "Food Shops Pizza Pen",
       "classification": "useful",
       "effect_type": "research_reward",
@@ -1402,7 +1348,7 @@
       }
     },
     {
-      "id": 1102,
+      "id": 1096,
       "name": "Guest Spawner",
       "classification": "useful",
       "effect_type": "research_reward",
@@ -1411,7 +1357,7 @@
       }
     },
     {
-      "id": 1103,
+      "id": 1097,
       "name": "Habitats Habitat Blueprints Level 1",
       "classification": "useful",
       "effect_type": "research_reward",
@@ -1420,7 +1366,7 @@
       }
     },
     {
-      "id": 1104,
+      "id": 1098,
       "name": "Habitats Habitat Blueprints Level 2",
       "classification": "useful",
       "effect_type": "research_reward",
@@ -1429,7 +1375,7 @@
       }
     },
     {
-      "id": 1105,
+      "id": 1099,
       "name": "Habitats Habitat Blueprints Level 3",
       "classification": "useful",
       "effect_type": "research_reward",
@@ -1438,7 +1384,7 @@
       }
     },
     {
-      "id": 1106,
+      "id": 1100,
       "name": "India Theme Sets Blueprints Level 1",
       "classification": "useful",
       "effect_type": "research_reward",
@@ -1447,7 +1393,7 @@
       }
     },
     {
-      "id": 1107,
+      "id": 1101,
       "name": "India Theme Sets Blueprints Level 2",
       "classification": "useful",
       "effect_type": "research_reward",
@@ -1456,7 +1402,7 @@
       }
     },
     {
-      "id": 1108,
+      "id": 1102,
       "name": "India Theme Sets Blueprints Level 3",
       "classification": "useful",
       "effect_type": "research_reward",
@@ -1465,7 +1411,7 @@
       }
     },
     {
-      "id": 1109,
+      "id": 1103,
       "name": "India Theme Sets Scenery",
       "classification": "useful",
       "effect_type": "research_reward",
@@ -1474,7 +1420,7 @@
       }
     },
     {
-      "id": 1110,
+      "id": 1104,
       "name": "Large Fixed Roller",
       "classification": "useful",
       "effect_type": "research_reward",
@@ -1483,7 +1429,7 @@
       }
     },
     {
-      "id": 1111,
+      "id": 1105,
       "name": "Modern Theme Sets Blueprints Level 1",
       "classification": "useful",
       "effect_type": "research_reward",
@@ -1492,7 +1438,7 @@
       }
     },
     {
-      "id": 1112,
+      "id": 1106,
       "name": "Modern Theme Sets Blueprints Level 2",
       "classification": "useful",
       "effect_type": "research_reward",
@@ -1501,7 +1447,7 @@
       }
     },
     {
-      "id": 1113,
+      "id": 1107,
       "name": "Modern Theme Sets Blueprints Level 3",
       "classification": "useful",
       "effect_type": "research_reward",
@@ -1510,7 +1456,7 @@
       }
     },
     {
-      "id": 1114,
+      "id": 1108,
       "name": "Modern Theme Sets Scenery",
       "classification": "useful",
       "effect_type": "research_reward",
@@ -1519,7 +1465,7 @@
       }
     },
     {
-      "id": 1115,
+      "id": 1109,
       "name": "Orient Theme Sets Blueprints Level 1",
       "classification": "useful",
       "effect_type": "research_reward",
@@ -1528,7 +1474,7 @@
       }
     },
     {
-      "id": 1116,
+      "id": 1110,
       "name": "Orient Theme Sets Blueprints Level 2",
       "classification": "useful",
       "effect_type": "research_reward",
@@ -1537,7 +1483,7 @@
       }
     },
     {
-      "id": 1117,
+      "id": 1111,
       "name": "Orient Theme Sets Blueprints Level 3",
       "classification": "useful",
       "effect_type": "research_reward",
@@ -1546,7 +1492,7 @@
       }
     },
     {
-      "id": 1118,
+      "id": 1112,
       "name": "Orient Theme Sets Scenery",
       "classification": "useful",
       "effect_type": "research_reward",
@@ -1555,7 +1501,7 @@
       }
     },
     {
-      "id": 1119,
+      "id": 1113,
       "name": "Park Gate",
       "classification": "useful",
       "effect_type": "research_reward",
@@ -1564,7 +1510,7 @@
       }
     },
     {
-      "id": 1120,
+      "id": 1114,
       "name": "Permit: Aardvark",
       "classification": "progression",
       "effect_type": "species_unlock",
@@ -1573,7 +1519,7 @@
       }
     },
     {
-      "id": 1121,
+      "id": 1115,
       "name": "Permit: African Buffalo",
       "classification": "progression",
       "effect_type": "species_unlock",
@@ -1582,7 +1528,7 @@
       }
     },
     {
-      "id": 1122,
+      "id": 1116,
       "name": "Permit: African Leopard",
       "classification": "progression",
       "effect_type": "species_unlock",
@@ -1591,7 +1537,7 @@
       }
     },
     {
-      "id": 1123,
+      "id": 1117,
       "name": "Permit: African Savannah Elephant",
       "classification": "progression",
       "effect_type": "species_unlock",
@@ -1600,7 +1546,7 @@
       }
     },
     {
-      "id": 1124,
+      "id": 1118,
       "name": "Permit: African Wild Dog",
       "classification": "progression",
       "effect_type": "species_unlock",
@@ -1609,7 +1555,7 @@
       }
     },
     {
-      "id": 1125,
+      "id": 1119,
       "name": "Permit: Aldabra Giant Tortoise",
       "classification": "progression",
       "effect_type": "species_unlock",
@@ -1618,7 +1564,7 @@
       }
     },
     {
-      "id": 1126,
+      "id": 1120,
       "name": "Permit: Amazonian Giant Centipede",
       "classification": "progression",
       "effect_type": "species_unlock",
@@ -1627,7 +1573,7 @@
       }
     },
     {
-      "id": 1127,
+      "id": 1121,
       "name": "Permit: American Bison",
       "classification": "progression",
       "effect_type": "species_unlock",
@@ -1636,7 +1582,7 @@
       }
     },
     {
-      "id": 1128,
+      "id": 1122,
       "name": "Permit: Bactrian Camel",
       "classification": "progression",
       "effect_type": "species_unlock",
@@ -1645,7 +1591,7 @@
       }
     },
     {
-      "id": 1129,
+      "id": 1123,
       "name": "Permit: Bairds Tapir",
       "classification": "progression",
       "effect_type": "species_unlock",
@@ -1654,7 +1600,7 @@
       }
     },
     {
-      "id": 1130,
+      "id": 1124,
       "name": "Permit: Bengal Tiger",
       "classification": "progression",
       "effect_type": "species_unlock",
@@ -1663,7 +1609,7 @@
       }
     },
     {
-      "id": 1131,
+      "id": 1125,
       "name": "Permit: Black Wildebeest",
       "classification": "progression",
       "effect_type": "species_unlock",
@@ -1672,7 +1618,7 @@
       }
     },
     {
-      "id": 1132,
+      "id": 1126,
       "name": "Permit: Black a White Ruffed Lemur",
       "classification": "progression",
       "effect_type": "species_unlock",
@@ -1681,7 +1627,7 @@
       }
     },
     {
-      "id": 1133,
+      "id": 1127,
       "name": "Permit: Boa Constrictor",
       "classification": "progression",
       "effect_type": "species_unlock",
@@ -1690,7 +1636,7 @@
       }
     },
     {
-      "id": 1134,
+      "id": 1128,
       "name": "Permit: Bongo",
       "classification": "progression",
       "effect_type": "species_unlock",
@@ -1699,7 +1645,7 @@
       }
     },
     {
-      "id": 1135,
+      "id": 1129,
       "name": "Permit: Bonobo",
       "classification": "progression",
       "effect_type": "species_unlock",
@@ -1708,7 +1654,7 @@
       }
     },
     {
-      "id": 1136,
+      "id": 1130,
       "name": "Permit: Bornean Orangutan",
       "classification": "progression",
       "effect_type": "species_unlock",
@@ -1717,7 +1663,7 @@
       }
     },
     {
-      "id": 1137,
+      "id": 1131,
       "name": "Permit: Brazilian Salmon Pink Tarantula",
       "classification": "progression",
       "effect_type": "species_unlock",
@@ -1726,7 +1672,7 @@
       }
     },
     {
-      "id": 1138,
+      "id": 1132,
       "name": "Permit: Brazilian Wandering Spider",
       "classification": "progression",
       "effect_type": "species_unlock",
@@ -1735,7 +1681,7 @@
       }
     },
     {
-      "id": 1139,
+      "id": 1133,
       "name": "Permit: Cheetah",
       "classification": "progression",
       "effect_type": "species_unlock",
@@ -1744,7 +1690,7 @@
       }
     },
     {
-      "id": 1140,
+      "id": 1134,
       "name": "Permit: Chinese Pangolin",
       "classification": "progression",
       "effect_type": "species_unlock",
@@ -1753,7 +1699,7 @@
       }
     },
     {
-      "id": 1141,
+      "id": 1135,
       "name": "Permit: Collared Peccary",
       "classification": "progression",
       "effect_type": "species_unlock",
@@ -1762,7 +1708,7 @@
       }
     },
     {
-      "id": 1142,
+      "id": 1136,
       "name": "Permit: Common Death Adder",
       "classification": "progression",
       "effect_type": "species_unlock",
@@ -1771,7 +1717,7 @@
       }
     },
     {
-      "id": 1143,
+      "id": 1137,
       "name": "Permit: Common Ostrich",
       "classification": "progression",
       "effect_type": "species_unlock",
@@ -1780,7 +1726,7 @@
       }
     },
     {
-      "id": 1144,
+      "id": 1138,
       "name": "Permit: Common Warthog",
       "classification": "progression",
       "effect_type": "species_unlock",
@@ -1789,7 +1735,7 @@
       }
     },
     {
-      "id": 1145,
+      "id": 1139,
       "name": "Permit: Eastern Brown Snake",
       "classification": "progression",
       "effect_type": "species_unlock",
@@ -1798,7 +1744,7 @@
       }
     },
     {
-      "id": 1146,
+      "id": 1140,
       "name": "Permit: Formosan Black Bear",
       "classification": "progression",
       "effect_type": "species_unlock",
@@ -1807,7 +1753,7 @@
       }
     },
     {
-      "id": 1147,
+      "id": 1141,
       "name": "Permit: Galapagos Giant Tortoise",
       "classification": "progression",
       "effect_type": "species_unlock",
@@ -1816,7 +1762,7 @@
       }
     },
     {
-      "id": 1148,
+      "id": 1142,
       "name": "Permit: Gemsbok",
       "classification": "progression",
       "effect_type": "species_unlock",
@@ -1825,7 +1771,7 @@
       }
     },
     {
-      "id": 1149,
+      "id": 1143,
       "name": "Permit: Gharial",
       "classification": "progression",
       "effect_type": "species_unlock",
@@ -1834,7 +1780,7 @@
       }
     },
     {
-      "id": 1150,
+      "id": 1144,
       "name": "Permit: Giant Burrowing Cockroach",
       "classification": "progression",
       "effect_type": "species_unlock",
@@ -1843,7 +1789,7 @@
       }
     },
     {
-      "id": 1151,
+      "id": 1145,
       "name": "Permit: Giant Desert Hairy Scorpion",
       "classification": "progression",
       "effect_type": "species_unlock",
@@ -1852,7 +1798,7 @@
       }
     },
     {
-      "id": 1152,
+      "id": 1146,
       "name": "Permit: Giant Forest Scorpion",
       "classification": "progression",
       "effect_type": "species_unlock",
@@ -1861,7 +1807,7 @@
       }
     },
     {
-      "id": 1153,
+      "id": 1147,
       "name": "Permit: Giant Panda",
       "classification": "progression",
       "effect_type": "species_unlock",
@@ -1870,7 +1816,7 @@
       }
     },
     {
-      "id": 1154,
+      "id": 1148,
       "name": "Permit: Giant Tiger Land Snail",
       "classification": "progression",
       "effect_type": "species_unlock",
@@ -1879,7 +1825,7 @@
       }
     },
     {
-      "id": 1155,
+      "id": 1149,
       "name": "Permit: Gila Monster",
       "classification": "progression",
       "effect_type": "species_unlock",
@@ -1888,7 +1834,7 @@
       }
     },
     {
-      "id": 1156,
+      "id": 1150,
       "name": "Permit: Golden Poison Frog",
       "classification": "progression",
       "effect_type": "species_unlock",
@@ -1897,7 +1843,7 @@
       }
     },
     {
-      "id": 1157,
+      "id": 1151,
       "name": "Permit: Goliath Beetle",
       "classification": "progression",
       "effect_type": "species_unlock",
@@ -1906,7 +1852,7 @@
       }
     },
     {
-      "id": 1158,
+      "id": 1152,
       "name": "Permit: Goliath Birdeater",
       "classification": "progression",
       "effect_type": "species_unlock",
@@ -1915,7 +1861,7 @@
       }
     },
     {
-      "id": 1159,
+      "id": 1153,
       "name": "Permit: Goliath Frog",
       "classification": "progression",
       "effect_type": "species_unlock",
@@ -1924,7 +1870,7 @@
       }
     },
     {
-      "id": 1160,
+      "id": 1154,
       "name": "Permit: Greater Flamingo",
       "classification": "progression",
       "effect_type": "species_unlock",
@@ -1933,7 +1879,7 @@
       }
     },
     {
-      "id": 1161,
+      "id": 1155,
       "name": "Permit: Green Iguana",
       "classification": "progression",
       "effect_type": "species_unlock",
@@ -1942,7 +1888,7 @@
       }
     },
     {
-      "id": 1162,
+      "id": 1156,
       "name": "Permit: Grizzly Bear",
       "classification": "progression",
       "effect_type": "species_unlock",
@@ -1951,7 +1897,7 @@
       }
     },
     {
-      "id": 1163,
+      "id": 1157,
       "name": "Permit: Himalayan Brown Bear",
       "classification": "progression",
       "effect_type": "species_unlock",
@@ -1960,7 +1906,7 @@
       }
     },
     {
-      "id": 1164,
+      "id": 1158,
       "name": "Permit: Hippopotamus",
       "classification": "progression",
       "effect_type": "species_unlock",
@@ -1969,7 +1915,7 @@
       }
     },
     {
-      "id": 1165,
+      "id": 1159,
       "name": "Permit: Indian Elephant",
       "classification": "progression",
       "effect_type": "species_unlock",
@@ -1978,7 +1924,7 @@
       }
     },
     {
-      "id": 1166,
+      "id": 1160,
       "name": "Permit: Indian Peafowl",
       "classification": "progression",
       "effect_type": "species_unlock",
@@ -1987,7 +1933,7 @@
       }
     },
     {
-      "id": 1167,
+      "id": 1161,
       "name": "Permit: Indian Rhinoceros",
       "classification": "progression",
       "effect_type": "species_unlock",
@@ -1996,7 +1942,7 @@
       }
     },
     {
-      "id": 1168,
+      "id": 1162,
       "name": "Permit: Japanese Macaque",
       "classification": "progression",
       "effect_type": "species_unlock",
@@ -2005,7 +1951,7 @@
       }
     },
     {
-      "id": 1169,
+      "id": 1163,
       "name": "Permit: Lehmann Poison Frog",
       "classification": "progression",
       "effect_type": "species_unlock",
@@ -2014,7 +1960,7 @@
       }
     },
     {
-      "id": 1170,
+      "id": 1164,
       "name": "Permit: Lesser Antillean Iguana",
       "classification": "progression",
       "effect_type": "species_unlock",
@@ -2023,7 +1969,7 @@
       }
     },
     {
-      "id": 1171,
+      "id": 1165,
       "name": "Permit: Malabar Rose",
       "classification": "progression",
       "effect_type": "species_unlock",
@@ -2032,7 +1978,7 @@
       }
     },
     {
-      "id": 1172,
+      "id": 1166,
       "name": "Permit: Mandrill",
       "classification": "progression",
       "effect_type": "species_unlock",
@@ -2041,7 +1987,7 @@
       }
     },
     {
-      "id": 1173,
+      "id": 1167,
       "name": "Permit: Mexican Red Knee Tarantula",
       "classification": "progression",
       "effect_type": "species_unlock",
@@ -2050,7 +1996,7 @@
       }
     },
     {
-      "id": 1174,
+      "id": 1168,
       "name": "Permit: Nile Monitor",
       "classification": "progression",
       "effect_type": "species_unlock",
@@ -2059,7 +2005,7 @@
       }
     },
     {
-      "id": 1175,
+      "id": 1169,
       "name": "Permit: Nyala",
       "classification": "progression",
       "effect_type": "species_unlock",
@@ -2068,7 +2014,7 @@
       }
     },
     {
-      "id": 1176,
+      "id": 1170,
       "name": "Permit: Okapi",
       "classification": "progression",
       "effect_type": "species_unlock",
@@ -2077,7 +2023,7 @@
       }
     },
     {
-      "id": 1177,
+      "id": 1171,
       "name": "Permit: Plains Zebra",
       "classification": "progression",
       "effect_type": "species_unlock",
@@ -2086,7 +2032,7 @@
       }
     },
     {
-      "id": 1178,
+      "id": 1172,
       "name": "Permit: Pronghorn Antelope",
       "classification": "progression",
       "effect_type": "species_unlock",
@@ -2095,7 +2041,7 @@
       }
     },
     {
-      "id": 1179,
+      "id": 1173,
       "name": "Permit: Puff Adder",
       "classification": "progression",
       "effect_type": "species_unlock",
@@ -2104,7 +2050,7 @@
       }
     },
     {
-      "id": 1180,
+      "id": 1174,
       "name": "Permit: Red Deer",
       "classification": "progression",
       "effect_type": "species_unlock",
@@ -2113,7 +2059,7 @@
       }
     },
     {
-      "id": 1181,
+      "id": 1175,
       "name": "Permit: Red Panda",
       "classification": "progression",
       "effect_type": "species_unlock",
@@ -2122,7 +2068,7 @@
       }
     },
     {
-      "id": 1182,
+      "id": 1176,
       "name": "Permit: Red Ruffed Lemur",
       "classification": "progression",
       "effect_type": "species_unlock",
@@ -2131,7 +2077,7 @@
       }
     },
     {
-      "id": 1183,
+      "id": 1177,
       "name": "Permit: Reticulated Giraffe",
       "classification": "progression",
       "effect_type": "species_unlock",
@@ -2140,7 +2086,7 @@
       }
     },
     {
-      "id": 1184,
+      "id": 1178,
       "name": "Permit: Ring Tailed Lemur",
       "classification": "progression",
       "effect_type": "species_unlock",
@@ -2149,7 +2095,7 @@
       }
     },
     {
-      "id": 1185,
+      "id": 1179,
       "name": "Permit: Sable Antelope",
       "classification": "progression",
       "effect_type": "species_unlock",
@@ -2158,7 +2104,7 @@
       }
     },
     {
-      "id": 1186,
+      "id": 1180,
       "name": "Permit: Saltwater Crocodile",
       "classification": "progression",
       "effect_type": "species_unlock",
@@ -2167,7 +2113,7 @@
       }
     },
     {
-      "id": 1187,
+      "id": 1181,
       "name": "Permit: Siberian Tiger",
       "classification": "progression",
       "effect_type": "species_unlock",
@@ -2176,7 +2122,7 @@
       }
     },
     {
-      "id": 1188,
+      "id": 1182,
       "name": "Permit: Snow Leopard",
       "classification": "progression",
       "effect_type": "species_unlock",
@@ -2185,7 +2131,7 @@
       }
     },
     {
-      "id": 1189,
+      "id": 1183,
       "name": "Permit: Spotted Hyena",
       "classification": "progression",
       "effect_type": "species_unlock",
@@ -2194,7 +2140,7 @@
       }
     },
     {
-      "id": 1190,
+      "id": 1184,
       "name": "Permit: Springbok",
       "classification": "progression",
       "effect_type": "species_unlock",
@@ -2203,7 +2149,7 @@
       }
     },
     {
-      "id": 1191,
+      "id": 1185,
       "name": "Permit: Timber Wolf",
       "classification": "progression",
       "effect_type": "species_unlock",
@@ -2212,7 +2158,7 @@
       }
     },
     {
-      "id": 1192,
+      "id": 1186,
       "name": "Permit: Titan Beetle",
       "classification": "progression",
       "effect_type": "species_unlock",
@@ -2221,7 +2167,7 @@
       }
     },
     {
-      "id": 1193,
+      "id": 1187,
       "name": "Permit: West African Lion",
       "classification": "progression",
       "effect_type": "species_unlock",
@@ -2230,7 +2176,7 @@
       }
     },
     {
-      "id": 1194,
+      "id": 1188,
       "name": "Permit: Western Chimpanzee",
       "classification": "progression",
       "effect_type": "species_unlock",
@@ -2239,7 +2185,7 @@
       }
     },
     {
-      "id": 1195,
+      "id": 1189,
       "name": "Permit: Western Diamondback Rattlesnake",
       "classification": "progression",
       "effect_type": "species_unlock",
@@ -2248,7 +2194,7 @@
       }
     },
     {
-      "id": 1196,
+      "id": 1190,
       "name": "Permit: Western Lowland Gorilla",
       "classification": "progression",
       "effect_type": "species_unlock",
@@ -2257,7 +2203,7 @@
       }
     },
     {
-      "id": 1197,
+      "id": 1191,
       "name": "Permit: Yellow Anaconda",
       "classification": "progression",
       "effect_type": "species_unlock",
@@ -2266,7 +2212,7 @@
       }
     },
     {
-      "id": 1198,
+      "id": 1192,
       "name": "Power Solar Panel",
       "classification": "useful",
       "effect_type": "research_reward",
@@ -2275,7 +2221,7 @@
       }
     },
     {
-      "id": 1199,
+      "id": 1193,
       "name": "Power Wind Turbine",
       "classification": "useful",
       "effect_type": "research_reward",
@@ -2284,7 +2230,7 @@
       }
     },
     {
-      "id": 1200,
+      "id": 1194,
       "name": "Scenario Blueprint 01",
       "classification": "useful",
       "effect_type": "research_reward",
@@ -2293,7 +2239,7 @@
       }
     },
     {
-      "id": 1201,
+      "id": 1195,
       "name": "Scenario Blueprint 02",
       "classification": "useful",
       "effect_type": "research_reward",
@@ -2302,7 +2248,7 @@
       }
     },
     {
-      "id": 1202,
+      "id": 1196,
       "name": "Shelters Shelter Blueprints Level 1",
       "classification": "useful",
       "effect_type": "research_reward",
@@ -2311,7 +2257,7 @@
       }
     },
     {
-      "id": 1203,
+      "id": 1197,
       "name": "Shelters Shelter Blueprints Level 2",
       "classification": "useful",
       "effect_type": "research_reward",
@@ -2320,7 +2266,7 @@
       }
     },
     {
-      "id": 1204,
+      "id": 1198,
       "name": "Shelters Shelter Blueprints Level 3",
       "classification": "useful",
       "effect_type": "research_reward",
@@ -2329,7 +2275,7 @@
       }
     },
     {
-      "id": 1205,
+      "id": 1199,
       "name": "Souvenir Shops Hats Fantastic",
       "classification": "useful",
       "effect_type": "research_reward",
@@ -2338,7 +2284,7 @@
       }
     },
     {
-      "id": 1206,
+      "id": 1200,
       "name": "Souvenir Shops Just AMomento",
       "classification": "useful",
       "effect_type": "research_reward",
@@ -2347,7 +2293,7 @@
       }
     },
     {
-      "id": 1207,
+      "id": 1201,
       "name": "Staff Facilities Keeper Hut Large",
       "classification": "useful",
       "effect_type": "research_reward",
@@ -2356,7 +2302,7 @@
       }
     },
     {
-      "id": 1208,
+      "id": 1202,
       "name": "Staff Facilities Quarantine Large",
       "classification": "useful",
       "effect_type": "research_reward",
@@ -2365,7 +2311,7 @@
       }
     },
     {
-      "id": 1209,
+      "id": 1203,
       "name": "Staff Facilities Research Centre Large",
       "classification": "useful",
       "effect_type": "research_reward",
@@ -2374,7 +2320,7 @@
       }
     },
     {
-      "id": 1210,
+      "id": 1204,
       "name": "Staff Facilities Staff Centre Large",
       "classification": "useful",
       "effect_type": "research_reward",
@@ -2383,7 +2329,7 @@
       }
     },
     {
-      "id": 1211,
+      "id": 1205,
       "name": "Transport Boat Ride Station",
       "classification": "useful",
       "effect_type": "research_reward",
@@ -2392,7 +2338,7 @@
       }
     },
     {
-      "id": 1212,
+      "id": 1206,
       "name": "Transport Safari Jeep Station",
       "classification": "useful",
       "effect_type": "research_reward",
@@ -2401,7 +2347,7 @@
       }
     },
     {
-      "id": 1213,
+      "id": 1207,
       "name": "Transport Steam Train Station",
       "classification": "useful",
       "effect_type": "research_reward",
@@ -2410,7 +2356,7 @@
       }
     },
     {
-      "id": 1214,
+      "id": 1208,
       "name": "Transport Suspended Gondola",
       "classification": "useful",
       "effect_type": "research_reward",
@@ -2419,7 +2365,7 @@
       }
     },
     {
-      "id": 1215,
+      "id": 1209,
       "name": "Research Centre",
       "classification": "progression",
       "effect_type": "facility_unlock",
@@ -2428,7 +2374,7 @@
       }
     },
     {
-      "id": 1216,
+      "id": 1210,
       "name": "Workshop",
       "classification": "progression",
       "effect_type": "facility_unlock",
@@ -2437,7 +2383,7 @@
       }
     },
     {
-      "id": 1217,
+      "id": 1211,
       "name": "Water Habitat Tools",
       "classification": "progression",
       "effect_type": "tool_unlock",
@@ -2446,7 +2392,7 @@
       }
     },
     {
-      "id": 1218,
+      "id": 1212,
       "name": "Conservation Program",
       "classification": "progression",
       "effect_type": "program_unlock",
@@ -2455,7 +2401,7 @@
       }
     },
     {
-      "id": 1219,
+      "id": 1213,
       "name": "Cash Injection (Medium)",
       "classification": "useful",
       "effect_type": "cash",
@@ -2464,7 +2410,7 @@
       }
     },
     {
-      "id": 1220,
+      "id": 1214,
       "name": "Cash Injection (Large)",
       "classification": "useful",
       "effect_type": "cash",
@@ -2473,7 +2419,7 @@
       }
     },
     {
-      "id": 1221,
+      "id": 1215,
       "name": "Conservation Credits (Large)",
       "classification": "useful",
       "effect_type": "cc",
@@ -2482,7 +2428,7 @@
       }
     },
     {
-      "id": 1222,
+      "id": 1216,
       "name": "Cash Injection (Small)",
       "classification": "filler",
       "effect_type": "cash",
@@ -2491,7 +2437,7 @@
       }
     },
     {
-      "id": 1223,
+      "id": 1217,
       "name": "Conservation Credits (Small)",
       "classification": "filler",
       "effect_type": "cc",
@@ -2500,7 +2446,7 @@
       }
     },
     {
-      "id": 1224,
+      "id": 1218,
       "name": "Conservation Credits (Medium)",
       "classification": "filler",
       "effect_type": "cc",
@@ -2509,7 +2455,7 @@
       }
     },
     {
-      "id": 1225,
+      "id": 1219,
       "name": "Progressive Supplement Level",
       "classification": "useful",
       "effect_type": "progressive_research_reward",
@@ -2518,7 +2464,7 @@
       }
     },
     {
-      "id": 1226,
+      "id": 1220,
       "name": "Progressive Education Level ",
       "classification": "useful",
       "effect_type": "progressive_research_reward",
@@ -2527,7 +2473,7 @@
       }
     },
     {
-      "id": 1227,
+      "id": 1221,
       "name": "Progressive Breeding Level",
       "classification": "useful",
       "effect_type": "progressive_research_reward",
@@ -2536,12 +2482,21 @@
       }
     },
     {
-      "id": 1228,
+      "id": 1222,
       "name": "Progressive Exhibit Enrichment Level",
       "classification": "useful",
       "effect_type": "progressive_research_reward",
       "effect_args": {
         "family": "exhibit_enrichment"
+      }
+    },
+    {
+      "id": 1223,
+      "name": "Progressive Barrier Level",
+      "classification": "progression",
+      "effect_type": "progressive_research_reward",
+      "effect_args": {
+        "family": "barrier"
       }
     }
   ],

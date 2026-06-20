@@ -195,6 +195,13 @@ class MemoryEffectApplier(EffectApplier):
         if self.reward_granter is None:
             logger.warning("progressive_research_reward %r: no RewardGranter wired - cannot apply", family)
             return False
+        if family == "barrier":
+            # Barriers are habitat-boundary build content gated by mechanic research, reconciled each tick
+            # from the received-level COUNT (client._reconcile_barriers -> reward_granter.reconcile_barriers):
+            # level N makes grade<=N barriers buildable via status-write (buildable>=3, location==4, so no
+            # false check). Acknowledge here so the high-water mark advances; the tick does the work
+            # (restart-correct), like on_program_unlock.
+            return True
         return self.reward_granter.grant_progressive(family)
 
     def on_staff_training(self, item: "Item") -> bool:

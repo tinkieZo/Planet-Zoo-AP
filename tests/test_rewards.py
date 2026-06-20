@@ -168,3 +168,73 @@ def test_progressive_grants_lowest_locked_of_family():
     assert g.grant_progressive("supplement") is True
     flags = {cid: flag for _, cid, _, flag in rewards.UnlockMap(s, RS).iter_records()}
     assert flags[0x21] == 1, "the locked supplement content got unlocked"
+
+
+class FakeBarrierResearch:
+    """Fake ResearchReader for reconcile_barriers: a mechanic items map (rs+0xF8) over the FakeScanner.
+    Each researchable barrier's research item has a status byte at a fake address (start 0 = locked);
+    scan_records reads it live so a status-write is observable. reconcile_barriers should set grade<=N
+    items to BARRIER_BUILDABLE_STATUS (3) - NOT 4 (which is the location-fire status)."""
+
+    def __init__(self, scanner, items):
+        self.scanner = scanner
+        self._items = items  # list of (research_name, item_id, status_addr)
+        for _n, _iid, addr in items:
+            scanner.put(addr, bytes([0]))
+
+    def _research_system(self):
+        return RS
+
+    def _mechanic_item_map(self):
+        return {rewards._norm(n): iid for n, iid, _a in self._items}
+
+    def scan_records(self):
+        for _n, iid, addr in self._items:
+            yield (iid, 0, self.scanner.read_bytes(addr, 1)[0], 3, addr)  # (id, lvl, status, cat=3, addr)
+
+
+def test_reconcile_barriers_unlocks_researchable_by_grade():
+    # Level N makes every RESEARCHABLE barrier of grade <= N buildable via a status-write to 3 (NOT 4,
+    # so the barrier_N location never fires). Grades 1 & 3 are defaults-only, so N=1 unlocks nothing and
+    # N=3 unlocks the same as N=2 (only OneWayGlass, grade 2).
+    s = FakeScanner()
+    items = [  # (research-item name, item id, fake status_addr) - grades come from BARRIER_RESEARCH_GRADE
+        ("barriersonewayglass",     0x2794, 0x40000000),  # g2
+        ("barrierschainsteelposts", 0x32CA, 0x40000008),  # g4
+        ("barriersthickglass",      0x32CB, 0x40000010),  # g4
+        ("barriersrebarstonecages", 0x2793, 0x40000018),  # g5
+        ("barriersconcrete",        0x278E, 0x40000020),  # g6
+        ("barrierselectric",        0x32C9, 0x40000028),  # g6
+    ]
+    g = rewards.RewardGranter(s, FakeBarrierResearch(s, items))
+    grade = rewards.BARRIER_RESEARCH_GRADE
+    st = lambda addr: s.read_bytes(addr, 1)[0]
+    for n in range(1, 7):  # received N Progressive Barrier Levels
+        assert g.reconcile_barriers(n) is True
+        for name, _iid, addr in items:
+            exp = rewards.BARRIER_BUILDABLE_STATUS if grade[name] <= n else 0
+            assert st(addr) == exp, f"after {n} levels, {name} (g{grade[name]}) = {st(addr)} (exp {exp})"
+    # never writes the location-fire status (4)
+    assert all(st(addr) == rewards.BARRIER_BUILDABLE_STATUS for _n, _i, addr in items)
+    assert rewards.BARRIER_BUILDABLE_STATUS == 3
+    assert g.reconcile_barriers(6) is True  # idempotent at full
+
+
+def test_reconcile_facilities_reveals_on_facility_keys():
+    # facility_unlock(research_centre/workshop) reveals the fdb-hidden build items by status-writing their
+    # NoneResearchable placeholder (GuestSpawner/ParkGate) to 4 (scenery reveals at 4, not 3). Placeholders
+    # are NOT AP locations, so no false check. Driven by the received facility_unlock keys each tick.
+    s = FakeScanner()
+    items = [
+        ("guestspawner", 0xC350, 0x40000100),   # research_centre placeholder (50000)
+        ("parkgate",     0xC351, 0x40000108),   # workshop placeholder (50001)
+    ]
+    g = rewards.RewardGranter(s, FakeBarrierResearch(s, items))
+    st = lambda a: s.read_bytes(a, 1)[0]
+    assert g.reconcile_facilities(set()) is True            # nothing received -> nothing written
+    assert st(0x40000100) == 0 and st(0x40000108) == 0
+    assert g.reconcile_facilities({"research_centre"}) is True   # RC only
+    assert st(0x40000100) == rewards.FACILITY_BUILDABLE_STATUS and st(0x40000108) == 0
+    assert g.reconcile_facilities({"research_centre", "workshop"}) is True  # both
+    assert st(0x40000100) == 4 and st(0x40000108) == 4
+    assert rewards.FACILITY_BUILDABLE_STATUS == 4

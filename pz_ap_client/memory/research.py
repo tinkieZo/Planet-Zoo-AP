@@ -73,10 +73,13 @@ ADVANCED_LEVEL = 10          # levels >= this are "advanced research" (optional,
 # records' item ids); welfare levels are a CONSECUTIVE run from this level-0 id, so level N's record
 # = base + (N-1) (validated: the runs below are contiguous).
 #
-# COVERAGE: only the 11 originally-captured species are mapped. The full APWorld roster is 78
-# species; the OTHER 67 need a capture pass (run capture_species.py per species, or a bulk handle
-# sweep) before their welfare / first-breed / first-acquire checks can fire. Detection degrades
-# safely for unmapped species (no false checks) - see is_welfare_complete / current_handle.
+# COVERAGE: these 11 ids are a no-registry FAST-PATH/FALLBACK, NOT the coverage limit. The full
+# roster (78) is resolved at RUNTIME without a per-species capture: _welfare_item falls back to
+# _derive_welfare_item, which uses the symbol registry (each species' engine_token, supplied for
+# ALL 78 via data.json -> token_to_key in triggers.py) to locate any species' welfare run live. So
+# welfare / first-breed / first-acquire / conservation_release attribute EVERY species whenever the
+# registry resolves its live handle; the hardcoded ids below only matter if the registry is
+# unavailable. Detection degrades safely (no false checks) when neither path resolves.
 SPECIES_WELFARE_ITEM: Dict[str, int] = {
     # key = APWorld stringid; value = level-0 welfare research-item id (restart-stable).
     "pzebra": 0xDAC,        # Plains Zebra; welfare run 0xDAC..0xDB1

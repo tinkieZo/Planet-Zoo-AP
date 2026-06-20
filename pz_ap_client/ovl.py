@@ -89,11 +89,22 @@ LogFn = Callable[[str], None]
 
 # The complete shell - all authored. Everything checks this manifest and fails
 # loudly on an incomplete source tree (see ovl_src/README.md).
+# FRESH-START ANIMAL RESEARCH CONFIG (D2/c-define, live-confirmed 2026-06-20): the engine binds a
+# scenario's animal start-unlocked state by CODE (vanilla scenario_NN configs; careerdata has no research
+# field). Our code "Scenario_15_Empty" had no config -> fell back to `default` (sandbox: all vet research
+# pre-done). We ship an EMPTY one so animal/vet research starts at level 0 (no welfare false-fires).
+#   MECHANIC research is keyed by a separate per-scenario type, scenario_<code>.scenariomechanicresearchsettings
+#   (RE'd via headless Ghidra). We tried shipping an empty one (cobra handler added,
+#   modules/formats/SCENARIOMECHANICRESEARCHSETTINGS.py) but it CRASHED on scenario load 2026-06-20: the
+#   format is NOT a plain ResearchRoot (extract hit a UIntPair BufferError on one vanilla file), so cobra's
+#   ResearchRoot-based create produced an INVALID file. Reverted. Needs the exact struct before re-attempting.
+# Order MUST equal sorted src_files (test_bundled_src_complete).
 PACK_SRC_FILES = (
     "database.archipelagocareerdata.lua",
     "database.pzarchipelagoluadatabase.lua",
     "objectivesettings.scenario_ap_objectives.lua",
     "parksettings.scenario_ap_parksettings.lua",
+    "scenario_15_empty.animalresearchstartunlockedsettings",
     "scenarioscripts.scenario_ap_script.lua",
 )
 # Loc keys referenced by the careerdata (one .txt per key; built into a Loc.ovl
@@ -107,7 +118,7 @@ PACK_LOC_SRC_FILES = (
 CONTENT0_SRC_FILES = (
     "scenarioscripts.scenarioscriptutils.lua",
 )
-SRC_SUFFIXES = (".lua", ".txt")
+SRC_SUFFIXES = (".lua", ".txt", ".animalresearchstartunlockedsettings")
 
 
 # ---------------------------------------------------------------------------

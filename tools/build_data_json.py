@@ -77,6 +77,9 @@ PROGRESSIVE = {
     "Progressive Education Level": "education",
     "Progressive Breeding Level": "breeding",
     "Progressive Exhibit Enrichment Level": "exhibit_enrichment",
+    # Barriers: 6 levels -> 6 barrier grades, unlocked in grade order by the client (rewards.py
+    # BARRIER_GRADE_CONTENT). Without this, the item fell through to a bogus research_reward token.
+    "Progressive Barrier Level": "barrier",
 }
 FIXED = {
     "Research Centre": ("facility_unlock", {"facility_key": "research_centre"}),

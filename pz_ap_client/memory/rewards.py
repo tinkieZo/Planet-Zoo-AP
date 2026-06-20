@@ -44,6 +44,50 @@ HEAP_LO, HEAP_HI = 0x10000, (1 << 47)
 # (0 supplement, 2 breeding, 3 education, 1 enrichment incl. exhibit enrichment, 4 zoopedia.)
 FAMILY_TYPE = {"supplement": 0, "breeding": 2, "education": 3, "exhibit_enrichment": 1}
 
+# Barriers ("Progressive Barrier Level", 6 copies) are NOT rs+0x148 unlock-map content - they are
+# HABITAT-BOUNDARY build content gated by MECHANIC research (rs+0xF8). LIVE-CONFIRMED 2026-06-20: a
+# boundary becomes BUILDABLE at its research status >= 3, while the barrier1..6 research LOCATION fires
+# only at status == 4. So the Progressive Barrier item makes grade<=N barriers buildable by status-
+# writing their research item to 3 - WITHOUT falsely firing the location check. Driven by
+# reconcile_barriers(N) from the received-level count each tick (client._reconcile_barriers), NOT
+# grant_progressive (which is for rs+0x148 type-keyed families). Grade = c0habitatboundary.fdb
+# RelativeResistance tier (0.02->1, 0.2->2, 0.333->3, 0.5->4, 1.0->5/6; Electric special->6). Map is
+# the 6 RESEARCHABLE boundaries' research-item NAME -> grade; the 6 DEFAULT boundaries (Hedge/ChainLink/
+# Corrugated/Glass/Wood_Logs/Brick_Red) have NO research item and need a c0habitatboundary.fdb tag edit
+# to become gateable - NOT handled here yet (grades 1 & 3 are defaults-only).
+BARRIER_RESEARCH_GRADE = {
+    "barriersonewayglass": 2,                                # Glass_One_Way (+ default ChainLink, Corrugated)
+    "barrierschainsteelposts": 4, "barriersthickglass": 4,   # Steel_Mesh, Thick_Glass
+    "barriersrebarstonecages": 5,                            # Gabion (+ default Brick_Red)
+    "barriersconcrete": 6, "barrierselectric": 6,            # Concrete, Electric
+    # DEFAULT-only grades (1 & 3 have no researchable barrier): the 6 always-shown defaults get gated by
+    # re-pointing their c0habitatboundary.fdb ResearchPack at an EXISTING loaded research item, so they
+    # become buildable when the client status-writes that item. g2/g5 defaults share the researchable
+    # items above (ChainLink/Corrugated -> Glass_One_Way 10132, Brick_Red -> Gabion 10131); g1/g3 reuse
+    # NoneResearchable placeholder items (never rendered in the research UI -> no Collect/soft-couple):
+    "scenarioblueprint01": 1,                                # Hedge (g1)  -> ResearchPack 50002
+    "scenarioblueprint02": 3,                                # Glass, Wood_Logs (g3) -> ResearchPack 50003
+}
+BARRIER_BUILDABLE_STATUS = 3   # research status that makes a boundary buildable (location fires at 4)
+
+# Facilities (Research Centre, Workshop) are gated by the SAME fdb-hide (c0modularscenery rooms RS_Room_*/
+# WS_Room_4x4 + c0blueprints prebuilt blueprints), but the scenery/facility browser reveals at status 4 (NOT
+# 3 like the boundary editor - live-confirmed 2026-06-20). They reuse EXISTING NoneResearchable placeholder
+# items (creating NEW c0research items CRASHES on load - the placeholders' un-interned names were the crash);
+# the client status-writes the placeholder to 4 on the facility_unlock AP item. The placeholders are NOT AP
+# locations, so status-4 fires NO check. This REPLACES the PresenceGate for these two facilities.
+FACILITY_GATE_RESEARCH = {
+    "research_centre": "guestspawner",   # placeholder item 50000; gates RS_Room_4x4 + Research Centre blueprints
+    "workshop": "parkgate",              # placeholder item 50001; gates WS_Room_4x4 + Workshop blueprints
+}
+FACILITY_BUILDABLE_STATUS = 4
+PROGRESSIVE_ORDERED: Dict[str, list] = {}   # rs+0x148 ordered families (barriers use rs+0xF8 status instead)
+
+
+def _norm(s: str) -> str:
+    """lowercase, alnum-only - matches research._norm_token (the _mechanic_item_map key form)."""
+    return "".join(c for c in s.lower() if c.isalnum())
+
 
 class InternRegistry:
     """Read-only view of the global name<->id intern registry (DAT_14298AE00)."""
@@ -278,10 +322,41 @@ class RewardGranter:
             logger.info("[apply] research_reward %s granted (type %d)", content, typ)
         return ok
 
+    def _grant_next_locked(self, ordered_contents: list, family: str) -> bool:
+        """Flip the FIRST still-locked content in an explicit order. For progressive families whose
+        contents aren't a single unlock-map record type (barriers): each received level unlocks the
+        next grade. True if one flipped or all already unlocked; False if maps unreadable (retry)."""
+        reg = self._registry_index()
+        if reg is None:
+            return False
+        m = self._unlock_map()
+        if m is None:
+            return False
+        rs = self.research._research_system()
+        for content in ordered_contents:
+            cid = reg.lookup(content)
+            if cid is None:
+                continue
+            hit = m.find(cid)
+            if hit is None:
+                continue
+            rec, typ, flag = hit
+            if not flag:  # locked -> this is the next grade to unlock
+                ok = self._flip(rs, rec, cid, typ, 0)
+                if ok:
+                    logger.info("[apply] progressive_research_reward %s: unlocked %s (id 0x%X)",
+                                family, content, cid)
+                return ok
+        logger.info("progressive reward (%s): all grades unlocked - acknowledging", family)
+        return True
+
     def grant_progressive(self, family: str) -> bool:
-        """Grant the next (lowest content-id) still-locked reward of a family's record type.
-        Best-effort for the Progressive * Level items. True if one was flipped (or none left
-        to grant); False if the maps aren't readable (retry)."""
+        """Grant the next still-locked reward of a progressive family. Explicitly-ordered families
+        (barrier) unlock the next content in grade order; type-keyed families (supplement/breeding/
+        education/exhibit_enrichment) unlock the lowest content-id of the family's record type. True
+        if one was flipped (or none left to grant); False if the maps aren't readable (retry)."""
+        if family in PROGRESSIVE_ORDERED:
+            return self._grant_next_locked(PROGRESSIVE_ORDERED[family], family)
         typ = FAMILY_TYPE.get(family)
         if typ is None:
             logger.warning("progressive reward: unknown family %r", family)
@@ -300,3 +375,73 @@ class RewardGranter:
         if ok:
             logger.info("[apply] progressive_research_reward %s: granted content id 0x%X", family, cid)
         return ok
+
+    def reconcile_barriers(self, levels: int) -> bool:
+        """Make every RESEARCHABLE barrier of grade <= `levels` buildable, by status-writing its mechanic
+        research item (rs+0xF8) to BARRIER_BUILDABLE_STATUS (3). Buildability triggers at status >= 3 while
+        the barrier_N LOCATION fires only at status == 4 - so this unlocks BUILDING without firing the check
+        (live-confirmed 2026-06-20). Idempotent + restart-correct: the client drives this each tick from the
+        received Progressive-Barrier-Level count (so N grades are buildable after N levels). Returns True if
+        applied / nothing-to-do, False if the items map isn't readable yet (retry next tick).
+        NB the 6 DEFAULT barriers have no research item (always-shown) and are NOT handled here - they need
+        the c0habitatboundary.fdb research-tag edit first; grades 1 & 3 are defaults-only."""
+        try:
+            name_to_id = self.research._mechanic_item_map()   # {_norm(name) -> research-item id}, cached
+        except Exception as e:
+            logger.warning("barrier reconcile: mechanic item map unreadable (%s)", e)
+            return False
+        if not name_to_id:
+            return False  # registry/items-map not ready - retry
+        want = {}  # research-item id -> name, for grades <= levels
+        for name, grade in BARRIER_RESEARCH_GRADE.items():
+            if grade <= levels:
+                iid = name_to_id.get(_norm(name))
+                if iid is not None:
+                    want[iid] = name
+        if not want:
+            return True
+        try:
+            for item_id, _lvl, status, _cat, status_addr in self.research.scan_records():
+                if item_id in want and status < BARRIER_BUILDABLE_STATUS:
+                    self.scanner.write_bytes(status_addr, bytes([BARRIER_BUILDABLE_STATUS]))
+                    logger.info("[apply] progressive barrier (<= grade %d): %s buildable (item 0x%X, %d->%d)",
+                                levels, want[item_id], item_id, status, BARRIER_BUILDABLE_STATUS)
+        except Exception as e:
+            logger.warning("barrier reconcile: scan/write failed (%s)", e)
+            return False
+        return True
+
+    def reconcile_facilities(self, facility_keys) -> bool:
+        """Reveal the Research Centre / Workshop build items for received facility_unlock keys, by status-
+        writing their NoneResearchable placeholder research item (GuestSpawner/ParkGate) to
+        FACILITY_BUILDABLE_STATUS (4 - the scenery/facility browser reveals at 4, not 3). The placeholders
+        are NOT AP locations, so this fires no check. Idempotent + restart-correct: the client drives it each
+        tick from the received facility_unlock set. Returns True if applied/nothing-to-do, False if the items
+        map isn't readable yet (retry)."""
+        try:
+            name_to_id = self.research._mechanic_item_map()
+        except Exception as e:
+            logger.warning("facility reconcile: mechanic item map unreadable (%s)", e)
+            return False
+        if not name_to_id:
+            return False
+        want = {}  # placeholder item id -> facility key
+        for key in facility_keys:
+            name = FACILITY_GATE_RESEARCH.get(key)
+            if name is None:
+                continue
+            iid = name_to_id.get(_norm(name))
+            if iid is not None:
+                want[iid] = key
+        if not want:
+            return True
+        try:
+            for item_id, _lvl, status, _cat, status_addr in self.research.scan_records():
+                if item_id in want and status < FACILITY_BUILDABLE_STATUS:
+                    self.scanner.write_bytes(status_addr, bytes([FACILITY_BUILDABLE_STATUS]))
+                    logger.info("[apply] facility_unlock %s: revealed (placeholder item 0x%X, %d->%d)",
+                                want[item_id], item_id, status, FACILITY_BUILDABLE_STATUS)
+        except Exception as e:
+            logger.warning("facility reconcile: scan/write failed (%s)", e)
+            return False
+        return True

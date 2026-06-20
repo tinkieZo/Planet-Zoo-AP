@@ -7,11 +7,22 @@
 param([string]$ApSource, [string]$CobraSource, [switch]$SkipSelfTest)
 $ErrorActionPreference = 'Stop'
 $root = $PSScriptRoot
-$py = Join-Path $root '.venv\Scripts\pyinstaller.exe'
 $venvPy = Join-Path $root '.venv\Scripts\python.exe'
 
-if (-not (Test-Path $py)) {
-    Write-Error "PyInstaller not found at $py. Set up the venv first (see docs/PACKAGING.md)."
+if (-not (Test-Path $venvPy)) {
+    Write-Error "venv Python not found at $venvPy. Set up the venv first (see docs/PACKAGING.md)."
+    exit 1
+}
+# Verify PyInstaller is importable. We invoke it below as `python -m PyInstaller`, NOT via the
+# Scripts\pyinstaller.exe launcher: that launcher embeds an ABSOLUTE path to the venv's python.exe, so it
+# breaks if the venv/workspace is moved ("Fatal error in launcher: Unable to create process"). `python.exe`
+# itself relocates fine (it resolves its base interpreter via pyvenv.cfg), so `-m` survives a move.
+$prevEAP = $ErrorActionPreference; $ErrorActionPreference = 'Continue'
+& $venvPy -c "import PyInstaller" *> $null
+$pyiOk = ($LASTEXITCODE -eq 0)
+$ErrorActionPreference = $prevEAP
+if (-not $pyiOk) {
+    Write-Error "PyInstaller not installed in the venv. Fix: `"$venvPy`" -m pip install pyinstaller (see docs/PACKAGING.md)."
     exit 1
 }
 Write-Host ("Build venv: Python " + (& $venvPy -c "import sys; print('%d.%d.%d' % sys.version_info[:3])").Trim())
@@ -114,7 +125,7 @@ Push-Location $root
 $prevEAP = $ErrorActionPreference
 $ErrorActionPreference = 'Continue'
 try {
-    & $py --noconfirm --clean (Join-Path $root 'pz-ap-client.spec')
+    & $venvPy -m PyInstaller --noconfirm --clean (Join-Path $root 'pz-ap-client.spec')
     $code = $LASTEXITCODE
 } finally {
     $ErrorActionPreference = $prevEAP

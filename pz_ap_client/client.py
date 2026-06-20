@@ -399,8 +399,9 @@ class PZContext(CommonContext):
             self._reconcile_permits,    # keep the purchase gate = full received-permit set
             self._reconcile_conservation,  # keep the release gate = (conservation program received?)
             self._reconcile_facilities,    # keep the placement gate = full received-facility set
+            self._reconcile_barriers,      # keep barrier buildability = received Progressive Barrier count
             self._reconcile_research,      # keep the research gate = (research facilities received?)
-            self._reconcile_presence,      # keep the native greyed-button UX in sync
+            self._reconcile_facility_reveal,  # reveal RC/Workshop build items (fdb-hide) - REPLACES PresenceGate
             self._reconcile_terrain,       # keep the native terrain-tool greying = received tool set
             self._reconcile_market,        # keep the scenario market stocked = unlocked species only
         ):
@@ -652,6 +653,49 @@ class PZContext(CommonContext):
             self.facility_gate.reconcile(received)
         except Exception:
             logger.exception("facility reconcile failed")
+
+    def _reconcile_barriers(self) -> None:
+        """Drive barrier buildability from the COUNT of received Progressive Barrier Level items (= N):
+        status-write every RESEARCHABLE barrier of grade <= N to buildable (status 3). Buildability is
+        status >= 3 while the barrier_N research LOCATION fires only at == 4, so this never falsely fires
+        a check (live-confirmed). Idempotent + restart-correct, like the other reconciles. No-op if the
+        seed grants no Progressive Barrier Level. (The 6 default barriers need a c0habitatboundary.fdb
+        research-tag edit to be gateable - not handled yet.)"""
+        if self.reward_granter is None:
+            return
+        levels = 0
+        for net_item in self.items_received:
+            it = self.game_data.item_by_id.get(net_item.item)
+            if (it is not None and it.effect_type == "progressive_research_reward"
+                    and it.effect_args.get("family") == "barrier"):
+                levels += 1
+        if levels <= 0:
+            return
+        try:
+            self.reward_granter.reconcile_barriers(levels)
+        except Exception:
+            logger.exception("barrier reconcile failed")
+
+    def _reconcile_facility_reveal(self) -> None:
+        """Reveal the Research Centre / Workshop build items (hidden via the c0modularscenery/c0blueprints
+        fdb-hide) for received facility_unlock items - status-writes their NoneResearchable placeholder to 4
+        (rewards.reconcile_facilities). This REPLACES the PresenceGate (the build item is now hidden until the
+        AP item, not greyed). Idempotent + restart-correct, like the other reconciles."""
+        if self.reward_granter is None:
+            return
+        keys = set()
+        for net_item in self.items_received:
+            it = self.game_data.item_by_id.get(net_item.item)
+            if it is not None and it.effect_type == "facility_unlock":
+                k = it.effect_args.get("facility_key")
+                if k:
+                    keys.add(k)
+        if not keys:
+            return
+        try:
+            self.reward_granter.reconcile_facilities(keys)
+        except Exception:
+            logger.exception("facility reveal reconcile failed")
 
     def _reconcile_research(self) -> None:
         """Drive the research-start gate from the COMPLETE set of received research facilities

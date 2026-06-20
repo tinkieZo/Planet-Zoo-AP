@@ -37,6 +37,11 @@ installing Python or Archipelago.
   .\.venv\Scripts\python.exe -m pip install -r requirements-clientA.txt pyinstaller
   git clone --depth 1 https://github.com/ArchipelagoMW/Archipelago.git vendor/Archipelago
   ```
+  **A venv is NOT relocatable**, if you move or rename the workspace, the `Scripts\*.exe` launchers
+  (`pip.exe`, `pyinstaller.exe`) keep the *old* absolute python path baked in and fail with
+  `Fatal error in launcher: Unable to create process`. After moving, **recreate the venv** in place
+  (`py -3.13 -m venv .venv` + reinstall deps), or invoke tools as `.\.venv\Scripts\python.exe -m <tool>`
+  (which `build-exe.ps1` now does for PyInstaller, so the build itself survives a move).
 - **GUI + ovl-installer extras** (optional but expected for releases; `build-exe.ps1` warns
   about whichever is missing and the exe degrades gracefully without them):
   ```powershell
@@ -65,7 +70,7 @@ installing Python or Archipelago.
 ```
 or directly:
 ```powershell
-.\.venv\Scripts\pyinstaller.exe --noconfirm --clean pz-ap-client.spec
+.\.venv\Scripts\python.exe -m PyInstaller --noconfirm --clean pz-ap-client.spec
 ```
 Output: **`dist\pz-ap-client\`** (~85 MB) containing `pz-ap-client.exe` + `_internal\`.
 
@@ -91,7 +96,7 @@ client's runtime path are unchanged; only the build-time *source* moves:
 ```powershell
 .\build-exe.ps1 -ApSource D:\Archipelago
 # or, equivalently, set the env var the spec reads:
-$env:PZ_AP_SOURCE = 'D:\Archipelago'; .\.venv\Scripts\pyinstaller.exe --noconfirm --clean pz-ap-client.spec
+$env:PZ_AP_SOURCE = 'D:\Archipelago'; .\.venv\Scripts\python.exe -m PyInstaller --noconfirm --clean pz-ap-client.spec
 ```
 The source must be a real Archipelago tree (contain `CommonClient.py`) and version-compatible with the
 client. Note this only relocates the *build* source - inside the finished exe, AP always lives at

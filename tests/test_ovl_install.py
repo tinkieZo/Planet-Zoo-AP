@@ -377,6 +377,53 @@ def test_apply_content0_fdb_edits(tmp_path):
     assert ids == {1: "50000", 2: "12003, 50000", 3: "50001", 4: "777"}
 
 
+def test_child_inject_content0_stages_one_dir_and_uses_input(tmp_path):
+    """Regression (cross-drive crash on the build machine): the Content0 inject must stage the lua + edited
+    fdbs into ONE dir and pass --input, NEVER -f. cobra's -f path runs os.path.commonpath() over the files,
+    which raises 'Paths don't have the same drive' when the bundled lua (install drive) and the extracted
+    fdbs (%TEMP%, usually C:) span drives. Also verifies the gating is applied to the staged fdbs."""
+    import sqlite3
+    luaf = tmp_path / "scenarioscripts.scenarioscriptutils.lua"
+    luaf.write_text("-- script")
+    captured = {}
+
+    def write_vanilla_fdbs(out_dir):
+        out = Path(out_dir)
+        bd = sqlite3.connect(out / ovl.HABITAT_BOUNDARY_FDB)
+        bd.execute("CREATE TABLE Simulation (BoundaryType TEXT, ResearchPack INTEGER)")
+        bd.execute("INSERT INTO Simulation VALUES ('Hedge', 0)")
+        bd.commit(); bd.close()
+        ms = sqlite3.connect(out / ovl.MODULAR_SCENERY_FDB)
+        ms.execute("CREATE TABLE Simulation (SceneryPartName TEXT, ResearchItemID INTEGER)")
+        ms.execute("INSERT INTO Simulation VALUES ('RS_Room_4x4', 0)")
+        ms.commit(); ms.close()
+        bp = sqlite3.connect(out / ovl.BLUEPRINTS_FDB)
+        bp.execute("CREATE TABLE PrebuiltBlueprints "
+                   "(BlueprintID INTEGER PRIMARY KEY, Title TEXT, File TEXT, ResearchItemIDs TEXT)")
+        bp.execute("INSERT INTO PrebuiltBlueprints VALUES (1, 'Workshop A', 'w.bp', '')")
+        bp.commit(); bp.close()
+
+    class FakeCmd:
+        @staticmethod
+        def main(args):
+            if args[0] == "extract":
+                write_vanilla_fdbs(args[args.index("-o") + 1])
+            elif args[0] == "inject":
+                captured["args"] = list(args)
+                in_dir = Path(args[args.index("-i") + 1])
+                captured["staged"] = sorted(p.name for p in in_dir.iterdir())
+                bd = sqlite3.connect(in_dir / ovl.HABITAT_BOUNDARY_FDB)
+                captured["hedge"] = bd.execute(
+                    "SELECT ResearchPack FROM Simulation WHERE BoundaryType='Hedge'").fetchone()[0]
+                bd.close()
+
+    ovl._child_inject_content0(FakeCmd, [luaf], str(tmp_path / "base.ovl"), str(tmp_path / "out.ovl"))
+    assert "-i" in captured["args"] and "-f" not in captured["args"]   # --input, never -f (cross-drive safe)
+    assert set(captured["staged"]) == {luaf.name, ovl.HABITAT_BOUNDARY_FDB,
+                                       ovl.MODULAR_SCENERY_FDB, ovl.BLUEPRINTS_FDB}
+    assert captured["hedge"] == 50002   # gating applied to the staged fdb before inject
+
+
 def test_child_argv_dev_and_frozen(monkeypatch):
     argv = ovl._child_argv("inject", Path("C:/cobra"), Path("C:/src"), Path("C:/out.ovl"), Path("C:/base.ovl"))
     assert argv[:3] == [sys.executable, "-m", "pz_ap_client.ovl"]

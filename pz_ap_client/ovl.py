@@ -672,33 +672,35 @@ def _child_pack(ovl_tool_cmd, lua: List[Path], out: str) -> None:
 
 def _child_inject_content0(ovl_tool_cmd, lua: List[Path], base: str, out: str) -> None:
     """Content0 inject: the .lua shell modules PLUS the gated fdbs derived from the user's vanilla here, at
-    install (copyright-clean). Extract the vanilla fdbs from ``base``, edit in place, inject everything."""
+    install (copyright-clean). Extract the vanilla fdbs from ``base``, edit them, then inject everything from
+    ONE clean staging dir via --input (NOT -f). Why --input: cobra's -f path runs os.path.commonpath() over
+    the files to pick a relative-name root, which RAISES across drives - and the bundled .lua live on the
+    install drive while %TEMP% (the extracted fdbs) is usually C:. --input makes cobra use the staging dir as
+    the root (no commonpath), and a dir holding only our files (flat basenames) keeps strays out of the ovl."""
     import tempfile
-    fdb_dir = Path(tempfile.mkdtemp(prefix="pzap_fdb_"))
-    ex = ["extract", "-g", COBRA_GAME_LABEL]
-    for name in CONTENT0_FDBS:
-        ex += ["--name", name]
-    ex += ["-o", str(fdb_dir), base]
-    ovl_tool_cmd.main(ex)
-    edited = {}
-    for name in CONTENT0_FDBS:
-        hits = list(fdb_dir.rglob(name))
-        if not hits:
-            raise SystemExit(f"cobra extract did not produce {name} - cannot apply AP gating")
-        edited[name] = hits[0]
-    _apply_content0_fdb_edits(edited[HABITAT_BOUNDARY_FDB].parent)
-    args = ["inject", "-g", COBRA_GAME_LABEL, "-o", out, base]
-    for f in lua:
-        args += ["-f", str(f)]
-    for name in CONTENT0_FDBS:
-        args += ["-f", str(edited[name])]
-    ovl_tool_cmd.main(args)
+    with tempfile.TemporaryDirectory(prefix="pzap_extract_") as ex_tmp, \
+            tempfile.TemporaryDirectory(prefix="pzap_inject_") as stage_tmp:
+        ex_dir, stage = Path(ex_tmp), Path(stage_tmp)
+        ex = ["extract", "-g", COBRA_GAME_LABEL]
+        for name in CONTENT0_FDBS:
+            ex += ["--name", name]
+        ex += ["-o", str(ex_dir), base]
+        ovl_tool_cmd.main(ex)
+        for name in CONTENT0_FDBS:
+            hits = list(ex_dir.rglob(name))
+            if not hits:
+                raise SystemExit(f"cobra extract did not produce {name} - cannot apply AP gating")
+            shutil.copyfile(hits[0], stage / name)   # flatten into the staging dir
+        _apply_content0_fdb_edits(stage)
+        for f in lua:
+            shutil.copyfile(f, stage / f.name)
+        ovl_tool_cmd.main(["inject", "-g", COBRA_GAME_LABEL, "-i", str(stage), "-o", out, base])
 
 
 def _inject_child_main(argv: List[str]) -> int:
     """Child-process entry: bootstrap the vendored cobra-tools and run one op (new / inject / gamemain).
-    Isolated in its own process so a cobra crash can't take the client down. Passes the .lua modules
-    explicitly (not --input <dir>) so stray files (READMEs etc.) can never reach an ovl."""
+    Isolated in its own process so a cobra crash can't take the client down. new/inject stage only the
+    intended files into a clean temp dir and pass it as --input, so stray files can never reach an ovl."""
     op, cobra, src, out = argv[:4]
     base = argv[4] if len(argv) > 4 else None
     # Resolve before the chdir below - callers may pass relative paths.

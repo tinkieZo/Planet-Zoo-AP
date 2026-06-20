@@ -19,6 +19,8 @@ from pz_ap_client import ovl  # noqa: E402
 VANILLA = b"VANILLA-OVL-CONTENT" * 16
 PATCHED = b"PATCHED-OVL-CONTENT" * 16
 PACK = b"PACK-OVL"
+GM_VANILLA = b"GAMEMAIN-VANILLA-OVL" * 16
+GM_PATCHED = b"GAMEMAIN-PATCHED-OVL" * 16
 
 
 LOC = b"LOC-OVL"
@@ -27,8 +29,8 @@ LOC_LEAFS = (Path("English") / "UnitedKingdom", Path("German") / "Germany")
 
 @pytest.fixture
 def game(tmp_path, monkeypatch):
-    """A fake Planet Zoo install with a vanilla Main.ovl + Content0 localisation
-    leafs; game not running."""
+    """A fake Planet Zoo install with a vanilla Content0 Main.ovl (+ localisation
+    leafs) and a vanilla GameMain Main.ovl; game not running."""
     game_dir = tmp_path / "Planet Zoo"
     ovl_path = game_dir / ovl.OVL_REL_PATH
     ovl_path.parent.mkdir(parents=True)
@@ -37,6 +39,9 @@ def game(tmp_path, monkeypatch):
         d = ovl_path.parent / "Localised" / leaf
         d.mkdir(parents=True)
         (d / "Loc.ovl").write_bytes(b"vanilla loc")
+    gm = game_dir / ovl.GAMEMAIN_REL_PATH
+    gm.parent.mkdir(parents=True)
+    gm.write_bytes(GM_VANILLA)
     monkeypatch.setattr(ovl, "game_running", lambda: False)
     return game_dir
 
@@ -54,6 +59,16 @@ def fake_build_loc(out: Path, log) -> None:
     out.write_bytes(LOC)
 
 
+def fake_build_gm(base: Path, out: Path, log) -> None:
+    assert base.read_bytes() == GM_VANILLA, "GameMain build must start from the vanilla backup"
+    out.write_bytes(GM_PATCHED)
+
+
+def gamemain_paths(game_dir):
+    gm = game_dir / ovl.GAMEMAIN_REL_PATH
+    return gm, gm.with_name(gm.name + ovl.BACKUP_SUFFIX)
+
+
 def paths(game_dir):
     return ovl._paths(game_dir)
 
@@ -63,6 +78,7 @@ def install(game_dir, **kw):
     kw.setdefault("build", fake_build)
     kw.setdefault("build_pack", fake_build_pack)
     kw.setdefault("build_loc", fake_build_loc)
+    kw.setdefault("build_gm", fake_build_gm)
     return ovl.install(game_dir, **kw)
 
 
@@ -217,10 +233,15 @@ def test_install_from_vanilla(game):
     # The loc ovl is mirrored into every language leaf Content0 ships.
     for leaf in LOC_LEAFS:
         assert (pack_dir / "Localised" / leaf / "Loc.ovl").read_bytes() == LOC
+    # GameMain is patched (mechanic-research rename) + its own vanilla backup kept.
+    gm, gm_backup = gamemain_paths(game)
+    assert gm.read_bytes() == GM_PATCHED
+    assert gm_backup.read_bytes() == GM_VANILLA
     stamp = json.loads(stamp_path.read_text())
     assert stamp["vanilla_sha256"] == ovl.hashlib.sha256(VANILLA).hexdigest()
     assert stamp["patched_sha256"] == ovl.hashlib.sha256(PATCHED).hexdigest()
     assert stamp["pack_sha256"] == ovl.hashlib.sha256(PACK).hexdigest()
+    assert stamp["gamemain_sha256"] == ovl.hashlib.sha256(GM_PATCHED).hexdigest()
     assert stamp["src_digest"] == ovl.src_digest()
 
 
@@ -265,13 +286,41 @@ def test_restore_round_trip(game):
     install(game)
     st = ovl.restore(game, log=lambda m: None)
     ovl_path, backup, stamp_path = paths(game)
+    gm, gm_backup = gamemain_paths(game)
     assert st.state == "vanilla"
     assert ovl_path.read_bytes() == VANILLA
+    assert gm.read_bytes() == GM_VANILLA   # GameMain reverted too
     assert backup.exists()          # kept, so install can run again
+    assert gm_backup.exists()
     assert not stamp_path.exists()
     assert not (game / ovl.PACK_REL_DIR).exists()
     # And the cycle works again.
     assert install(game).state == "installed"
+
+
+def test_gamemain_reinstall_builds_from_backup_not_live(game):
+    install(game)
+    # Stale + reinstall: the base passed to the GameMain build must be the VANILLA
+    # backup (fake_build_gm asserts it), never the live patched GameMain.
+    _, _, stamp_path = paths(game)
+    stamp = json.loads(stamp_path.read_text())
+    stamp["src_digest"] = "0" * 64
+    stamp_path.write_text(json.dumps(stamp), encoding="utf-8")
+    gm, _ = gamemain_paths(game)
+    assert gm.read_bytes() == GM_PATCHED      # currently patched (ours)
+    assert install(game).state == "installed"  # would raise in fake_build_gm if it built from the live file
+
+
+def test_gamemain_missing_backup_when_installed_errors(game):
+    install(game)
+    _, gm_backup = gamemain_paths(game)
+    gm_backup.unlink()
+    _, _, stamp_path = paths(game)
+    stamp = json.loads(stamp_path.read_text())
+    stamp["src_digest"] = "0" * 64           # force a reinstall path
+    stamp_path.write_text(json.dumps(stamp), encoding="utf-8")
+    with pytest.raises(ovl.OvlInstallError, match="GameMain vanilla backup is missing"):
+        install(game)
 
 
 def test_restore_without_backup_errors(game):
@@ -282,6 +331,51 @@ def test_restore_without_backup_errors(game):
 # ---------------------------------------------------------------------------
 # cobra child plumbing
 # ---------------------------------------------------------------------------
+
+def test_apply_content0_fdb_edits(tmp_path):
+    """The data-layer gating (derived from vanilla at install): default barriers re-pointed at locked items,
+    RC/Workshop rooms + prebuilt blueprints gated on placeholders, everything else left untouched."""
+    import sqlite3
+    d = tmp_path / "fdb"
+    d.mkdir()
+    bd = sqlite3.connect(d / ovl.HABITAT_BOUNDARY_FDB)
+    bd.execute("CREATE TABLE Simulation (BoundaryType TEXT, ResearchPack INTEGER)")
+    for bt in ("Hedge", "ChainLink", "Corrugated", "Glass", "Wood_Logs", "Brick_Red", "OneWayGlass"):
+        bd.execute("INSERT INTO Simulation VALUES (?, 0)", (bt,))
+    bd.commit(); bd.close()
+    ms = sqlite3.connect(d / ovl.MODULAR_SCENERY_FDB)
+    ms.execute("CREATE TABLE Simulation (SceneryPartName TEXT, ResearchItemID INTEGER)")
+    for p in ("RS_Room_4x4", "WS_Room_4x4", "RS_Room_8x8"):
+        ms.execute("INSERT INTO Simulation VALUES (?, 0)", (p,))
+    ms.commit(); ms.close()
+    bp = sqlite3.connect(d / ovl.BLUEPRINTS_FDB)
+    bp.execute("CREATE TABLE PrebuiltBlueprints "
+               "(BlueprintID INTEGER PRIMARY KEY, Title TEXT, File TEXT, ResearchItemIDs TEXT)")
+    bp.executemany("INSERT INTO PrebuiltBlueprints VALUES (?,?,?,?)", [
+        (1, "Small Research_Centre", "rc.bp", ""),
+        (2, "Themed RC", "research_centre_x.bp", "12003"),   # keeps its theme gate
+        (3, "Workshop A", "workshop.bp", ""),
+        (4, "Other Building", "other.bp", "777"),            # unrelated
+    ])
+    bp.commit(); bp.close()
+
+    ovl._apply_content0_fdb_edits(d, log=lambda m: None)
+
+    bd = sqlite3.connect(d / ovl.HABITAT_BOUNDARY_FDB)
+    packs = dict(bd.execute("SELECT BoundaryType, ResearchPack FROM Simulation").fetchall())
+    bd.close()
+    assert packs == {"Hedge": 50002, "ChainLink": 10132, "Corrugated": 10132,
+                     "Glass": 50003, "Wood_Logs": 50003, "Brick_Red": 10131,
+                     "OneWayGlass": 0}  # researchable barrier - left alone
+    ms = sqlite3.connect(d / ovl.MODULAR_SCENERY_FDB)
+    rooms = dict(ms.execute("SELECT SceneryPartName, ResearchItemID FROM Simulation").fetchall())
+    ms.close()
+    assert rooms == {"RS_Room_4x4": 50000, "WS_Room_4x4": 50001, "RS_Room_8x8": 0}
+    bp = sqlite3.connect(d / ovl.BLUEPRINTS_FDB)
+    ids = dict(bp.execute("SELECT BlueprintID, ResearchItemIDs FROM PrebuiltBlueprints").fetchall())
+    bp.close()
+    assert ids == {1: "50000", 2: "12003, 50000", 3: "50001", 4: "777"}
+
 
 def test_child_argv_dev_and_frozen(monkeypatch):
     argv = ovl._child_argv("inject", Path("C:/cobra"), Path("C:/src"), Path("C:/out.ovl"), Path("C:/base.ovl"))

@@ -76,7 +76,14 @@ Write-Host "Bundling Archipelago from: $env:PZ_AP_SOURCE"
 # $env:PZ_COBRA_SOURCE > a cobra-tools-master checkout next to the repo. If none is found we
 # auto-clone it (same self-vendoring as the Archipelago tree) so a build on a fresh machine is
 # never silently shipped WITHOUT /pz_install (that was the "cobra tools not found" failure).
+$cobraStage = Join-Path $root 'vendor\cobra-tools'
 if (-not $CobraSource) { $CobraSource = $env:PZ_COBRA_SOURCE }
+# A prior build in THIS shell sets $env:PZ_COBRA_SOURCE to the STAGE dir (so the PyInstaller child can locate
+# cobra). Re-reading it as the SOURCE on the next build makes source==destination - and the Remove-Item below
+# nukes the stage dir before robocopy runs, so robocopy finds no source (exit 16). Ignore the stale value when
+# it points at the stage dir and fall back to a real checkout. (This was the "every other build crashes, retry
+# works" nuisance: the failed build deletes the stage, forcing the next build to re-clone.)
+if ($CobraSource -and ($CobraSource.TrimEnd('\', '/') -ieq $cobraStage.TrimEnd('\', '/'))) { $CobraSource = $null }
 if (-not $CobraSource) { $CobraSource = Join-Path (Split-Path $root -Parent) 'cobra-tools-master' }
 if (-not (Test-Path (Join-Path $CobraSource 'ovl_tool_cmd.py'))) {
     $autoClone = Join-Path (Split-Path $root -Parent) 'cobra-tools-master'
@@ -91,7 +98,6 @@ if (-not (Test-Path (Join-Path $CobraSource 'ovl_tool_cmd.py'))) {
         Write-Warning "git not found - cannot fetch cobra-tools; building WITHOUT the ovl installer (/pz_install)."
     }
 }
-$cobraStage = Join-Path $root 'vendor\cobra-tools'
 if (Test-Path (Join-Path $CobraSource 'ovl_tool_cmd.py')) {
     Write-Host "Staging cobra-tools from: $CobraSource"
     if (Test-Path $cobraStage) { Remove-Item -Recurse -Force $cobraStage }

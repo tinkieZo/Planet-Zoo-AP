@@ -50,29 +50,31 @@ FAMILY_TYPE = {"supplement": 0, "breeding": 2, "education": 3, "exhibit_enrichme
 # only at status == 4. So the Progressive Barrier item makes grade<=N barriers buildable by status-
 # writing their research item to 3 - WITHOUT falsely firing the location check. Driven by
 # reconcile_barriers(N) from the received-level count each tick (client._reconcile_barriers), NOT
-# grant_progressive (which is for rs+0x148 type-keyed families). Grade = c0habitatboundary.fdb
-# RelativeResistance tier (0.02->1, 0.2->2, 0.333->3, 0.5->4, 1.0->5/6; Electric special->6). Map is
-# the 6 RESEARCHABLE boundaries' research-item NAME -> grade; the 6 DEFAULT boundaries (Hedge/ChainLink/
-# Corrugated/Glass/Wood_Logs/Brick_Red) have NO research item and need a c0habitatboundary.fdb tag edit
-# to become gateable - NOT handled here yet (grades 1 & 3 are defaults-only).
-BARRIER_RESEARCH_GRADE = {
-    "barriersonewayglass": 2,                                # Glass_One_Way (+ default ChainLink, Corrugated)
-    "barrierschainsteelposts": 4, "barriersthickglass": 4,   # Steel_Mesh, Thick_Glass
-    "barriersrebarstonecages": 5,                            # Gabion (+ default Brick_Red)
-    "barriersconcrete": 6, "barrierselectric": 6,            # Concrete, Electric
-    # DEFAULT-only grades (1 & 3 have no researchable barrier): the 6 always-shown defaults get gated by
-    # re-pointing their c0habitatboundary.fdb ResearchPack at an EXISTING loaded research item, so they
-    # become buildable when the client status-writes that item. g2/g5 defaults share the researchable
-    # items above (ChainLink/Corrugated -> Glass_One_Way 10132, Brick_Red -> Gabion 10131); g1/g3 reuse
-    # NoneResearchable placeholder items (never rendered in the research UI -> no Collect/soft-couple):
-    "scenarioblueprint01": 1,                                # Hedge (g1)  -> ResearchPack 50002
-    "scenarioblueprint02": 3,                                # Glass, Wood_Logs (g3) -> ResearchPack 50003
+# grant_progressive (which is for rs+0x148 type-keyed families). A Progressive Barrier Level makes all
+# barriers of grade <= N buildable. FULL DECOUPLE (2026-06-21): every barrier's c0habitatboundary.fdb
+# ResearchPack is re-pointed onto a NON-location NoneResearchable GATE, and the client status-writes the gate
+# to 4 (buildable). The 6 real barrier research items (10126/10132/13002/10131/13001/13003) are no longer
+# boundary gates -> the client never touches them -> they stay as the barrier_N AP locations the player
+# researches (build and check fully separate, no false fire). Grade = c0habitatboundary RelativeResistance
+# tier. Gates: grades 1/3 reuse placeholders ScenarioBlueprint01/02 (50002/50003); grades 2/4/5/6 use minted
+# gates ApBarrierGate2/4/5/6 (50004-50007 - the proven new-item recipe: c0research row + GameMain
+# default_off_noneresearchable topology entry). The fdb re-point + gate minting are applied at /pz_install.
+BARRIER_GRADE_GATE = {
+    1: "scenarioblueprint01",   # 50002 -> Hedge
+    2: "apbarriergate2",        # 50004 -> Glass_One_Way + ChainLink + Corrugated
+    3: "scenarioblueprint02",   # 50003 -> Glass + Wood_Logs
+    4: "apbarriergate4",        # 50005 -> Steel_Mesh + Thick_Glass
+    5: "apbarriergate5",        # 50006 -> Gabion + Brick_Red
+    6: "apbarriergate6",        # 50007 -> Concrete + Electric
 }
-BARRIER_BUILDABLE_STATUS = 3   # research status that makes a boundary buildable (location fires at 4)
+BARRIER_MAX_GRADE = 6
+BARRIER_BUILDABLE_STATUS = 4   # a boundary is buildable when its GATE research item is status 4 (live-confirmed).
+                               # Gates are NoneResearchable (never rendered, NOT AP locations) -> status-4 fires
+                               # NO check. That's the build/check decouple.
 
 # Facilities (Research Centre, Workshop) are gated by the SAME fdb-hide (c0modularscenery rooms RS_Room_*/
-# WS_Room_4x4 + c0blueprints prebuilt blueprints), but the scenery/facility browser reveals at status 4 (NOT
-# 3 like the boundary editor - live-confirmed 2026-06-20). They reuse EXISTING NoneResearchable placeholder
+# WS_Room_4x4 + c0blueprints prebuilt blueprints), revealed at status 4 (the boundary editor uses the
+# SAME threshold - both 4, live-confirmed 2026-06-21). They reuse EXISTING NoneResearchable placeholder
 # items (creating NEW c0research items CRASHES on load - the placeholders' un-interned names were the crash);
 # the client status-writes the placeholder to 4 on the facility_unlock AP item. The placeholders are NOT AP
 # locations, so status-4 fires NO check. This REPLACES the PresenceGate for these two facilities.
@@ -87,6 +89,24 @@ PROGRESSIVE_ORDERED: Dict[str, list] = {}   # rs+0x148 ordered families (barrier
 def _norm(s: str) -> str:
     """lowercase, alnum-only - matches research._norm_token (the _mechanic_item_map key form)."""
     return "".join(c for c in s.lower() if c.isalnum())
+
+
+# Mechanic-research CONTENT (shops/themes/blueprints/transport/staff facilities/power) unlocks like barriers:
+# at /pz_install each content's research gate (c0modularscenery.ResearchItemID / c0trackedrides.ResearchPack /
+# c0blueprints.ResearchItemIDs) is re-pointed onto a minted NoneResearchable gate named "ApGate<Content>"; the
+# client status-writes that gate to 4. The real research item stays the player-researched location (no false
+# check). Content is "mechanic" if its normalized name contains a keyword below; its gate resolves by name
+# "apgate" + _norm(content). (ANIMAL research_reward content - EN_*/supplement/etc. - is NOT mechanic; it
+# unlocks via the rs+0x148 flag flip in grant(), already decoupled.)
+MECH_CONTENT_KEYWORDS = ("foodshops", "drinkshops", "souvenirshops", "themesets", "habitats", "shelters",
+                         "stafffacilities", "transport", "power")
+
+
+def is_mechanic_content(content: str) -> bool:
+    """True for mechanic-research build content (gated via a re-pointed ApGate<Content>), False for animal
+    rewards (rs+0x148)."""
+    n = _norm(content)
+    return any(k in n for k in MECH_CONTENT_KEYWORDS)
 
 
 class InternRegistry:
@@ -377,14 +397,13 @@ class RewardGranter:
         return ok
 
     def reconcile_barriers(self, levels: int) -> bool:
-        """Make every RESEARCHABLE barrier of grade <= `levels` buildable, by status-writing its mechanic
-        research item (rs+0xF8) to BARRIER_BUILDABLE_STATUS (3). Buildability triggers at status >= 3 while
-        the barrier_N LOCATION fires only at status == 4 - so this unlocks BUILDING without firing the check
-        (live-confirmed 2026-06-20). Idempotent + restart-correct: the client drives this each tick from the
-        received Progressive-Barrier-Level count (so N grades are buildable after N levels). Returns True if
-        applied / nothing-to-do, False if the items map isn't readable yet (retry next tick).
-        NB the 6 DEFAULT barriers have no research item (always-shown) and are NOT handled here - they need
-        the c0habitatboundary.fdb research-tag edit first; grades 1 & 3 are defaults-only."""
+        """Make every barrier of grade <= `levels` buildable by status-writing each grade's GATE (a
+        NoneResearchable item from BARRIER_GRADE_GATE, NOT an AP location) to BARRIER_BUILDABLE_STATUS (4).
+        The 6 real barrier research items stay untouched (they remain the barrier_N locations the player
+        researches), so this NEVER fires a barrier check - build and check are decoupled (the c0habitatboundary
+        re-point + gate minting are applied at /pz_install). Idempotent + restart-correct: driven each tick
+        from the received Progressive-Barrier-Level count. Returns True if applied/nothing-to-do, False if the
+        items map isn't readable yet (retry next tick)."""
         try:
             name_to_id = self.research._mechanic_item_map()   # {_norm(name) -> research-item id}, cached
         except Exception as e:
@@ -392,20 +411,21 @@ class RewardGranter:
             return False
         if not name_to_id:
             return False  # registry/items-map not ready - retry
-        want = {}  # research-item id -> name, for grades <= levels
-        for name, grade in BARRIER_RESEARCH_GRADE.items():
-            if grade <= levels:
-                iid = name_to_id.get(_norm(name))
-                if iid is not None:
-                    want[iid] = name
+        want = {}  # gate item id -> (grade, gate_name), for grades <= levels
+        for grade in range(1, min(levels, BARRIER_MAX_GRADE) + 1):
+            gate = BARRIER_GRADE_GATE.get(grade)
+            iid = name_to_id.get(_norm(gate)) if gate else None
+            if iid is not None:
+                want[iid] = (grade, gate)
         if not want:
             return True
         try:
             for item_id, _lvl, status, _cat, status_addr in self.research.scan_records():
                 if item_id in want and status < BARRIER_BUILDABLE_STATUS:
+                    grade, gate = want[item_id]
                     self.scanner.write_bytes(status_addr, bytes([BARRIER_BUILDABLE_STATUS]))
-                    logger.info("[apply] progressive barrier (<= grade %d): %s buildable (item 0x%X, %d->%d)",
-                                levels, want[item_id], item_id, status, BARRIER_BUILDABLE_STATUS)
+                    logger.info("[apply] progressive barrier grade %d: gate %s buildable (item 0x%X, %d->%d)",
+                                grade, gate, item_id, status, BARRIER_BUILDABLE_STATUS)
         except Exception as e:
             logger.warning("barrier reconcile: scan/write failed (%s)", e)
             return False
@@ -443,5 +463,39 @@ class RewardGranter:
                                 want[item_id], item_id, status, FACILITY_BUILDABLE_STATUS)
         except Exception as e:
             logger.warning("facility reconcile: scan/write failed (%s)", e)
+            return False
+        return True
+
+    def reconcile_mechanic(self, contents) -> bool:
+        """Make each received MECHANIC research_reward content (shops/themes/blueprints/transport/staff/power)
+        buildable by status-writing its gate ("ApGate<Content>", a NoneResearchable item re-pointed at
+        /pz_install) to FACILITY_BUILDABLE_STATUS (4). The real research item stays the player-research
+        location -> no false check (same decouple as barriers). Animal content is skipped (handled by
+        grant()/rs+0x148). Driven each tick from the received research_reward set. Returns True if applied/
+        nothing-to-do, False if the items map isn't readable yet (retry)."""
+        try:
+            name_to_id = self.research._mechanic_item_map()
+        except Exception as e:
+            logger.warning("mechanic reconcile: mechanic item map unreadable (%s)", e)
+            return False
+        if not name_to_id:
+            return False
+        want = {}  # gate item id -> content
+        for content in contents:
+            if not is_mechanic_content(content):
+                continue
+            iid = name_to_id.get("apgate" + _norm(content))
+            if iid is not None:
+                want[iid] = content
+        if not want:
+            return True
+        try:
+            for item_id, _lvl, status, _cat, status_addr in self.research.scan_records():
+                if item_id in want and status < FACILITY_BUILDABLE_STATUS:
+                    self.scanner.write_bytes(status_addr, bytes([FACILITY_BUILDABLE_STATUS]))
+                    logger.info("[apply] mechanic content %s: gate buildable (item 0x%X, %d->%d)",
+                                want[item_id], item_id, status, FACILITY_BUILDABLE_STATUS)
+        except Exception as e:
+            logger.warning("mechanic reconcile: scan/write failed (%s)", e)
             return False
         return True

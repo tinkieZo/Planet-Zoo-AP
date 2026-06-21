@@ -181,7 +181,13 @@ class MemoryEffectApplier(EffectApplier):
         if self.reward_granter is None:
             logger.warning("research_reward %r: no RewardGranter wired - cannot apply", content)
             return False
-        return self.reward_granter.grant(content)
+        from .rewards import is_mechanic_content
+        if is_mechanic_content(content):
+            # MECHANIC content (shops/themes/blueprints/transport/staff/power) unlocks via its re-pointed gate,
+            # reconciled each tick (client._reconcile_mechanic_content -> reward_granter.reconcile_mechanic),
+            # like barriers/facilities. Acknowledge so the high-water mark advances; the tick does the write.
+            return True
+        return self.reward_granter.grant(content)  # ANIMAL content -> rs+0x148 flag flip
 
     def on_progressive_research_reward(self, item: "Item") -> bool:
         """Grant the next tier of a progressive reward family (supplement/education/breeding/

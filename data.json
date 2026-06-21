@@ -81,7 +81,7 @@
     {
       "key": "blemur",
       "name": "Black a White Ruffed Lemur",
-      "engine_token": "blackawhiteruffedlemur",
+      "engine_token": "blackwhiteruffedlemur",
       "gate": "permit_blemur"
     },
     {

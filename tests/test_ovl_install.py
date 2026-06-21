@@ -333,48 +333,84 @@ def test_restore_without_backup_errors(game):
 # ---------------------------------------------------------------------------
 
 def test_apply_content0_fdb_edits(tmp_path):
-    """The data-layer gating (derived from vanilla at install): default barriers re-pointed at locked items,
-    RC/Workshop rooms + prebuilt blueprints gated on placeholders, everything else left untouched."""
+    """Full-decouple gating: mint the gate rows in c0research; re-point all 12 barriers (by BoundaryType) +
+    every mechanic content (by research-item id) onto its gate across c0modularscenery/c0trackedrides/
+    c0blueprints; keep the basic RC/Workshop facility gating; leave unrelated research items alone."""
     import sqlite3
-    d = tmp_path / "fdb"
-    d.mkdir()
+    d = tmp_path / "fdb"; d.mkdir()
+    gate_id = {c: gid for c, (_n, gid) in zip(ovl._mechanic_content_names(), ovl._content_gates())}
+    SAMPLE = {"FoodShopsPizzaPen": 9001, "AfricaThemeSetsBlueprintsL1": 9002, "TransportSteamTrainStation": 9003}
+    for c in SAMPLE:
+        assert c in gate_id, f"{c} not in data.json mechanic content - update the sample"
+
+    cr = sqlite3.connect(d / ovl.RESEARCH_FDB)
+    cr.execute("CREATE TABLE ResearchItemData (ResearchItem TEXT, ResearchItemID INTEGER, ResearchCategory TEXT,"
+               " HoursToComplete REAL, Icon, MechanicItemIcon)")
+    for n, i in (("GuestSpawner", 50000), ("ParkGate", 50001), ("ScenarioBlueprint01", 50002),
+                 ("ScenarioBlueprint02", 50003)):
+        cr.execute("INSERT INTO ResearchItemData VALUES (?,?,?,?,?,?)", (n, i, "NoneResearchable", 1.0, None, None))
+    for c, i in SAMPLE.items():
+        cr.execute("INSERT INTO ResearchItemData VALUES (?,?,?,?,?,?)", (c, i, "Mechanic", 1.0, None, None))
+    cr.commit(); cr.close()
     bd = sqlite3.connect(d / ovl.HABITAT_BOUNDARY_FDB)
     bd.execute("CREATE TABLE Simulation (BoundaryType TEXT, ResearchPack INTEGER)")
-    for bt in ("Hedge", "ChainLink", "Corrugated", "Glass", "Wood_Logs", "Brick_Red", "OneWayGlass"):
+    for bt in ("Hedge", "Glass_One_Way", "Concrete", "Null"):
         bd.execute("INSERT INTO Simulation VALUES (?, 0)", (bt,))
     bd.commit(); bd.close()
     ms = sqlite3.connect(d / ovl.MODULAR_SCENERY_FDB)
-    ms.execute("CREATE TABLE Simulation (SceneryPartName TEXT, ResearchItemID INTEGER)")
-    for p in ("RS_Room_4x4", "WS_Room_4x4", "RS_Room_8x8"):
-        ms.execute("INSERT INTO Simulation VALUES (?, 0)", (p,))
+    ms.execute("CREATE TABLE Simulation (SceneryPartName TEXT, ResearchItemID INTEGER, ResearchPackID INTEGER)")
+    ms.executemany("INSERT INTO Simulation VALUES (?,?,?)", [
+        ("PizzaPenShop", 9001, 0), ("RS_Room_4x4", 0, 0), ("WS_Room_4x4", 0, 0), ("Untouched", 8888, 0)])
     ms.commit(); ms.close()
+    tr = sqlite3.connect(d / ovl.TRACKEDRIDES_FDB)
+    tr.execute("CREATE TABLE Simulation (RideType TEXT, ResearchPack INTEGER)")
+    tr.execute("INSERT INTO Simulation VALUES ('SteamTrain', 9003)")
+    tr.commit(); tr.close()
     bp = sqlite3.connect(d / ovl.BLUEPRINTS_FDB)
     bp.execute("CREATE TABLE PrebuiltBlueprints "
                "(BlueprintID INTEGER PRIMARY KEY, Title TEXT, File TEXT, ResearchItemIDs TEXT)")
     bp.executemany("INSERT INTO PrebuiltBlueprints VALUES (?,?,?,?)", [
-        (1, "Small Research_Centre", "rc.bp", ""),
-        (2, "Themed RC", "research_centre_x.bp", "12003"),   # keeps its theme gate
-        (3, "Workshop A", "workshop.bp", ""),
-        (4, "Other Building", "other.bp", "777"),            # unrelated
-    ])
+        (1, "Africa Set", "africa.bp", "9002"), (2, "Small Research_Centre", "rc.bp", ""), (3, "Other", "o.bp", "777")])
     bp.commit(); bp.close()
 
     ovl._apply_content0_fdb_edits(d, log=lambda m: None)
 
+    cr = sqlite3.connect(d / ovl.RESEARCH_FDB)
+    minted = dict(cr.execute("SELECT ResearchItem, ResearchItemID FROM ResearchItemData "
+                             "WHERE ResearchItem LIKE 'ApGate%' OR ResearchItem LIKE 'ApBarrierGate%'").fetchall())
+    cr.close()
+    assert minted.get("ApBarrierGate2") == 50004
+    assert minted.get("ApGateFoodShopsPizzaPen") == gate_id["FoodShopsPizzaPen"]
     bd = sqlite3.connect(d / ovl.HABITAT_BOUNDARY_FDB)
-    packs = dict(bd.execute("SELECT BoundaryType, ResearchPack FROM Simulation").fetchall())
-    bd.close()
-    assert packs == {"Hedge": 50002, "ChainLink": 10132, "Corrugated": 10132,
-                     "Glass": 50003, "Wood_Logs": 50003, "Brick_Red": 10131,
-                     "OneWayGlass": 0}  # researchable barrier - left alone
+    packs = dict(bd.execute("SELECT BoundaryType, ResearchPack FROM Simulation").fetchall()); bd.close()
+    assert packs == {"Hedge": 50002, "Glass_One_Way": 50004, "Concrete": 50007, "Null": 0}  # Null ungated
     ms = sqlite3.connect(d / ovl.MODULAR_SCENERY_FDB)
-    rooms = dict(ms.execute("SELECT SceneryPartName, ResearchItemID FROM Simulation").fetchall())
-    ms.close()
-    assert rooms == {"RS_Room_4x4": 50000, "WS_Room_4x4": 50001, "RS_Room_8x8": 0}
+    rows = dict(ms.execute("SELECT SceneryPartName, ResearchItemID FROM Simulation").fetchall()); ms.close()
+    assert rows["PizzaPenShop"] == gate_id["FoodShopsPizzaPen"]   # content 9001 re-pointed -> gate
+    assert rows["RS_Room_4x4"] == 50000 and rows["WS_Room_4x4"] == 50001  # facility rooms
+    assert rows["Untouched"] == 8888   # unrelated research item left alone
+    tr = sqlite3.connect(d / ovl.TRACKEDRIDES_FDB)
+    assert tr.execute("SELECT ResearchPack FROM Simulation").fetchone()[0] == gate_id["TransportSteamTrainStation"]
+    tr.close()
     bp = sqlite3.connect(d / ovl.BLUEPRINTS_FDB)
-    ids = dict(bp.execute("SELECT BlueprintID, ResearchItemIDs FROM PrebuiltBlueprints").fetchall())
-    bp.close()
-    assert ids == {1: "50000", 2: "12003, 50000", 3: "50001", 4: "777"}
+    ids = dict(bp.execute("SELECT BlueprintID, ResearchItemIDs FROM PrebuiltBlueprints").fetchall()); bp.close()
+    assert ids[1] == str(gate_id["AfricaThemeSetsBlueprintsL1"])   # blueprint content 9002 re-pointed
+    assert ids[2] == "50000"   # RC blueprint: facility gate appended
+    assert ids[3] == "777"     # unrelated untouched
+
+
+def test_add_noneresearchable_gates():
+    """The GameMain topology edit interns the gate names: bumps ResearchRoot count by the gate count and adds
+    one <research> entry per minted gate (so the c0research gate rows don't crash on load)."""
+    xml = ('<ResearchRoot count="4" game="Planet Zoo">\n\t<levels pool_type="4">\n'
+           '\t\t<research is_completed="0" is_entry_level="0" is_enabled="0" unk_3="0" unk_4="0">\n'
+           '\t\t\t<item_name>GuestSpawner</item_name>\n\t\t</research>\n\t</levels>\n</ResearchRoot>\n')
+    out = ovl._add_noneresearchable_gates(xml)
+    n = len(ovl._all_gate_names())
+    assert ('<ResearchRoot count="%d"' % (4 + n)) in out
+    assert "<item_name>ApBarrierGate2</item_name>" in out
+    assert "<item_name>ApGate" in out
+    assert out.count("</research>") == 1 + n   # original GuestSpawner + n minted gates
 
 
 def test_child_inject_content0_stages_one_dir_and_uses_input(tmp_path):
@@ -394,14 +430,21 @@ def test_child_inject_content0_stages_one_dir_and_uses_input(tmp_path):
         bd.execute("INSERT INTO Simulation VALUES ('Hedge', 0)")
         bd.commit(); bd.close()
         ms = sqlite3.connect(out / ovl.MODULAR_SCENERY_FDB)
-        ms.execute("CREATE TABLE Simulation (SceneryPartName TEXT, ResearchItemID INTEGER)")
-        ms.execute("INSERT INTO Simulation VALUES ('RS_Room_4x4', 0)")
+        ms.execute("CREATE TABLE Simulation (SceneryPartName TEXT, ResearchItemID INTEGER, ResearchPackID INTEGER)")
+        ms.execute("INSERT INTO Simulation VALUES ('RS_Room_4x4', 0, 0)")
         ms.commit(); ms.close()
         bp = sqlite3.connect(out / ovl.BLUEPRINTS_FDB)
         bp.execute("CREATE TABLE PrebuiltBlueprints "
                    "(BlueprintID INTEGER PRIMARY KEY, Title TEXT, File TEXT, ResearchItemIDs TEXT)")
         bp.execute("INSERT INTO PrebuiltBlueprints VALUES (1, 'Workshop A', 'w.bp', '')")
         bp.commit(); bp.close()
+        cr = sqlite3.connect(out / ovl.RESEARCH_FDB)
+        cr.execute("CREATE TABLE ResearchItemData (ResearchItem TEXT, ResearchItemID INTEGER, "
+                   "ResearchCategory TEXT, HoursToComplete REAL, Icon, MechanicItemIcon)")
+        cr.commit(); cr.close()
+        tr = sqlite3.connect(out / ovl.TRACKEDRIDES_FDB)
+        tr.execute("CREATE TABLE Simulation (RideType TEXT, ResearchPack INTEGER)")
+        tr.commit(); tr.close()
 
     class FakeCmd:
         @staticmethod
@@ -419,9 +462,9 @@ def test_child_inject_content0_stages_one_dir_and_uses_input(tmp_path):
 
     ovl._child_inject_content0(FakeCmd, [luaf], str(tmp_path / "base.ovl"), str(tmp_path / "out.ovl"))
     assert "-i" in captured["args"] and "-f" not in captured["args"]   # --input, never -f (cross-drive safe)
-    assert set(captured["staged"]) == {luaf.name, ovl.HABITAT_BOUNDARY_FDB,
-                                       ovl.MODULAR_SCENERY_FDB, ovl.BLUEPRINTS_FDB}
-    assert captured["hedge"] == 50002   # gating applied to the staged fdb before inject
+    assert set(captured["staged"]) == {luaf.name, ovl.HABITAT_BOUNDARY_FDB, ovl.MODULAR_SCENERY_FDB,
+                                       ovl.BLUEPRINTS_FDB, ovl.RESEARCH_FDB, ovl.TRACKEDRIDES_FDB}
+    assert captured["hedge"] == 50002   # barrier re-point applied to the staged fdb before inject
 
 
 def test_child_argv_dev_and_frozen(monkeypatch):

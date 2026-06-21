@@ -171,10 +171,10 @@ def test_progressive_grants_lowest_locked_of_family():
 
 
 class FakeBarrierResearch:
-    """Fake ResearchReader for reconcile_barriers: a mechanic items map (rs+0xF8) over the FakeScanner.
-    Each researchable barrier's research item has a status byte at a fake address (start 0 = locked);
-    scan_records reads it live so a status-write is observable. reconcile_barriers should set grade<=N
-    items to BARRIER_BUILDABLE_STATUS (3) - NOT 4 (which is the location-fire status)."""
+    """Fake ResearchReader for reconcile_barriers/reconcile_facilities: a mechanic items map (rs+0xF8) over the
+    FakeScanner. Each item has a status byte at a fake address (start 0 = locked); scan_records reads it live so
+    a status-write is observable. reconcile_barriers resolves each grade's GATE name -> id and writes it to
+    BARRIER_BUILDABLE_STATUS (4); the gates are NoneResearchable (not AP locations), so no check fires."""
 
     def __init__(self, scanner, items):
         self.scanner = scanner
@@ -193,31 +193,24 @@ class FakeBarrierResearch:
             yield (iid, 0, self.scanner.read_bytes(addr, 1)[0], 3, addr)  # (id, lvl, status, cat=3, addr)
 
 
-def test_reconcile_barriers_unlocks_researchable_by_grade():
-    # Level N makes every RESEARCHABLE barrier of grade <= N buildable via a status-write to 3 (NOT 4,
-    # so the barrier_N location never fires). Grades 1 & 3 are defaults-only, so N=1 unlocks nothing and
-    # N=3 unlocks the same as N=2 (only OneWayGlass, grade 2).
+def test_reconcile_barriers_unlocks_by_grade_via_gates():
+    # Level N makes grades 1..N buildable by status-writing each grade's GATE (BARRIER_GRADE_GATE, a
+    # NoneResearchable item - NOT an AP location) to BARRIER_BUILDABLE_STATUS (4). The real barrier research
+    # items are never touched (decoupled - no false check). Caps at BARRIER_MAX_GRADE; idempotent + cumulative.
     s = FakeScanner()
-    items = [  # (research-item name, item id, fake status_addr) - grades come from BARRIER_RESEARCH_GRADE
-        ("barriersonewayglass",     0x2794, 0x40000000),  # g2
-        ("barrierschainsteelposts", 0x32CA, 0x40000008),  # g4
-        ("barriersthickglass",      0x32CB, 0x40000010),  # g4
-        ("barriersrebarstonecages", 0x2793, 0x40000018),  # g5
-        ("barriersconcrete",        0x278E, 0x40000020),  # g6
-        ("barrierselectric",        0x32C9, 0x40000028),  # g6
-    ]
+    gates = rewards.BARRIER_GRADE_GATE
+    items = [(gates[grade], 0x9000 + grade, 0x40000000 + grade * 8) for grade in sorted(gates)]
+    addr = {grade: 0x40000000 + grade * 8 for grade in gates}
     g = rewards.RewardGranter(s, FakeBarrierResearch(s, items))
-    grade = rewards.BARRIER_RESEARCH_GRADE
-    st = lambda addr: s.read_bytes(addr, 1)[0]
-    for n in range(1, 7):  # received N Progressive Barrier Levels
+    st = lambda a: s.read_bytes(a, 1)[0]
+    for n in range(0, rewards.BARRIER_MAX_GRADE + 1):  # received N Progressive Barrier Levels
         assert g.reconcile_barriers(n) is True
-        for name, _iid, addr in items:
-            exp = rewards.BARRIER_BUILDABLE_STATUS if grade[name] <= n else 0
-            assert st(addr) == exp, f"after {n} levels, {name} (g{grade[name]}) = {st(addr)} (exp {exp})"
-    # never writes the location-fire status (4)
-    assert all(st(addr) == rewards.BARRIER_BUILDABLE_STATUS for _n, _i, addr in items)
-    assert rewards.BARRIER_BUILDABLE_STATUS == 3
-    assert g.reconcile_barriers(6) is True  # idempotent at full
+        for grade in gates:
+            exp = rewards.BARRIER_BUILDABLE_STATUS if grade <= n else 0
+            assert st(addr[grade]) == exp, f"after {n} levels, grade {grade} = {st(addr[grade])} (exp {exp})"
+    assert rewards.BARRIER_BUILDABLE_STATUS == 4
+    assert g.reconcile_barriers(99) is True  # caps at BARRIER_MAX_GRADE, idempotent at full
+    assert all(st(addr[grade]) == 4 for grade in gates)
 
 
 def test_reconcile_facilities_reveals_on_facility_keys():
@@ -238,3 +231,26 @@ def test_reconcile_facilities_reveals_on_facility_keys():
     assert g.reconcile_facilities({"research_centre", "workshop"}) is True  # both
     assert st(0x40000100) == 4 and st(0x40000108) == 4
     assert rewards.FACILITY_BUILDABLE_STATUS == 4
+
+
+def test_reconcile_mechanic_writes_gates_for_mechanic_content_only():
+    # research_reward for MECHANIC content (shops/themes/...) writes its gate "ApGate<Content>" (resolved by
+    # "apgate"+norm) to 4; ANIMAL content (EN_*) is skipped (handled by grant()/rs+0x148). Gates are not AP
+    # locations -> no false check. Driven each tick from the received research_reward contents.
+    s = FakeScanner()
+    items = [
+        ("apgatefoodshopspizzapen", 0xA001, 0x40000200),       # mechanic gate
+        ("apgateafricathemesetsscenery", 0xA002, 0x40000208),  # mechanic gate
+    ]
+    g = rewards.RewardGranter(s, FakeBarrierResearch(s, items))
+    st = lambda a: s.read_bytes(a, 1)[0]
+    assert rewards.is_mechanic_content("FoodShopsPizzaPen") is True
+    assert rewards.is_mechanic_content("AfricaThemeSetsScenery") is True
+    assert rewards.is_mechanic_content("EN_Herbs") is False
+    # animal-only -> nothing written
+    assert g.reconcile_mechanic(["EN_Herbs"]) is True
+    assert st(0x40000200) == 0 and st(0x40000208) == 0
+    # mechanic content -> its gate to 4; animal in the same batch is ignored
+    assert g.reconcile_mechanic(["FoodShopsPizzaPen", "AfricaThemeSetsScenery", "EN_Herbs"]) is True
+    assert st(0x40000200) == rewards.FACILITY_BUILDABLE_STATUS
+    assert st(0x40000208) == rewards.FACILITY_BUILDABLE_STATUS

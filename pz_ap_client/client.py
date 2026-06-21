@@ -218,9 +218,11 @@ class PZContext(CommonContext):
         self.research_gate = None  # ResearchGate (memory mode); enforces research_centre/workshop
         self.presence_gate = None  # PresenceGate (memory mode); native greyed-button UX for those
         self.terrain_gate = None  # TerrainGate (memory mode); native terrain-tool greying (water_tools)
-        self.market_gate = None  # SpeciesMarketGate (memory mode); restricts the autofill market to unlocked species
+        self.market_gate = None  # SpeciesMarketGate (memory mode); restricts the habitat autofill market to unlocked species
+        self.exhibit_gate = None  # ExhibitMarketGate (memory mode); same include-set gate for the exhibit-animal market
         self.reward_granter = None  # RewardGranter (memory mode); grants decoupled research rewards
         self._market_last_allowed = None  # last unlocked-species key set applied (re-apply only on change)
+        self._market_last_applied_ids = frozenset()  # last resolved id set applied (re-apply if it grows as the research map loads)
         self._park_age = None  # ParkAgeReader (memory mode); reads park years-open to detect a fresh save
         self._session = None  # ApSessionDetector (memory mode); is the LOADED park the AP scenario?
         self._scanner = None  # the shared MemoryScanner (memory mode)
@@ -334,8 +336,13 @@ class PZContext(CommonContext):
         # Reuses the trigger source's ResearchReader so species-id resolution shares one snapshot path
         # with the permit gate. (The old additive ScheduleSpawner is retained in market.py for bases
         # with a dormant autofill + a baked schedule, but this base needs the subtractive gate.)
-        from .memory.market import SpeciesMarketGate
+        from .memory.market import SpeciesMarketGate, ExhibitMarketGate
         self.market_gate = SpeciesMarketGate(scanner, research=self.trigger_source.research)
+        # The exhibit-animal market (ExhibitAnimalExchange @park+0x1C0) also autofills on this base, via
+        # the same include-set mechanism at a different manager. The client applies the SAME unlocked-
+        # species id set to both gates: the exhibit pool holds only exhibit species, so it self-filters
+        # to the unlocked exhibit subset (habitat ids in the set match nothing in the exhibit pool).
+        self.exhibit_gate = ExhibitMarketGate(scanner, research=self.trigger_source.research)
         # Reward granter - applies decoupled research rewards (research_reward items) by flipping
         # the content's unlocked byte in the unlockables map. Shares the trigger source's
         # ResearchReader so it resolves the research system the same way.
@@ -392,23 +399,37 @@ class PZContext(CommonContext):
         _collect_check). Each step is isolated so one failure doesn't abort the rest of the tick."""
         if not self._session_active():
             return
-        for step in (
-            lambda: self.trigger_source.poll(self.effective_checked),  # game events -> queued checks
-            self._run_preflight,        # once, on first attach: self-check every patch-sensitive site
-            self._apply_new_items,      # apply/retry received items (+ fresh-save re-award)
-            self._reconcile_permits,    # keep the purchase gate = full received-permit set
-            self._reconcile_conservation,  # keep the release gate = (conservation program received?)
-            self._reconcile_facilities,    # keep the placement gate = full received-facility set
-            self._reconcile_barriers,      # keep barrier buildability = received Progressive Barrier count
-            self._reconcile_research,      # keep the research gate = (research facilities received?)
-            self._reconcile_facility_reveal,  # reveal RC/Workshop build items (fdb-hide) - REPLACES PresenceGate
-            self._reconcile_terrain,       # keep the native terrain-tool greying = received tool set
-            self._reconcile_market,        # keep the scenario market stocked = unlocked species only
-        ):
+        steps = (
+            ("triggers", lambda: self.trigger_source.poll(self.effective_checked)),  # game events -> checks
+            ("preflight", self._run_preflight),        # once, on first attach: self-check patch-sensitive sites
+            ("apply_items", self._apply_new_items),    # apply/retry received items (+ fresh-save re-award)
+            ("permits", self._reconcile_permits),      # purchase gate = full received-permit set
+            ("conservation", self._reconcile_conservation),  # release gate = (conservation received?)
+            ("facilities", self._reconcile_facilities),    # placement gate = full received-facility set
+            ("barriers", self._reconcile_barriers),        # barrier buildability = received Progressive count
+            ("research", self._reconcile_research),        # research gate = (research facilities received?)
+            ("facility_reveal", self._reconcile_facility_reveal),  # reveal RC/Workshop build items (fdb-hide)
+            ("mechanic_content", self._reconcile_mechanic_content),  # shops/themes/blueprints/transport/staff/power gates
+            ("terrain", self._reconcile_terrain),          # native terrain-tool greying = received tool set
+            ("market", self._reconcile_market),            # scenario market stocked = unlocked species only
+        )
+        first = not getattr(self, "_first_tick_done", False)
+        if first:
+            logger.info("AP client: setting up - resolving hooks, installing gates, applying items "
+                        "(first tick after attach; may take a while)...")
+        for name, step in steps:
+            t0 = time.monotonic()
             try:
                 step()
             except Exception:
-                logger.exception("poll loop step failed")
+                logger.exception("poll loop step %r failed", name)
+            dt = time.monotonic() - t0
+            if first and dt > 0.5:   # surface what's slow on the first tick (doubles as a profiler)
+                logger.info("  ... %s: %.1fs", name, dt)
+        if first:
+            self._first_tick_done = True
+            logger.info("AP client: READY - all gates active (%d items received so far).",
+                        len(self.items_received))
 
     async def poll_loop(self) -> None:
         """Background tick: detect game events -> checks, apply items, reconcile gates.
@@ -697,6 +718,25 @@ class PZContext(CommonContext):
         except Exception:
             logger.exception("facility reveal reconcile failed")
 
+    def _reconcile_mechanic_content(self) -> None:
+        """Drive mechanic-research build content (shops/themes/blueprints/transport/staff/power) from the
+        received research_reward items: status-write each mechanic content's re-pointed gate to buildable
+        (rewards.reconcile_mechanic). The real research item stays the player-research location -> no false
+        check (same decouple as barriers). ANIMAL research_reward content unlocks separately via grant()
+        (rs+0x148) in the applier; reconcile_mechanic filters to mechanic content. Idempotent + restart-
+        correct, like the other reconciles."""
+        if self.reward_granter is None:
+            return
+        contents = [it.effect_args.get("content") for net_item in self.items_received
+                    if (it := self.game_data.item_by_id.get(net_item.item)) is not None
+                    and it.effect_type == "research_reward" and it.effect_args.get("content")]
+        if not contents:
+            return
+        try:
+            self.reward_granter.reconcile_mechanic(contents)
+        except Exception:
+            logger.exception("mechanic content reconcile failed")
+
     def _reconcile_research(self) -> None:
         """Drive the research-start gate from the COMPLETE set of received research facilities
         (research_centre -> animal research, workshop -> mechanic research). Authoritative +
@@ -736,24 +776,38 @@ class PZContext(CommonContext):
             logger.exception("presence reconcile failed")
 
     def _reconcile_market(self) -> None:
-        """Restrict the AP scenario's animal market to the unlocked species (and ONLY them). This
-        base autofills its market from a candidate pool, so the client installs an include-set
-        allow-list (the unlocked species) on the LocalAnimalExchange - routing the autofill rebuild
-        to that whitelist - and expires any already-listed blocked species, so future autofill only
-        spawns unlocked species. Re-applied only when the unlocked set CHANGES (each apply forces a
-        pool rebuild). No-op outside scenario mode (sandbox/franchise markets are engine-driven)."""
+        """Restrict BOTH animal markets (habitat LocalAnimalExchange + exhibit ExhibitAnimalExchange)
+        to the unlocked species (and ONLY them). This base autofills both markets from candidate pools,
+        so the client installs an include-set allow-list (the unlocked species) on each - routing the
+        autofill rebuild to the default whitelist - and expires any already-listed blocked species, so
+        future autofill only spawns unlocked species. The SAME id set goes to both gates: each pool
+        holds only its own type, so the exhibit gate self-filters to unlocked exhibit species and the
+        habitat gate to unlocked habitat species. Re-applied only when the unlocked set CHANGES (each
+        apply forces a pool rebuild). No-op outside scenario mode (sandbox/franchise markets are
+        engine-driven)."""
         if self.market_gate is None or not self.market_gate.scenario_mode():
             return
         received_ids = [ni.item for ni in self.items_received]
         allowed = self.game_data.purchase_universe() - self.game_data.purchase_blocked_species(received_ids)
-        if allowed == self._market_last_allowed:
-            return  # unchanged since last apply; don't re-trigger a pool rebuild every tick
         allowed_ids = self.market_gate._resolve_handles(sorted(allowed))
         if not allowed_ids and allowed:
             return  # research snapshot not ready yet - retry next tick (don't mark this set applied)
+        applied_ids = frozenset(allowed_ids)
+        # Re-apply when EITHER the unlocked set OR the resolved-id set changes. The resolved-id check
+        # matters because the research map loads lazily: a species that's unlocked but unresolvable on
+        # an early tick (partial snapshot) is dropped from the first allow-list, and must still be gated
+        # in once it resolves - even though `allowed` (the key set) hasn't changed. A settled map yields
+        # a stable resolved set, so this still avoids redundant pool rebuilds.
+        if allowed == self._market_last_allowed and applied_ids == self._market_last_applied_ids:
+            return
         if self.market_gate.apply_unlocked(allowed_ids):
             self._market_last_allowed = set(allowed)
+            self._market_last_applied_ids = applied_ids
             self.market_gate.expire_blocked_listings(allowed_ids)  # clear stale blocked listings now
+            # Same allow-list to the exhibit market (the pool there self-filters to exhibit species).
+            if self.exhibit_gate is not None and self.exhibit_gate.scenario_mode():
+                self.exhibit_gate.apply_unlocked(allowed_ids)
+                self.exhibit_gate.expire_blocked_listings(allowed_ids)
 
     def _run_preflight(self) -> None:
         """Once, on first successful attach: run the signatures self-check and log a health report.

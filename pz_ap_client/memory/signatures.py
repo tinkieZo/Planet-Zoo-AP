@@ -181,13 +181,16 @@ def resolve_hook(scanner, name: str) -> Optional[Tuple[int, bytes]]:
             return (site, h.orig)
     except Exception:
         pass
+    # Cheap self-heal FIRST: an unclean exit (kill / console-X / crash) leaves OUR OWN detour at the RVA -
+    # fast to detect+restore (a 5-byte read + a verify). The AOB fallback below scans the WHOLE module, so
+    # doing it first wasted ~module-size per leaked hook and was the dominant cost of a slow first tick after
+    # an unclean exit (every site leaked -> one full module scan each = minutes). Order: RVA, leak, AOB.
+    if recover_leaked_hook(scanner, name):
+        return (site, h.orig)
     if h.aob:
         hits = module_aob_scan(scanner, h.aob)
         if len(hits) == 1:
             return (hits[0], h.orig)
-    # Self-heal a leaked detour (prior unclean exit): restore the original bytes so we can re-hook.
-    if recover_leaked_hook(scanner, name):
-        return (site, h.orig)
     return None
 
 
@@ -245,17 +248,20 @@ def _classify_hook(scanner, h: HookSite) -> CheckResult:
         return CheckResult("hook", h.name, "unresolved", "site unreadable @0x%X" % site)
     if cur == h.orig:
         return CheckResult("hook", h.name, "ok", "intact @0x%X" % site)
-    # ORIG mismatch. First try auto-relocation via the AOB (a real patch that shifted the RVA).
+    # ORIG mismatch. Cheap check FIRST: is this our OWN leaked detour (a prior unclean exit, e.g. the
+    # console-X close)? That's a 5-byte read + verify. The AOB fallback below scans the WHOLE module, so
+    # doing it first cost ~module-size PER leaked hook and dominated the first-tick preflight after an
+    # unclean exit (measured ~40s for 3 leaked sites). Order: intact, leak, AOB-relocate.
+    if _is_leaked_detour(scanner, site, h.orig):
+        return CheckResult("hook", h.name, "leaked",
+                           "our detour still installed @0x%X (prior unclean exit) - auto-recovers on next --memory attach" % site)
+    # Not our leak - a real patch may have shifted the RVA: try AOB auto-relocation.
     if h.aob:
         hits = module_aob_scan(scanner, h.aob)
         if len(hits) == 1:
             return CheckResult("hook", h.name, "relocated", "moved to 0x%X (rva 0x%X stale)" % (hits[0], h.rva))
         if len(hits) > 1:
             return CheckResult("hook", h.name, "broken", "AOB ambiguous (%d hits)" % len(hits))
-    # Not relocated: is it our own leaked detour (recoverable) or a genuine change (re-RE)?
-    if _is_leaked_detour(scanner, site, h.orig):
-        return CheckResult("hook", h.name, "leaked",
-                           "our detour still installed @0x%X (prior unclean exit) - auto-recovers on next --memory attach" % site)
     detail = "ORIG changed + AOB not found - re-RE" if h.aob else "ORIG mismatch + no AOB - re-RE (got %s)" % cur.hex()
     return CheckResult("hook", h.name, "broken", detail)
 

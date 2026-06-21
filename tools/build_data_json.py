@@ -100,16 +100,19 @@ def _norm(s: str) -> str:
 
 # The client attributes births/acquisitions and resolves welfare-research handles by matching the
 # live species symbol (RegistryResolver) to the species' ENGINE TOKEN. That token == the research
-# catalog's species key. For 68/78 species norm(label) IS the catalog key; these 5 diverge (the
-# catalog dropped/abbreviated words, incl. one typo "brazillian"), so alias them explicitly.
-# (5 more species - aleopard/blemur/cpeccary/rdeer/mrose - have no catalog welfare tree at all;
-# they fall back to norm(label), which still lets birth/acquire attribution work via the registry.)
+# catalog's species key. For most species norm(label) IS the engine token; these 6 diverge (catalog/
+# label dropped/abbreviated words, incl. typo "brazillian" and the apworld label corrupting
+# "Black-and-White" -> "Black a White" while the engine drops "and" entirely -> BlackWhiteRuffedLemur),
+# so alias them explicitly.
+# (4 more - aleopard/cpeccary/rdeer/mrose - have no catalog welfare tree, but their norm(label) DOES
+# match the engine token, so runtime registry attribution still works without an alias.)
 ENGINE_TOKEN_ALIAS = {
     "aelephant": "africanelephant",        # label "African Savannah Elephant"
     "acentipede": "amazongiantcentipede",  # label "Amazonian Giant Centipede"
     "liguana": "antilleaniguana",          # label "Lesser Antillean Iguana"
     "btarantula": "brazilliansalmonpinktarantula",  # catalog typo "brazillian"
     "lfrog": "lehmannspoisonfrog",         # label "Lehmann Poison Frog" (catalog "lehmanns")
+    "blemur": "blackwhiteruffedlemur",     # engine = BlackWhiteRuffedLemur (no "and"); apworld label "Black a White"
 }
 
 

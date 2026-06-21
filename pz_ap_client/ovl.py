@@ -132,48 +132,174 @@ SRC_SUFFIXES = (".lua", ".txt", ".animalresearchstartunlockedsettings")
 GAMEMAIN_REL_PATH = Path("win64") / "ovldata" / "GameMain" / MAIN_OVL_NAME
 MECHANIC_RENAME = ("scenario_04.scenariomechanicresearchsettings",
                    "scenario_15_empty.scenariomechanicresearchsettings")
-# (2)+(3) Content0 fdb gating: hide the always-buildable DEFAULT barriers + the Research Centre/Workshop
-# facilities until the AP client unlocks them (rewards.reconcile_barriers / reconcile_facilities). Gate ids
-# are EXISTING research items - creating NEW c0research items CRASHES on load. Placeholders (NoneResearchable,
-# not AP locations): 50000 GuestSpawner (Research Centre), 50001 ParkGate (Workshop), 50002/50003
-# ScenarioBlueprint01/02 (barrier grades 1 & 3). 10131/10132 = the Gabion/OneWayGlass researchable barriers
-# (grade-2/5 defaults piggyback on them). See rewards.BARRIER_RESEARCH_GRADE / FACILITY_GATE_RESEARCH.
-_BARRIER_GATE = ((50002, "Hedge"), (10132, "ChainLink"), (10132, "Corrugated"),
-                 (50003, "Glass"), (50003, "Wood_Logs"), (10131, "Brick_Red"))
+# (2)+(3) Content0 + GameMain FULL RESEARCH DECOUPLE (2026-06-21, live-proven). Every mechanic-research build
+# content (12 barriers + 51 shops/themes/blueprints/transport/staff/power) is gated on a MINTED NoneResearchable
+# "gate" research item. Minting is safe once the gate's NAME is also added to the GameMain
+# default_off_noneresearchable topology - THAT interns it (the prior "new items crash" was a missing topology
+# entry, now solved). The client status-writes the gate (rewards.reconcile_barriers / reconcile_mechanic /
+# reconcile_facilities); the content's REAL research item is untouched -> it stays the player-researched
+# barrier_N / drink_shop_N / ... AP location -> NO false check. Gate-id map: 50000/50001 = GuestSpawner/ParkGate
+# (basic RC/Workshop, facility feature); 50002/50003 = ScenarioBlueprint01/02 (barrier grades 1/3, vanilla);
+# 50004-50007 = minted barrier gates (grades 2/4/5/6); 50008+ = one minted gate per mechanic content (sorted).
+# The 51 content names come from data.json (research_reward + a mechanic keyword); gates resolve by NAME so the
+# ids needn't match the client. Copyright-clean: derived from the user's own vanilla, only id remaps + new rows.
+NONERESEARCHABLE_FILE = "default_off_noneresearchable.mechanicresearchsettings"
 _FACILITY_ROOM_GATE = ((50000, "RS_Room_4x4"), (50001, "WS_Room_4x4"))
 # prebuilt-blueprint gate: append the placeholder to ResearchItemIDs (keep existing theme/12003 gates)
 _FACILITY_BP_GATE = ((50000, "lower(Title) like '%research_centre%' or lower(File) like '%research%centre%'"),
                      (50001, "lower(Title) like '%workshop%' or lower(File) like '%workshop%'"))
+_BARRIER_GATES = (("ApBarrierGate2", 50004), ("ApBarrierGate4", 50005),
+                  ("ApBarrierGate5", 50006), ("ApBarrierGate6", 50007))   # grades 2/4/5/6 (1/3 reuse 50002/03)
+_BARRIER_REPOINT = {"Hedge": 50002, "Glass": 50003, "Wood_Logs": 50003,
+                    "Glass_One_Way": 50004, "ChainLink": 50004, "Corrugated": 50004,
+                    "Steel_Mesh": 50005, "Thick_Glass": 50005, "Gabion": 50006, "Brick_Red": 50006,
+                    "Concrete": 50007, "Electric": 50007}   # c0habitatboundary BoundaryType -> grade gate id
+_MECH_CONTENT_KEYWORDS = ("foodshops", "drinkshops", "souvenirshops", "themesets", "habitats", "shelters",
+                          "stafffacilities", "transport", "power")
+_CONTENT_GATE_BASE = 50008
 HABITAT_BOUNDARY_FDB = "c0habitatboundary.fdb"
 MODULAR_SCENERY_FDB = "c0modularscenery.fdb"
 BLUEPRINTS_FDB = "c0blueprints.fdb"
-CONTENT0_FDBS = (HABITAT_BOUNDARY_FDB, MODULAR_SCENERY_FDB, BLUEPRINTS_FDB)
-# Bump when the DERIVED install edits change (fdb gating ids / GameMain rename) so existing installs read as
-# 'stale'. v1 = scriptutils + pack only; v2 = + barrier/facility fdb gating + GameMain mechanic-research rename.
-SHELL_LOGIC_VERSION = "2-fdb-gamemain"
+RESEARCH_FDB = "c0research.fdb"
+TRACKEDRIDES_FDB = "c0trackedrides.fdb"
+CONTENT0_FDBS = (HABITAT_BOUNDARY_FDB, MODULAR_SCENERY_FDB, BLUEPRINTS_FDB, RESEARCH_FDB, TRACKEDRIDES_FDB)
+# Bump when the DERIVED install edits change so existing installs read 'stale'. v1 = scriptutils+pack;
+# v2 = + barrier/facility fdb gating + rename; v3 = full research decouple (mint gates + re-point all content).
+SHELL_LOGIC_VERSION = "3-full-decouple"
+
+
+def _mechanic_content_names() -> "List[str]":
+    """Mechanic-research build-content names from data.json (research_reward whose normalized content name holds
+    a mechanic keyword), SORTED so the gate-id assignment is deterministic. Resolves relative to the bundle
+    (works frozen). Returns [] if data.json is missing - then only the barriers/facilities are gated."""
+    import json
+    try:
+        data = json.loads((Path(__file__).resolve().parent.parent / "data.json").read_text(encoding="utf-8"))
+    except Exception:
+        return []
+
+    def _n(s):
+        return "".join(c for c in str(s).lower() if c.isalnum())
+    return sorted({i["effect_args"]["content"] for i in data.get("items", [])
+                   if i.get("effect_type") == "research_reward"
+                   and any(k in _n(i.get("effect_args", {}).get("content", "")) for k in _MECH_CONTENT_KEYWORDS)})
+
+
+def _content_gates() -> "List":
+    """[(gate_name, gate_id)] for the mechanic content - ApGate<Content>, ids 50008+ in sorted order."""
+    return [("ApGate" + c, _CONTENT_GATE_BASE + i) for i, c in enumerate(_mechanic_content_names())]
+
+
+def _all_gate_names() -> "List[str]":
+    """All minted gate NAMES (barrier + content) - for the GameMain default_off_noneresearchable topology."""
+    return [n for n, _ in _BARRIER_GATES] + [n for n, _ in _content_gates()]
+
+
+def _add_noneresearchable_gates(xml: str) -> str:
+    """Add the minted gate NAMES as <research> entries to the default_off_noneresearchable topology XML and
+    bump <ResearchRoot count>. This topology entry is what INTERNS the gate names, so the c0research gate rows
+    load without crashing (the prior new-item crash)."""
+    import re
+    names = _all_gate_names()
+    m = re.search(r'<ResearchRoot count="(\d+)"', xml)
+    if not m or xml.count("\t</levels>") != 1:
+        raise SystemExit("default_off_noneresearchable: unexpected topology XML shape")
+    xml = xml.replace(m.group(0), '<ResearchRoot count="%d"' % (int(m.group(1)) + len(names)), 1)
+    entries = "".join('\t\t<research is_completed="0" is_entry_level="0" is_enabled="0" unk_3="0" unk_4="0">\n'
+                      '\t\t\t<item_name>%s</item_name>\n\t\t</research>\n' % n for n in names)
+    return xml.replace('\t</levels>', entries + '\t</levels>', 1)
+
+
+def _content_repoint(fdb_dir: Path) -> dict:
+    """{content research-item id -> gate id}, resolving each mechanic content's research item BY NAME from the
+    extracted c0research (robust to per-version id shifts)."""
+    import sqlite3
+    con = sqlite3.connect(fdb_dir / RESEARCH_FDB)
+    name2id = {r[0]: r[1] for r in con.execute("SELECT ResearchItem, ResearchItemID FROM ResearchItemData")}
+    con.close()
+    out = {}
+    for (_name, gid), content in zip(_content_gates(), _mechanic_content_names()):
+        rid = name2id.get(content)
+        if rid is not None:
+            out[rid] = gid
+    return out
+
+
+def _mint_gate_rows(fdb_dir: Path) -> int:
+    """Add the NoneResearchable gate rows (barrier + content) to c0research. Returns the count."""
+    import sqlite3
+    gates = list(_BARRIER_GATES) + _content_gates()
+    con = sqlite3.connect(fdb_dir / RESEARCH_FDB)
+    for name, gid in gates:
+        con.execute("INSERT INTO ResearchItemData (ResearchItem, ResearchItemID, ResearchCategory, "
+                    "HoursToComplete, Icon, MechanicItemIcon) VALUES (?,?,?,?,?,?)",
+                    (name, gid, "NoneResearchable", 1.0, None, None))
+    con.commit(); con.close()
+    return len(gates)
+
+
+def _repoint_int_col(fdb_dir: Path, fdb: str, table: str, col: str, repoint: dict) -> None:
+    """Replace each content research-item id with its gate id in an integer research-reference column."""
+    import sqlite3
+    con = sqlite3.connect(fdb_dir / fdb)
+    for rid, gid in repoint.items():
+        con.execute(f'UPDATE "{table}" SET "{col}"=? WHERE "{col}"=?', (gid, rid))
+    con.commit(); con.close()
+
+
+def _repoint_boundary(fdb_dir: Path) -> None:
+    """Re-point all 12 barriers (c0habitatboundary) onto their 6 grade-gates by BoundaryType."""
+    import sqlite3
+    con = sqlite3.connect(fdb_dir / HABITAT_BOUNDARY_FDB)
+    for bt, gid in _BARRIER_REPOINT.items():
+        con.execute("UPDATE Simulation SET ResearchPack=? WHERE BoundaryType=?", (gid, bt))
+    con.commit(); con.close()
+
+
+def _repoint_blueprints(fdb_dir: Path, repoint: dict) -> None:
+    """Re-point content in c0blueprints PrebuiltBlueprints.ResearchItemIDs (comma-string), then append the
+    basic RC/Workshop facility gate to RC/Workshop-named blueprints."""
+    import sqlite3
+    con = sqlite3.connect(fdb_dir / BLUEPRINTS_FDB)
+    for bid, rids in con.execute("SELECT BlueprintID, ResearchItemIDs FROM PrebuiltBlueprints").fetchall():
+        if not rids:
+            continue
+        parts = [p.strip() for p in str(rids).split(",")]
+        new = [str(repoint[int(p)]) if (p.isdigit() and int(p) in repoint) else p for p in parts]
+        if new != parts:
+            con.execute("UPDATE PrebuiltBlueprints SET ResearchItemIDs=? WHERE BlueprintID=?", (", ".join(new), bid))
+    for gate, where in _FACILITY_BP_GATE:
+        for bid, rids in con.execute(
+                f"SELECT BlueprintID, ResearchItemIDs FROM PrebuiltBlueprints WHERE {where}").fetchall():
+            new = str(gate) if not rids else f"{rids}, {gate}"
+            con.execute("UPDATE PrebuiltBlueprints SET ResearchItemIDs=? WHERE BlueprintID=?", (new, bid))
+    con.commit(); con.close()
+
+
+def _repoint_facility_rooms(fdb_dir: Path) -> None:
+    """Gate the basic RC/Workshop rooms (c0modularscenery) on the GuestSpawner/ParkGate placeholders."""
+    import sqlite3
+    con = sqlite3.connect(fdb_dir / MODULAR_SCENERY_FDB)
+    for fid, part in _FACILITY_ROOM_GATE:
+        con.execute("UPDATE Simulation SET ResearchItemID=? WHERE SceneryPartName=?", (fid, part))
+    con.commit(); con.close()
 
 
 def _apply_content0_fdb_edits(fdb_dir: Path, log: LogFn = logger.info) -> None:
-    """Apply the AP gating edits to the EXTRACTED vanilla Content0 fdbs (sqlite, in place). Copyright-clean:
-    derived from the user's own vanilla, only id remappings. c0habitatboundary (default barriers),
-    c0modularscenery (RC/Workshop rooms), c0blueprints (RC/Workshop prebuilt blueprints)."""
-    import sqlite3
-    bd = sqlite3.connect(fdb_dir / HABITAT_BOUNDARY_FDB)
-    for rp, bt in _BARRIER_GATE:
-        bd.execute("UPDATE Simulation SET ResearchPack=? WHERE BoundaryType=?", (rp, bt))
-    bd.commit(); bd.close()
-    ms = sqlite3.connect(fdb_dir / MODULAR_SCENERY_FDB)
-    for rid, part in _FACILITY_ROOM_GATE:
-        ms.execute("UPDATE Simulation SET ResearchItemID=? WHERE SceneryPartName=?", (rid, part))
-    ms.commit(); ms.close()
-    bp = sqlite3.connect(fdb_dir / BLUEPRINTS_FDB)
-    for gate, where in _FACILITY_BP_GATE:
-        for bid, rid in bp.execute(
-                f"SELECT BlueprintID, ResearchItemIDs FROM PrebuiltBlueprints WHERE {where}").fetchall():
-            new = str(gate) if not rid else f"{rid}, {gate}"
-            bp.execute("UPDATE PrebuiltBlueprints SET ResearchItemIDs=? WHERE BlueprintID=?", (new, bid))
-    bp.commit(); bp.close()
-    log("Applied AP data-layer gating (barriers + facilities) to the extracted fdbs.")
+    """Apply the FULL-DECOUPLE gating to the EXTRACTED vanilla Content0 fdbs (sqlite, in place): mint the gate
+    rows in c0research and re-point every mechanic content (12 barriers + the 51 shops/themes/blueprints/
+    transport/staff/power) onto its gate, plus the basic RC/Workshop facility gating. Copyright-clean (id
+    remaps + new NoneResearchable rows derived from the user's vanilla)."""
+    repoint = _content_repoint(fdb_dir)
+    minted = _mint_gate_rows(fdb_dir)
+    _repoint_boundary(fdb_dir)
+    _repoint_int_col(fdb_dir, MODULAR_SCENERY_FDB, "Simulation", "ResearchItemID", repoint)
+    _repoint_int_col(fdb_dir, MODULAR_SCENERY_FDB, "Simulation", "ResearchPackID", repoint)
+    _repoint_int_col(fdb_dir, TRACKEDRIDES_FDB, "Simulation", "ResearchPack", repoint)
+    _repoint_blueprints(fdb_dir, repoint)
+    _repoint_facility_rooms(fdb_dir)
+    log("Applied AP full-decouple gating: minted %d gates, re-pointed %d content + 12 barriers."
+        % (minted, len(repoint)))
 
 
 # ---------------------------------------------------------------------------
@@ -645,20 +771,32 @@ def build_loc_ovl(out: Path, log: LogFn = logger.info) -> None:
     _run_cobra_child("new", src_dir() / "pack_loc", out, None, log)
 
 
-def _child_gamemain(base: str, out: str) -> None:
-    """Rename the all-locked vanilla mechanic-research config onto our scenario code (BaseFile passthrough -
-    faithful; the fresh release cobra has no .scenariomechanicresearchsettings loader, so the file is opaque)."""
+def _child_gamemain(ovl_tool_cmd, base: str, out: str) -> None:
+    """Patch GameMain in one save: (a) RENAME the all-locked vanilla mechanic config onto our scenario code
+    (BaseFile passthrough - faithful), and (b) add the minted gate NAMES to default_off_noneresearchable - the
+    topology entry that INTERNS the gates so the c0research gate rows load without crashing. Extracts the
+    vanilla topology first (a second load - slow but the proven recipe)."""
     import logging as _lg
+    import tempfile
     if not hasattr(_lg, "success"):
         _lg.success = _lg.info
     from generated.formats.ovl import OvlFile  # noqa: E402
-    o = OvlFile()
-    o.game = COBRA_GAME_LABEL
-    o.load_hash_table()
-    o.clear()
-    o.load(base, {"game": COBRA_GAME_LABEL})
-    o.rename([MECHANIC_RENAME])
-    o.save(out, commands={"update_aux": True})
+    with tempfile.TemporaryDirectory(prefix="pzap_gmx_") as ex_tmp, \
+            tempfile.TemporaryDirectory(prefix="pzap_gms_") as stage_tmp:
+        ovl_tool_cmd.main(["extract", "-g", COBRA_GAME_LABEL, "--name", NONERESEARCHABLE_FILE, "-o", ex_tmp, base])
+        hits = list(Path(ex_tmp).rglob(NONERESEARCHABLE_FILE))
+        if not hits:
+            raise SystemExit("cobra extract did not produce %s - cannot mint gates" % NONERESEARCHABLE_FILE)
+        staged = Path(stage_tmp) / NONERESEARCHABLE_FILE
+        staged.write_text(_add_noneresearchable_gates(hits[0].read_text()))
+        o = OvlFile()
+        o.game = COBRA_GAME_LABEL
+        o.load_hash_table()
+        o.clear()
+        o.load(base, {"game": COBRA_GAME_LABEL})
+        o.rename([MECHANIC_RENAME])
+        o.add_files([str(staged)], stage_tmp)
+        o.save(out, commands={"update_aux": True})
 
 
 def _child_pack(ovl_tool_cmd, lua: List[Path], out: str) -> None:
@@ -710,7 +848,7 @@ def _inject_child_main(argv: List[str]) -> int:
     os.chdir(cobra)  # cobra resolves its hash tables / logs relative to its root
     import ovl_tool_cmd  # noqa: E402
     if op == "gamemain":
-        _child_gamemain(base, out)
+        _child_gamemain(ovl_tool_cmd, base, out)
     elif op == "new":
         _child_pack(ovl_tool_cmd, [f.resolve() for f in src_files(Path(src).resolve())], out)
     else:

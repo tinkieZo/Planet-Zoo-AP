@@ -46,6 +46,9 @@ class FakeMem:
     def write_i32(self, addr: int, value: int) -> None:
         self.write_bytes(addr, struct.pack("<i", value))
 
+    def write_i64(self, addr: int, value: int) -> None:
+        self.write_bytes(addr, struct.pack("<q", value))
+
     def read_bytes(self, addr: int, size: int) -> bytes:
         return bytes(self._b.get(addr + i, 0) for i in range(size))
 
@@ -240,10 +243,62 @@ def test_schedule_spawner() -> None:
     _check(sp.schedule_entries() == [], "empty schedule dumps empty")
 
 
+def test_autofill_gates() -> None:
+    """Both autofill gates (habitat SpeciesMarketGate + exhibit ExhibitMarketGate) share
+    _AutofillMarketGate but must drive DIFFERENT manager offsets. Exercise apply_unlocked /
+    expire_blocked_listings / pool_species against a fake manager and assert each writes/reads at
+    its own offset - the regression guard for the base-class parameterisation."""
+    h, e = mk.SpeciesMarketGate, mk.ExhibitMarketGate
+    _check(h._DEFAULT_WL != e._DEFAULT_WL and h._POOL_COUNT != e._POOL_COUNT
+           and h._LIVE_STRIDE != e._LIVE_STRIDE and h._POOL_DIRTY != e._POOL_DIRTY,
+           "habitat and exhibit gates use distinct manager offsets")
+
+    for cls, label in ((mk.SpeciesMarketGate, "habitat"), (mk.ExhibitMarketGate, "exhibit")):
+        m = FakeMem()
+        mgr = 0x500000000
+        g = cls(m, research=FakeResearch({}))
+        g._mgr_cache = mgr
+        g._alloc_buffer = lambda _size: 0x900000000     # fake target buffer (skip VirtualAllocEx)
+
+        ids = [0x3042, 0x3025, 0x309C]
+        _check(g.apply_unlocked(ids), f"{label}: apply_unlocked returns True")
+        wl = mgr + g._DEFAULT_WL
+        inc = wl + mk.WL_INCLUDE_SET
+        _check(m.read_qword(inc + mk.SET_BUFFER) == 0x900000000, f"{label}: include-set buffer repointed")
+        _check(m.read_i64(inc + mk.SET_COUNT) == 3, f"{label}: include-set count == #species")
+        _check(m.read_bytes(wl + mk.WL_INCLUDE_ACTIVE, 1) == b"\x01", f"{label}: include-active set")
+        _check(m.read_i32(mgr + g._WL_ID_SCEN) == 0 and m.read_i32(mgr + g._WL_ID_SANDBOX) == 0,
+               f"{label}: active whitelist ids cleared -> default whitelist used")
+        _check(m.read_bytes(mgr + g._POOL_DIRTY, 1) == b"\x00", f"{label}: pool-dirty cleared -> rebuild")
+
+        # expire: a blocked live listing is forced to a negative timer; an allowed one is untouched
+        data = 0xA00000000
+        m.write_bytes(mgr + g._LIVE_COUNT, struct.pack("<q", 2))
+        m.write_bytes(mgr + g._LIVE_DATA, struct.pack("<Q", data))
+        m.write_i32(data + g._LIVE_SP, 0x3042)                          # allowed
+        m.write_i32(data + g._LIVE_STRIDE + g._LIVE_SP, 0xBEEF)         # blocked
+        m.write_bytes(data + g._LIVE_EXPIRY, struct.pack("<f", 100.0))
+        m.write_bytes(data + g._LIVE_STRIDE + g._LIVE_EXPIRY, struct.pack("<f", 100.0))
+        _check(g.expire_blocked_listings(ids) == 1, f"{label}: one blocked live listing marked")
+        _check(struct.unpack("<f", m.read_bytes(data + g._LIVE_STRIDE + g._LIVE_EXPIRY, 4))[0] < 0,
+               f"{label}: blocked listing expiry forced negative")
+        _check(struct.unpack("<f", m.read_bytes(data + g._LIVE_EXPIRY, 4))[0] > 0,
+               f"{label}: allowed listing expiry untouched (still positive)")
+
+        # pool_species reads at the gate's own pool offset/stride
+        pool = 0xB00000000
+        m.write_bytes(mgr + g._POOL_COUNT, struct.pack("<q", 2))
+        m.write_bytes(mgr + g._POOL_DATA, struct.pack("<Q", pool))
+        m.write_i32(pool + g._POOL_SP, 0x3042)
+        m.write_i32(pool + g._POOL_STRIDE + g._POOL_SP, 0x3025)
+        _check(g.pool_species() == [0x3042, 0x3025], f"{label}: pool_species reads gate pool offset")
+
+
 def main() -> None:
     test_hash_set()
     test_registry()
     test_schedule_spawner()
+    test_autofill_gates()
     print("\nAll market-gate tests passed.")
 
 

@@ -187,11 +187,18 @@ async def main() -> None:
         _check(gate.applied == [[H]], "market allow-list = exactly the unlocked species")
         _check(gate.expired == [[H]], "blocked live listings expired when the gate is applied")
         ctx2._reconcile_market()
-        _check(gate.applied == [[H]], "unchanged unlocked set -> not re-applied (no redundant rebuild)")
+        _check(gate.applied == [[H]], "unchanged unlocked set + resolved ids -> not re-applied (no redundant rebuild)")
+        # robustness: the research map loads lazily, so a species can resolve LATE (a partial first-tick
+        # snapshot). If the resolved-id set changes while the unlocked KEY set is unchanged, re-apply -
+        # otherwise a late-resolving unlocked species would stay missing from the market until the
+        # unlocked set next changed.
+        gate._h = {unblocked_key: 0xABC}
+        ctx2._reconcile_market()
+        _check(gate.applied == [[H], [0xABC]], "changed resolved-id set re-applied though unlocked set unchanged")
         gate.mode = False
         ctx2._market_last_allowed = None     # force a re-eval
         ctx2._reconcile_market()
-        _check(gate.applied == [[H]], "no-op outside scenario mode")
+        _check(gate.applied == [[H], [0xABC]], "no-op outside scenario mode")
 
         print("\nALL OFFLINE TESTS PASSED")
     finally:

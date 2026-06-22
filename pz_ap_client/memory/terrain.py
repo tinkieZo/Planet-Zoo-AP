@@ -83,6 +83,7 @@ class TerrainGate:
         self._orig: Dict[int, bytes] = {}     # byteoff -> original 4 bytes (for restore)
         self._applied: Dict[int, int] = {}    # byteoff -> last gate value written (idempotency)
         self._cooldown = 0
+        self._first_scan_pending = True       # defer the first full-heap scan off the first poll tick
 
     def set_gated(self, tool_keys) -> None:
         """Declare which terrain tools have an AP item (only these are ever patched)."""
@@ -134,6 +135,15 @@ class TerrainGate:
     def _ensure_located(self) -> bool:
         if self._cache_valid():
             return True
+        if self._first_scan_pending:
+            # The first _find() is a full writable-heap sweep (~20s on a slow box). The first poll tick
+            # already pays the park-info vtable scan (session detection) + the initial item apply, so
+            # keep this off it: defer one tick. The terrain-tool gate is invisible for that extra tick
+            # (the player isn't in the terrain-edit menu within the first second of a scenario load),
+            # and the client logs READY ~20s sooner. Reset only here (a scenario reload re-scans at once
+            # since by then we're past initial setup and prompt re-greying matters).
+            self._first_scan_pending = False
+            return False
         if self._cooldown > 0:
             self._cooldown -= 1
             return False

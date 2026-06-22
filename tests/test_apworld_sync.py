@@ -7,7 +7,8 @@ sends "Permit: Bengal Tiger" but the client grants Saltwater Crocodile). The APW
 positionally:
   item id     = 1000 + index of (data/items.json + data/old_items.json)   [Items.item_name_to_id]
   location id = 2000 + index of (data/specieslocations.json + data/mech_n_milestones.json), keyed by
-                each entry's `stringid` (== the location NAME the client uses)  [Locations]
+                each entry's `label` (== the location NAME the AP server uses, via Locations
+                .location_name_to_id, which is `{label: 2000+index}`)  [Locations]
 
 data.json is regenerated from exactly these by tools/build_data_json.py. Skips if the APWorld tree
 isn't checked out next to this repo (set PZ_APWORLD_DATA to its data/ dir).
@@ -52,13 +53,15 @@ def test_item_ids_match_apworld(gd):
 
 
 def test_location_ids_match_apworld(gd):
-    ap = _field(_DATA / "specieslocations.json", "stringid") + \
-        _field(_DATA / "mech_n_milestones.json", "stringid")
+    # The AP server keys locations by LABEL (Locations.location_name_to_id = {label: 2000+index}),
+    # so data.json's location name MUST be the label - not the stringid.
+    ap = _field(_DATA / "specieslocations.json", "label") + \
+        _field(_DATA / "mech_n_milestones.json", "label")
     by_id = {loc.id: loc.name for loc in gd.locations}
     assert len(gd.locations) == len(ap), f"location count {len(gd.locations)} != APWorld {len(ap)}"
-    for i, stringid in enumerate(ap):
-        assert by_id.get(2000 + i) == stringid, \
-            f"location id {2000 + i}: client {by_id.get(2000 + i)!r} != APWorld {stringid!r}"
+    for i, label in enumerate(ap):
+        assert by_id.get(2000 + i) == label, \
+            f"location id {2000 + i}: client {by_id.get(2000 + i)!r} != APWorld {label!r}"
 
 
 def test_every_permit_has_a_species(gd):

@@ -1,10 +1,10 @@
--- Archipelago scenario script (Design C). The AP careerdata entry's code 'Scenario_15_Empty'
--- equals the base bin we load (Scenarios_Content11_Empty/Scenario_15_Empty.bin) - a BLANK-terrain
--- save that, unlike the old Scenario_01_Empty, carries BAKED career objectives. Those baked
+-- Archipelago scenario script (Design C). The AP careerdata entry's code 'Scenario_22_Empty'
+-- equals the base bin we load (Scenarios_Content18_Empty/Scenario_22_Empty.bin) - a TEMPERATE
+-- BLANK-terrain save that, unlike a sandbox bin, carries BAKED career objectives. Those baked
 -- objectives are what makes the engine release-enable the ObjectiveManager at WorldLoad, so
 -- "Release to Wild" / trade work natively (the AP conservation loop needs releases). The whole
 -- runtime fight to enable release on the old sandbox base is GONE - it's solved by the base bin.
--- This script (activated via the scriptutils hijack of scenario_15_script) runs at InitScript and
+-- This script (activated via the scriptutils hijack of scenario_22_script) runs at InitScript and
 -- adds: the AP-session park-name marker, a belt-and-braces objective merge, and the permissive
 -- scenario-settings apply. Errors are kept on the module table with an "APERR:" prefix so the
 -- post-bounce heap scanner (tools/_lua_error_scan.py --needle APERR:) can recover them.
@@ -56,7 +56,7 @@ Scenario_AP_Script.Init = function(self, _iScenarioScriptManager, _tSave)
     parkAPI:SetParkName("ARCHIPELAGO ZOO")
   end)
   -- ANIMAL MARKET: deliberately NO market calls here. The species-gating market mechanism is
-  -- client-side and is being re-RE'd for this base (Scenario_15_Empty's exchange manager has no
+  -- client-side and is being re-RE'd for this base (Scenario_22_Empty's exchange manager has no
   -- baked schedule like the old base - its market is autofill-populated, so the gate must filter
   -- the autofill rather than arm schedule slots). See [[ap-custom-scenario]] / market.py.
   --

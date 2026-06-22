@@ -199,6 +199,9 @@ class PZContext(CommonContext):
     items_handling = 0b111  # receive all items (own + others' sends to us)
     want_slot_data = True
     command_processor = PZCommandProcessor
+    # Bootstrap-fill floor: minimum live listings each autofill market is kept stocked to, so an
+    # early-game tiny unlocked pool still offers a usable selection (see _reconcile_market_fill).
+    MARKET_MIN_LISTINGS = 8
 
     def __init__(self, server_address: Optional[str], password: Optional[str],
                  data_path: Optional[str] = None, applier: Optional[EffectApplier] = None,
@@ -412,6 +415,7 @@ class PZContext(CommonContext):
             ("mechanic_content", self._reconcile_mechanic_content),  # shops/themes/blueprints/transport/staff/power gates
             ("terrain", self._reconcile_terrain),          # native terrain-tool greying = received tool set
             ("market", self._reconcile_market),            # scenario market stocked = unlocked species only
+            ("market_fill", self._reconcile_market_fill),  # bootstrap fill: keep a minimum selection in both markets
         )
         first = not getattr(self, "_first_tick_done", False)
         if first:
@@ -809,6 +813,17 @@ class PZContext(CommonContext):
                 self.exhibit_gate.apply_unlocked(allowed_ids)
                 self.exhibit_gate.expire_blocked_listings(allowed_ids)
 
+    def _reconcile_market_fill(self) -> None:
+        """Bootstrap fill: each tick, keep both autofill markets stocked with a minimum selection so an
+        early-game tiny unlocked pool isn't a near-empty market (the autofill target scales with pool
+        size, so a 2-3 species start barely fills). Raises the target to max(MARKET_MIN_LISTINGS,
+        pool_size) - which, with the engine's per-species spawn backoff, also tends toward ~one of each
+        unlocked species. Soft + sanity-guarded (see ensure_min_fill); only ever spawns from the gated
+        pool, so it can't offer anything locked. No-op outside scenario mode."""
+        for gate in (self.market_gate, self.exhibit_gate):
+            if gate is not None and gate.scenario_mode():
+                gate.ensure_min_fill(self.MARKET_MIN_LISTINGS)
+
     def _run_preflight(self) -> None:
         """Once, on first successful attach: run the signatures self-check and log a health report.
         Fail-loud - if a Frontier patch shifted/changed any hook, anchor, or the terrain bytecode, this
@@ -826,7 +841,14 @@ class PZContext(CommonContext):
                 at = AnchorTable.load()
             except Exception:
                 at = None
-            results = sig.run_selfcheck(scanner, at)
+            # Reuse the session reader (already scanned + cached by _session_active, which fronts this
+            # very tick) and the terrain gate, so the preflight doesn't repeat their ~20s full-heap
+            # scans - the single biggest first-tick cost. See run_selfcheck / check_session / check_terrain.
+            results = sig.run_selfcheck(
+                scanner, at,
+                session_reader=(self._session.names if self._session is not None else None),
+                terrain_gate=self.terrain_gate,
+            )
             bad = [r for r in results if r.status not in ("ok", "relocated")]
             reloc = [r for r in results if r.status == "relocated"]
             ok = len(results) - len(bad)
@@ -963,12 +985,20 @@ def _log_mod_status() -> None:
 
 def _shutdown_gates(ctx) -> None:
     """Restore every installed code patch / detour on the way out (trigger birth-detour, the
-    permit / placement / research-start hooks, and the presence-fill + terrain bytecode patches)."""
+    permit / placement / research-start hooks, and the presence-fill + terrain bytecode patches).
+
+    Each restore is isolated: one gate raising MUST NOT abort the loop and leave the rest of the
+    detours installed - a leaked detour forces the NEXT startup into a recovery scan (and, for the
+    trigger birth-detour, can require a game restart to clear). Best-effort, never raises."""
     for gate, method in ((ctx.trigger_source, "close"), (ctx.permit_gate, "shutdown"),
                          (ctx.facility_gate, "shutdown"), (ctx.research_gate, "shutdown"),
                          (ctx.presence_gate, "shutdown"), (ctx.terrain_gate, "shutdown")):
-        if gate is not None:
+        if gate is None:
+            continue
+        try:
             getattr(gate, method)()
+        except Exception:
+            logger.exception("shutdown: %s.%s() failed - other detours still restored", type(gate).__name__, method)
 
 
 # Keeps ctypes console-handler callbacks alive for the process lifetime (GC'ing one would

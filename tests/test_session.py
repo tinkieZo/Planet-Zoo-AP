@@ -107,3 +107,48 @@ def test_detector_false_for_foreign_park():
 
 def test_detector_false_when_nothing_loaded():
     assert ApSessionDetector(FakeScanner({}), mode_check=lambda: True).is_ap_session() is False
+
+
+# -- preflight reuse: the client passes its already-scanned reader/gate so run_selfcheck doesn't
+#    repeat the ~20s park-info / main.2 heap sweeps (the biggest first-tick cost). ------------------
+
+def test_check_session_reuses_warm_reader():
+    """check_session(reader=...) reuses the client's reader: a warm cache means NO extra heap scan,
+    while the no-reader path constructs a fresh reader that DOES scan."""
+    fake = FakeScanner({0xA00000: AP_PARK_NAME})
+    scans = {"n": 0}
+    orig = fake.scan_heap_for_qword
+
+    def _counting(value, max_hits=64, max_region=0):
+        scans["n"] += 1
+        return orig(value, max_hits, max_region)
+
+    fake.scan_heap_for_qword = _counting
+
+    reader = ParkNameReader(fake)
+    assert reader.read() == AP_PARK_NAME          # warms the cache (1 scan)
+    assert scans["n"] == 1
+    res = sig.check_session(fake, reader=reader)   # reuse: cache hit, no new scan
+    assert len(res) == 1 and res[0].status == "ok" and scans["n"] == 1
+
+    sig.check_session(fake)                        # fresh reader -> scans again
+    assert scans["n"] == 2
+
+
+class _StubGate:
+    def __init__(self, located):
+        self._addrs = [0x1000, 0x2000] if located else []
+        self._located = located
+
+    def _cache_valid(self):
+        return self._located
+
+
+def test_check_terrain_reuses_gate_no_scan():
+    """check_terrain(gate=...) reports from the client's gate state without a fresh _find(): located
+    -> ok with the copy count; not-yet-located (first scan deferred) -> ok 'deferred', never 'broken'."""
+    located = sig.check_terrain(None, gate=_StubGate(located=True))
+    assert located[0].status == "ok" and "2 copy" in located[0].detail
+
+    deferred = sig.check_terrain(None, gate=_StubGate(located=False))
+    assert deferred[0].status == "ok" and "deferred" in deferred[0].detail

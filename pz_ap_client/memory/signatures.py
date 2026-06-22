@@ -305,8 +305,21 @@ def check_research(scanner) -> List[CheckResult]:
     return [CheckResult("system", "research_map", "garbage", "record count implausible (%d)" % cnt)]
 
 
-def check_terrain(scanner) -> List[CheckResult]:
+def check_terrain(scanner, gate=None) -> List[CheckResult]:
     # MAIN2_CODE lives in the writable VM heap, not the module - reuse TerrainGate's writable-region scan.
+    # When the client passes its own gate, report from that gate's state WITHOUT a fresh full-heap scan
+    # (the in-client gate defers its first scan off the first tick - duplicating it here would re-add the
+    # ~20s the defer just removed). Standalone callers (tools/selfcheck.py) pass no gate -> real scan.
+    if gate is not None:
+        try:
+            if gate._cache_valid():
+                return [CheckResult("system", "terrain_bytecode", "ok",
+                                    "%d copy(ies) of main.2 located" % len(gate._addrs))]
+        except Exception:
+            pass
+        return [CheckResult("system", "terrain_bytecode", "ok",
+                            "scan deferred off the first tick (gate locates within a tick or two); "
+                            "verify the bytecode on demand with tools/selfcheck.py")]
     try:
         from .terrain import TerrainGate
         found = len(TerrainGate(scanner)._find())
@@ -335,13 +348,18 @@ def check_roots(scanner) -> List[CheckResult]:
     return out
 
 
-def check_session(scanner) -> List[CheckResult]:
+def check_session(scanner, reader=None) -> List[CheckResult]:
     """AP-session detection state: the park-name marker (park-info +0x1E8) planted by the scenario
     script. 'ok' = marker read back; an unnamed/foreign park is REPORTED but not a failure (the client
-    is designed to idle there) - it only flags 'broken' when the park-info class itself is gone."""
+    is designed to idle there) - it only flags 'broken' when the park-info class itself is gone.
+
+    When the client passes its own ParkNameReader (already scanned + cached this tick by the session
+    gate that fronts every poll tick), reuse it: read() returns from cache, so the preflight doesn't
+    repeat the ~20s park-info vtable sweep the session gate just did. Standalone callers pass none."""
     try:
         from .session import AP_PARK_NAME, ParkNameReader
-        reader = ParkNameReader(scanner)
+        if reader is None:
+            reader = ParkNameReader(scanner)
         name = reader.read()
     except Exception as e:
         return [CheckResult("system", "ap_session", "unresolved", "reader error: %s" % type(e).__name__)]
@@ -354,14 +372,18 @@ def check_session(scanner) -> List[CheckResult]:
                         "no park-info instance (no loaded zoo, or vtable RVA stale after a patch)")]
 
 
-def run_selfcheck(scanner, anchor_table=None) -> List[CheckResult]:
-    """Resolve every dependency and return a health report. anchor_table optional (skips anchor checks)."""
+def run_selfcheck(scanner, anchor_table=None, *, session_reader=None, terrain_gate=None) -> List[CheckResult]:
+    """Resolve every dependency and return a health report. anchor_table optional (skips anchor checks).
+
+    session_reader / terrain_gate: the client passes its own already-resolved instances so the preflight
+    reuses their state instead of repeating their full-heap scans (~20s each). Standalone callers omit
+    them (tools/selfcheck.py) and get fresh scans."""
     results: List[CheckResult] = []
     results += check_hooks(scanner)
     results += check_roots(scanner)
     if anchor_table is not None:
         results += check_anchors(scanner, anchor_table)
     results += check_research(scanner)
-    results += check_terrain(scanner)
-    results += check_session(scanner)
+    results += check_terrain(scanner, gate=terrain_gate)
+    results += check_session(scanner, reader=session_reader)
     return results

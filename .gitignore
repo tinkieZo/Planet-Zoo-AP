@@ -36,6 +36,7 @@ tools/_attic/
 # PyInstaller build output (regenerable; see docs/PACKAGING.md).
 # pz-ap-client.spec + pz_client_main.py ARE committed (the build recipe); the output is not.
 build/
+build_stage/
 dist/
 tools/_decomp/
 tools/_research_extract/

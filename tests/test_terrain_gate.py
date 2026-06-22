@@ -98,6 +98,35 @@ def test_gate_and_enable() -> None:
     _check(sc.read_bytes(water, 4).hex() == "47414000", "shutdown restores original bytecode (47414000)")
 
 
+def test_first_scan_deferred() -> None:
+    """The first _find() (a full writable-heap sweep, ~20s live) is kept off the first poll tick:
+    the first reconcile defers without scanning, the next one scans + locates."""
+    base = 0x20000
+    blob = b"\xCC" * 0x100 + T.MAIN2_CODE + b"\xCC" * 0x100
+    code_at = base + 0x100
+    sc = FakeScanner(base, blob)
+    g = T.TerrainGate(sc)
+    g.set_gated({"water_tools"})
+    calls = {"n": 0}
+
+    def _fake_find():
+        calls["n"] += 1
+        return [code_at]
+
+    g._find = _fake_find  # the real byte-search is exercised live, not here
+
+    _check(g._first_scan_pending is True, "fresh gate starts with the first scan pending")
+    located1 = g.reconcile(set())
+    _check(located1 is False and calls["n"] == 0,
+           "first reconcile defers: no _find(), not located (kept off the first tick)")
+    _check(g._first_scan_pending is False, "defer flag cleared after the first reconcile")
+    located2 = g.reconcile(set())
+    _check(located2 is True and calls["n"] == 1,
+           "second reconcile scans once and locates main.2")
+    _check(sc.read_bytes(code_at + 0x0C, 4).hex() == "43018000",
+           "after locating, the deferred reconcile applies the water gate (LOADBOOL R5,1)")
+
+
 def test_other_offsets_untouched() -> None:
     g, sc, code_at = _make_gate()
     g.reconcile(set())  # gate water only
@@ -112,6 +141,7 @@ def main() -> int:
     test_constants()
     test_set_gated_filters()
     test_gate_and_enable()
+    test_first_scan_deferred()
     test_other_offsets_untouched()
     print("\nAll TerrainGate tests passed.")
     return 0

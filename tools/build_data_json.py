@@ -225,7 +225,9 @@ def main() -> None:
     for i, e in enumerate(loc_entries):
         loc = SimpleNamespace(type=SimpleNamespace(value=e["type"]), species_type=e["species_type"])
         trig = map_location(e["stringid"], loc)
-        locations.append({"id": 2000 + i, "name": e["stringid"], **trig})
+        # name = the APWorld LABEL (Locations.location_name_to_id keys by `label`, so the label IS the
+        # name the AP server uses). The stringid only drives the trigger mapping above (welfare/fa/fb/...).
+        locations.append({"id": 2000 + i, "name": e["label"], **trig})
 
     # --- species (gate = permit [+ water tools]; flagship = giant panda) ---
     species = []

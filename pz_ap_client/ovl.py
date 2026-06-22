@@ -91,7 +91,7 @@ LogFn = Callable[[str], None]
 # loudly on an incomplete source tree (see ovl_src/README.md).
 # FRESH-START ANIMAL RESEARCH CONFIG (D2/c-define, live-confirmed 2026-06-20): the engine binds a
 # scenario's animal start-unlocked state by CODE (vanilla scenario_NN configs; careerdata has no research
-# field). Our code "Scenario_15_Empty" had no config -> fell back to `default` (sandbox: all vet research
+# field). Our code "Scenario_22_Empty" had no config -> fell back to `default` (sandbox: all vet research
 # pre-done). We ship an EMPTY one so animal/vet research starts at level 0 (no welfare false-fires).
 #   MECHANIC research is keyed by a separate per-scenario type, scenario_<code>.scenariomechanicresearchsettings
 #   (RE'd via headless Ghidra). Shipping an empty one CRASHED (the format is NOT a plain ResearchRoot; cobra's
@@ -104,7 +104,7 @@ PACK_SRC_FILES = (
     "database.pzarchipelagoluadatabase.lua",
     "objectivesettings.scenario_ap_objectives.lua",
     "parksettings.scenario_ap_parksettings.lua",
-    "scenario_15_empty.animalresearchstartunlockedsettings",
+    "scenario_22_empty.animalresearchstartunlockedsettings",
     "scenarioscripts.scenario_ap_script.lua",
 )
 # Loc keys referenced by the careerdata (one .txt per key; built into a Loc.ovl
@@ -124,14 +124,14 @@ SRC_SUFFIXES = (".lua", ".txt", ".animalresearchstartunlockedsettings")
 # Data-layer gating (DERIVED from the user's vanilla at install - copyright-clean: only id remappings + a
 # file rename, never shipped Frontier content). All three are LIVE-VALIDATED (2026-06-20).
 # ---------------------------------------------------------------------------
-# (1) GameMain mechanic-research config: our scenario code "Scenario_15_Empty" has no
+# (1) GameMain mechanic-research config: our scenario code "Scenario_22_Empty" has no
 # .scenariomechanicresearchsettings -> falls back to `default` (all mechanic research pre-done). We RENAME a
 # vanilla all-locked config (scenario_04, root Default_Off, zero exceptions) onto our code, so mechanic
 # research starts fresh (0/N). (Creating/empty configs CRASH; renaming an existing one is faithful BaseFile
 # passthrough. scenario_04's campaign loses its mechanic config = acceptable, documented.)
 GAMEMAIN_REL_PATH = Path("win64") / "ovldata" / "GameMain" / MAIN_OVL_NAME
 MECHANIC_RENAME = ("scenario_04.scenariomechanicresearchsettings",
-                   "scenario_15_empty.scenariomechanicresearchsettings")
+                   "scenario_22_empty.scenariomechanicresearchsettings")
 # (2)+(3) Content0 + GameMain FULL RESEARCH DECOUPLE (2026-06-21, live-proven). Every mechanic-research build
 # content (12 barriers + 51 shops/themes/blueprints/transport/staff/power) is gated on a MINTED NoneResearchable
 # "gate" research item. Minting is safe once the gate's NAME is also added to the GameMain

@@ -293,6 +293,17 @@ def test_autofill_gates() -> None:
         m.write_i32(pool + g._POOL_STRIDE + g._POOL_SP, 0x3025)
         _check(g.pool_species() == [0x3042, 0x3025], f"{label}: pool_species reads gate pool offset")
 
+        # ensure_min_fill: raise the autofill target to max(min, pool) when below; sanity-guard insane.
+        m.write_i32(mgr + g._TARGET, 2)                  # below floor (pool=2 species set above)
+        _check(g.ensure_min_fill(8) == 8, f"{label}: fill target raised to max(8, pool)")
+        _check(m.read_i32(mgr + g._TARGET) == 8, f"{label}: target written")
+        _check(m.read_bytes(mgr + g._FORCE_SPAWN, 1) == b"\x01", f"{label}: force-spawn nudged")
+        m.write_i32(mgr + g._TARGET, 20)                 # already above floor -> no-op
+        _check(g.ensure_min_fill(8) == 20, f"{label}: no-op when target already meets floor")
+        m.write_i32(mgr + g._TARGET, 99999)              # insane -> wrong offset / not ready
+        _check(g.ensure_min_fill(8) is None, f"{label}: skips when target reads insane (sanity guard)")
+        _check(m.read_i32(mgr + g._TARGET) == 99999, f"{label}: insane target left untouched")
+
 
 def main() -> None:
     test_hash_set()

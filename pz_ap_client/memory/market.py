@@ -89,6 +89,12 @@ OFF_MGR_POOL_CAP = 0x2B0          # i64 candidate-pool capacity
 POOL_STRIDE = 0x0C
 POOL_ENT_SPECIES = 0x04           # i32 species symbol id within a pool entry
 
+# -- autofill FILL controls (the "bootstrap fill" lever, HABITAT) ---
+OFF_MGR_TARGET = 0x26C            # i32 target live-listing count (Advance spawns until live >= this;
+                                  # FUN_14A07D670 recomputes it from pool size * economy factor -> tiny
+                                  # early-game pool => tiny target => near-empty market)
+OFF_MGR_FORCE_SPAWN = 0x238       # u8 force-spawn flag (Advance spawns this tick regardless of the timer)
+
 # -- EXHIBIT (ExhibitAnimalExchange) manager offsets ----------------------------
 # NOT layout-parallel to the local exchange. RE'd from fn_140EAE9B0 (rebuild) + fn_140EAF260 (Advance);
 # the whitelist filter is the SAME shape (include-active @obj+0x28, include-set @obj+0x30) at a
@@ -107,6 +113,8 @@ OFF_EXH_LIVE_DATA = 0x1D0         # ptr live listings array, stride 0x180
 EXH_LIVE_STRIDE = 0x180
 EXH_ENT_SPECIES = 0x28            # i32 species symbol id within a live listing
 EXH_LIVE_ENT_EXPIRY = 0x164       # f32 listing time-left (fn_140EAF260 ln 179)
+OFF_EXH_TARGET = 0x1F4            # i32 target live-listing count (fn_140EAF260 ln 115: live < target -> spawn)
+OFF_EXH_FORCE_SPAWN = 0x1C2       # u8 force-spawn flag (fn_140EAF260 ln 106; engine self-clears at target ln 138)
 
 # schedule/listing entry field offsets (relative to the entry base, HABITAT schedule)
 ENT_SPECIES = 0x10                # i32 species symbol id (== research-map handle)
@@ -234,6 +242,8 @@ class _AutofillMarketGate:
     _LIVE_STRIDE: int
     _LIVE_SP: int
     _LIVE_EXPIRY: int
+    _TARGET: int            # i32 target live-listing count (the bootstrap-fill lever)
+    _FORCE_SPAWN: int       # u8 force-spawn flag (spawn now, don't wait for the pacing timer)
 
     def __init__(self, scanner, research=None, registry=None):
         self.scanner = scanner
@@ -443,6 +453,39 @@ class _AutofillMarketGate:
             return False
         return True
 
+    def ensure_min_fill(self, min_listings: int = 8) -> "Optional[int]":
+        """Bootstrap fill: raise the autofill TARGET live-listing count to at least max(min_listings,
+        pool_size) and nudge a spawn, so an early-game market with a tiny unlocked pool still offers a
+        usable selection AND (with the engine's per-species spawn backoff) ~one of each unlocked species.
+        SOFT: the engine still paces spawns + only spawns from the GATED pool, so it can't offer anything
+        locked and won't strictly guarantee one-of-each. No-op once the target already meets the floor.
+        SANITY-GUARDED: only writes if the current target reads as a sane count (0..1024) - protects
+        against a wrong offset / the manager not being ready. Returns the ensured target, else None.
+        Call each tick (cheap); the engine fills toward it at its own pace."""
+        mgr = self.exchange_mgr()
+        if mgr is None:
+            return None
+        try:
+            cur = self.scanner.read_i32(mgr + self._TARGET)
+        except Exception:
+            return None
+        if not 0 <= cur <= 1024:           # not a sane listing count -> wrong offset / manager not ready
+            return None
+        pool = len(self.pool_species())
+        floor = max(int(min_listings), pool)
+        target = max(cur, floor)
+        try:
+            if cur < floor:                 # raise the target (logged once, only when it actually changes)
+                self.scanner.write_i32(mgr + self._TARGET, floor)
+                logger.info("market: raised fill target %d -> %d (pool=%d) @mgr 0x%X", cur, floor, pool, mgr)
+            live = self.scanner.read_i64(mgr + self._LIVE_COUNT)
+            if 0 <= live < target:          # under-filled -> nudge a spawn NOW (engine self-clears at target)
+                self.scanner.write_bytes(mgr + self._FORCE_SPAWN, b"\x01")
+        except Exception as e:
+            logger.warning("market: ensure_min_fill write failed: %s", e)
+            return None
+        return target
+
     def shutdown(self) -> None:
         """Free our buffer. NOTE: this leaves the whitelist's include-set pointing at freed memory; only
         call on process exit, or re-point the set first. On a clean game exit the buffer dies with it."""
@@ -475,6 +518,8 @@ class SpeciesMarketGate(_AutofillMarketGate):
     _LIVE_STRIDE = LIVE_STRIDE
     _LIVE_SP = ENT_SPECIES
     _LIVE_EXPIRY = LIVE_ENT_EXPIRY
+    _TARGET = OFF_MGR_TARGET
+    _FORCE_SPAWN = OFF_MGR_FORCE_SPAWN
 
 
 class ExhibitMarketGate(_AutofillMarketGate):
@@ -500,6 +545,8 @@ class ExhibitMarketGate(_AutofillMarketGate):
     _LIVE_STRIDE = EXH_LIVE_STRIDE
     _LIVE_SP = EXH_ENT_SPECIES
     _LIVE_EXPIRY = EXH_LIVE_ENT_EXPIRY
+    _TARGET = OFF_EXH_TARGET
+    _FORCE_SPAWN = OFF_EXH_FORCE_SPAWN
 
 
 class ScheduleSpawner:

@@ -254,6 +254,10 @@ class _AutofillMarketGate:
         self._buffer_cap = 0
         self._mgr_cache: Optional[int] = None
         self._warned_unmapped: set = set()
+        # The manager's PRE-GATE include-set state, captured once on the first apply. Restoring it before
+        # the game tears the park down is what stops the engine from free()-ing OUR VirtualAllocEx buffer
+        # (a foreign pointer -> heap corruption -> crash on Exit-to-Menu/Exit-Game). See restore()/shutdown().
+        self._orig: Optional[dict] = None
 
     # -- manager location ------------------------------------------------------
 
@@ -388,6 +392,7 @@ class _AutofillMarketGate:
             return False
         wl = mgr + self._DEFAULT_WL
         inc = wl + WL_INCLUDE_SET
+        self._capture_original(mgr, wl, inc)   # save the pre-gate state ONCE, so we can restore it cleanly
         try:
             self.scanner.write_bytes(buf, blob)
             # set struct: buffer ptr (+0x18), capacity (+0x10), count (+0x08, best-effort)
@@ -479,16 +484,79 @@ class _AutofillMarketGate:
                 self.scanner.write_i32(mgr + self._TARGET, floor)
                 logger.info("market: raised fill target %d -> %d (pool=%d) @mgr 0x%X", cur, floor, pool, mgr)
             live = self.scanner.read_i64(mgr + self._LIVE_COUNT)
-            if 0 <= live < target:          # under-filled -> nudge a spawn NOW (engine self-clears at target)
+            if 0 <= live < target:          # under-filled -> WAKE the autofill, don't just bump the target.
+                # Raising the target + force-spawn alone does NOT trigger a rebuild: after the initial
+                # listings expire the engine leaves the market dormant (observed: empty for in-game
+                # months until a new permit). The permit path refills precisely because apply_unlocked
+                # clears POOL_DIRTY -> Advance rebuilds the gated pool + spawns. Do the same here: re-route
+                # to our default whitelist (in case the engine reset the active-id) + mark the pool dirty.
+                self.scanner.write_i32(mgr + self._WL_ID_SCEN, 0)
+                self.scanner.write_i32(mgr + self._WL_ID_SANDBOX, 0)
+                self.scanner.write_bytes(mgr + self._POOL_DIRTY, b"\x00")
                 self.scanner.write_bytes(mgr + self._FORCE_SPAWN, b"\x01")
         except Exception as e:
             logger.warning("market: ensure_min_fill write failed: %s", e)
             return None
         return target
 
+    def _capture_original(self, mgr: int, wl: int, inc: int) -> None:
+        """Snapshot the manager's pre-gate include-set state ONCE (before the first apply overwrites it),
+        so restore() can put the engine's OWN buffer pointer + flags back and the game frees its own
+        allocation (not our VirtualAllocEx buffer) when the park tears down."""
+        if self._orig is not None:
+            return
+        try:
+            self._orig = {
+                "mgr": mgr,
+                "buffer": self.scanner.read_i64(inc + SET_BUFFER),
+                "cap": self.scanner.read_i64(inc + SET_CAP),
+                "count": self.scanner.read_i64(inc + SET_COUNT),
+                "active": self.scanner.read_bytes(wl + WL_INCLUDE_ACTIVE, 1),
+                "wl_scen": self.scanner.read_i32(mgr + self._WL_ID_SCEN),
+                "wl_sandbox": self.scanner.read_i32(mgr + self._WL_ID_SANDBOX),
+            }
+        except Exception as e:
+            logger.warning("market: couldn't capture original include-set (restore will be skipped): %s", e)
+            self._orig = None
+
+    def restore(self) -> bool:
+        """Re-point the manager's include-set back to the GAME's original buffer/cap/count + flags, so the
+        engine's park teardown frees its OWN allocation instead of our VirtualAllocEx buffer (which would
+        be a foreign-pointer free -> crash on Exit). Re-RESOLVES the manager (never writes through a stale/
+        freed pointer) and only writes if it still resolves to the SAME manager we gated. No-op if we never
+        applied. Call on park unload / before freeing our buffer / on shutdown. Idempotent."""
+        if self._orig is None:
+            return False
+        self._mgr_cache = None
+        mgr = self.exchange_mgr()                 # re-resolve; None if the park already unloaded
+        if mgr is None or mgr != self._orig.get("mgr"):
+            self._orig = None                     # park gone/changed - can't safely write; drop (buffer leak is benign)
+            return False
+        wl = mgr + self._DEFAULT_WL
+        inc = wl + WL_INCLUDE_SET
+        try:
+            self.scanner.write_i64(inc + SET_BUFFER, self._orig["buffer"])
+            self.scanner.write_i64(inc + SET_CAP, self._orig["cap"])
+            self.scanner.write_i64(inc + SET_COUNT, self._orig["count"])
+            self.scanner.write_bytes(wl + WL_INCLUDE_ACTIVE, self._orig["active"])
+            self.scanner.write_i32(mgr + self._WL_ID_SCEN, self._orig["wl_scen"])
+            self.scanner.write_i32(mgr + self._WL_ID_SANDBOX, self._orig["wl_sandbox"])
+            self.scanner.write_bytes(mgr + self._POOL_DIRTY, b"\x00")   # rebuild against the restored state
+        except Exception as e:
+            logger.warning("market: restore failed: %s", e)
+            return False
+        logger.info("market: restored original include-set @mgr 0x%X (gate off; engine owns its buffer again)", mgr)
+        self._orig = None
+        return True
+
     def shutdown(self) -> None:
-        """Free our buffer. NOTE: this leaves the whitelist's include-set pointing at freed memory; only
-        call on process exit, or re-point the set first. On a clean game exit the buffer dies with it."""
+        """Restore the manager's original include-set (so the engine frees its OWN buffer, not ours), THEN
+        free our buffer. Safe to call on park unload or process exit - restore() re-resolves the manager and
+        skips if the park is already gone."""
+        try:
+            self.restore()
+        except Exception:
+            logger.exception("market: restore during shutdown failed")
         if self._buffer and self.scanner.attached:
             try:
                 _k32.VirtualFreeEx(self.scanner.pm.process_handle,
@@ -496,6 +564,7 @@ class _AutofillMarketGate:
             except Exception:
                 pass
         self._buffer = None
+        self._buffer_cap = 0
         self._mgr_cache = None
 
 

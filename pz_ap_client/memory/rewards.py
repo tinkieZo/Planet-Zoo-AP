@@ -23,6 +23,7 @@ silently skipped.
 from __future__ import annotations
 
 import logging
+import re
 import struct
 from typing import Dict, Iterator, Optional, Tuple
 
@@ -43,6 +44,22 @@ HEAP_LO, HEAP_HI = 0x10000, (1 << 47)
 # progressive_research_reward family -> unlock-map record type byte.
 # (0 supplement, 2 breeding, 3 education, 1 enrichment incl. exhibit enrichment, 4 zoopedia.)
 FAMILY_TYPE = {"supplement": 0, "breeding": 2, "education": 3, "exhibit_enrichment": 1}
+
+# COUNT-BASED per-species LEVEL families: each is content named <Species><Family>L<k> (intern name,
+# lowercased, '...<family>l<k>'; capture group = level k). The progressive item's quantity = the tier
+# count, and the N-th received copy unlocks level <= N for EVERY species that has it (the barrier model:
+# count-driven + authoritative, NOT grant_progressive's one-shot "lowest-locked of the type"). Pools:
+#   exhibit_enrichment -> the 23 exhibit animals' enrichment levels (1..3). (Habitat enrichment is the
+#     separate EN_* per-content pool gated by reconcile_rewards - the 'enrichmentl<k>' name never matches
+#     EN_*, so the two don't collide.)
+#   supplement / breeding / education -> all animals' welfare-research levels (1..2 / 1..3 / 1..3).
+FAMILY_LEVEL_RE = {
+    "exhibit_enrichment": re.compile(r"enrichmentl(\d+)"),
+    "supplement": re.compile(r"supplementl(\d+)"),
+    "breeding": re.compile(r"breedingl(\d+)"),
+    "education": re.compile(r"educationl(\d+)"),
+}
+LEVEL_FAMILIES = frozenset(FAMILY_LEVEL_RE)
 
 # Barriers ("Progressive Barrier Level", 6 copies) are NOT rs+0x148 unlock-map content - they are
 # HABITAT-BOUNDARY build content gated by MECHANIC research (rs+0xF8). LIVE-CONFIRMED 2026-06-20: a
@@ -237,6 +254,7 @@ class RewardGranter:
         self.scanner = scanner
         self.research = research          # ResearchReader (resolves the research system)
         self._registry: Optional[InternRegistry] = None
+        self._level_maps: Dict[str, Dict[int, int]] = {}  # family -> {content id -> level k}, cached per family
 
     def _registry_index(self) -> Optional[InternRegistry]:
         if self._registry is None:
@@ -464,6 +482,109 @@ class RewardGranter:
         except Exception as e:
             logger.warning("facility reconcile: scan/write failed (%s)", e)
             return False
+        return True
+
+    def reconcile_rewards(self, received_contents, universe_contents) -> bool:
+        """Authoritatively gate ANIMAL per-content research_reward unlocks: each gated content's
+        unlocked byte (rs+0x148 record +0x12) = 1 if its AP item was received, else 0. This LOCKS
+        content the scenario BASE BIN pre-unlocks (e.g. basic enrichment baked into Scenario_22_Empty)
+        until its item arrives - grant() is ONE-WAY (only unlocks), so without this such content is
+        free from the start. Mechanic content is excluded (gated at /pz_install via the fdb re-point).
+        Idempotent + restart-correct (driven each tick from the full received set); only writes on
+        change. Returns True if applied/nothing-to-do, False if the maps aren't readable yet (retry).
+
+        Scope: the PER-CONTENT (named) universe only. The progressive 'exhibit_enrichment' family
+        (grant_progressive) flips the lowest-locked type-1 content, which can overlap this named pool;
+        if a progressive grant lands on a named content this re-locks it next tick (per-content wins)."""
+        reg = self._registry_index()
+        if reg is None:
+            return False
+        m = self._unlock_map()
+        if m is None:
+            return False
+        gated = self._resolve_animal_cids(reg, universe_contents)
+        if not gated:
+            return True
+        want_unlocked = set(self._resolve_animal_cids(reg, received_contents))
+        try:
+            locked, unlocked = self._apply_reward_gate(m, gated, want_unlocked)
+        except Exception as e:
+            logger.warning("reward gate: reconcile failed (%s)", e)
+            return False
+        if locked or unlocked:
+            logger.info("reward gate: animal content re-synced (locked %d not-yet-received, unlocked %d received)",
+                        locked, unlocked)
+        return True
+
+    def _resolve_animal_cids(self, reg, contents) -> Dict[int, str]:
+        """{content id -> content} for ANIMAL (non-mechanic) contents resolvable in the intern registry.
+        Mechanic content is gated at /pz_install (re-pointed gate), not via the rs+0x148 unlock byte."""
+        out: Dict[int, str] = {}
+        for content in contents:
+            if is_mechanic_content(content):
+                continue
+            cid = reg.lookup(content)
+            if cid is not None:
+                out[cid] = content
+        return out
+
+    def _apply_reward_gate(self, m, gated, want_unlocked) -> Tuple[int, int]:
+        """Set unlocked = (cid in want_unlocked) for every gated cid in the unlock map; only writes on
+        change. Returns (locked, unlocked) write counts. Locking is a byte-only gate (no bookkeeping);
+        unlocking goes through _flip so per-type bookkeeping (counts/levels) stays consistent."""
+        rs = self.research._research_system()
+        locked = unlocked = 0
+        for rec, cid, typ, flag in m.iter_records():
+            if cid not in gated:
+                continue
+            target = 1 if cid in want_unlocked else 0
+            if flag == target:
+                continue
+            if target:
+                self._flip(rs, rec, cid, typ, 0)                     # unlock (+ per-type bookkeeping)
+                unlocked += 1
+            else:
+                self.scanner.write_bytes(rec + REC_UNLOCKED, b"\x00")  # lock: byte-only gate
+                locked += 1
+        return locked, unlocked
+
+    def _family_level_map(self, reg, family: str) -> Dict[int, int]:
+        """{content id -> level k} for every <Species><Family>L<k> of `family`, cached per family. Built
+        from the (already-cached) intern index once, so the per-tick reconcile is just dict work."""
+        cached = self._level_maps.get(family)
+        if cached is None:
+            rx = FAMILY_LEVEL_RE[family]
+            cached = {cid: int(mo.group(1)) for name, cid in reg.build_index().items()
+                      if (mo := rx.search(name))}
+            self._level_maps[family] = cached
+        return cached
+
+    def reconcile_progressive_levels(self, family: str, received_count: int) -> bool:
+        """Authoritatively gate a COUNT-BASED per-species LEVEL family (supplement/breeding/education/
+        exhibit_enrichment): the progressive item's N-th received copy unlocks level <= N for EVERY
+        species that has it - sets each <Species><Family>L<k> content's unlocked byte = (k <=
+        received_count). The barrier model: restart-correct, driven each tick from the received progressive
+        count. Idempotent (writes on change). False if the maps aren't readable yet (retry)."""
+        if family not in FAMILY_LEVEL_RE:
+            logger.warning("progressive levels: unknown family %r", family)
+            return False
+        reg = self._registry_index()
+        if reg is None:
+            return False
+        m = self._unlock_map()
+        if m is None:
+            return False
+        levels = self._family_level_map(reg, family)
+        if not levels:
+            return True
+        want_unlocked = {cid for cid, lvl in levels.items() if lvl <= received_count}
+        try:
+            locked, unlocked = self._apply_reward_gate(m, levels, want_unlocked)
+        except Exception as e:
+            logger.warning("%s level reconcile failed (%s)", family, e)
+            return False
+        if locked or unlocked:
+            logger.info("%s gate: level<=%d -> unlocked %d, locked %d", family, received_count, unlocked, locked)
         return True
 
     def reconcile_mechanic(self, contents) -> bool:

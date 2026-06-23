@@ -170,6 +170,110 @@ def test_progressive_grants_lowest_locked_of_family():
     assert flags[0x21] == 1, "the locked supplement content got unlocked"
 
 
+def test_reconcile_rewards_locks_not_received_and_unlocks_received():
+    # The base-bin bug: enrichment that's research-locked in vanilla ships UNLOCKED in the scenario bin.
+    # reconcile_rewards authoritatively sets unlocked = (item received): received -> 1, the rest -> 0.
+    s = FakeScanner()
+    _build(s, names={0x10: "en_blood_pumpkin", 0x11: "en_slow_feeder", 0x12: "en_chew_toy",
+                     0x20: "foodshopspizzapen"},
+           # blood_pumpkin received-but-locked; slow_feeder + chew_toy NOT received but pre-unlocked (the bug);
+           # foodshops = mechanic content that happens to be in the map and unlocked.
+           unlock_records=[(0x10, 1, 0), (0x11, 1, 1), (0x12, 1, 1), (0x20, 1, 1)])
+    g = _granter(s)
+    universe = ["EN_Blood_Pumpkin", "EN_Slow_Feeder", "EN_Chew_Toy", "FoodShopsPizzaPen"]
+    assert g.reconcile_rewards(received_contents=["EN_Blood_Pumpkin"], universe_contents=universe) is True
+    flags = {cid: flag for _, cid, _, flag in rewards.UnlockMap(s, RS).iter_records()}
+    assert flags[0x10] == 1, "received content unlocked"
+    assert flags[0x11] == 0, "not-received pre-unlocked enrichment LOCKED (the fix)"
+    assert flags[0x12] == 0, "not-received pre-unlocked enrichment LOCKED (the fix)"
+    assert flags[0x20] == 1, "mechanic content excluded from the animal gate -> left untouched"
+
+
+def test_reconcile_rewards_idempotent_only_writes_on_change():
+    s = FakeScanner()
+    _build(s, names={0x10: "en_blood_pumpkin", 0x11: "en_slow_feeder"},
+           unlock_records=[(0x10, 1, 0), (0x11, 1, 1)])
+    g = _granter(s)
+    universe = ["EN_Blood_Pumpkin", "EN_Slow_Feeder"]
+    assert g.reconcile_rewards(["EN_Blood_Pumpkin"], universe) is True  # unlock 0x10, lock 0x11
+    after_first = {cid: flag for _, cid, _, flag in rewards.UnlockMap(s, RS).iter_records()}
+    assert after_first == {0x10: 1, 0x11: 0}
+    # Second pass with the same state must write NOTHING (idempotent).
+    writes = []
+    orig = s.write_bytes
+    s.write_bytes = lambda a, d: (writes.append(a), orig(a, d))[1]
+    assert g.reconcile_rewards(["EN_Blood_Pumpkin"], universe) is True
+    s.write_bytes = orig
+    assert writes == [], "no writes when already in the desired state"
+
+
+def test_reconcile_progressive_levels_exhibit_enrichment_by_count():
+    # Quantity-3 'Progressive Exhibit Enrichment': N copies received -> unlock level <= N for ALL exhibit
+    # animals (count-based, like barriers). Two exhibit species x levels 1..3 (type 1), plus a habitat
+    # EN_* (per-content gated) that this gate must NEVER touch.
+    s = FakeScanner()
+    names = {0x10: "en_grazing_ball",
+             0x20: "amazongiantcentipedeenrichmentl1", 0x21: "amazongiantcentipedeenrichmentl2",
+             0x22: "amazongiantcentipedeenrichmentl3",
+             0x30: "giantdeserthairyscorpionenrichmentl1", 0x31: "giantdeserthairyscorpionenrichmentl2",
+             0x32: "giantdeserthairyscorpionenrichmentl3"}
+    exhibit = (0x20, 0x21, 0x22, 0x30, 0x31, 0x32)
+    _build(s, names=names, unlock_records=[(0x10, 1, 1)] + [(c, 1, 0) for c in exhibit])
+    g = _granter(s)
+    def flags():
+        return {cid: f for _, cid, _, f in rewards.UnlockMap(s, RS).iter_records()}
+
+    assert g.reconcile_progressive_levels("exhibit_enrichment", 0) is True
+    assert all(flags()[c] == 0 for c in exhibit), "count 0 -> all exhibit levels locked"
+    assert flags()[0x10] == 1, "habitat enrichment never touched by the exhibit gate"
+
+    assert g.reconcile_progressive_levels("exhibit_enrichment", 1) is True
+    f = flags()
+    assert f[0x20] == 1 and f[0x30] == 1, "level 1 unlocked for ALL exhibit species"
+    assert f[0x21] == 0 and f[0x22] == 0 and f[0x31] == 0 and f[0x32] == 0, "levels 2/3 still locked"
+
+    assert g.reconcile_progressive_levels("exhibit_enrichment", 3) is True
+    assert all(flags()[c] == 1 for c in exhibit), "count 3 -> all levels for all exhibit species"
+
+    assert g.reconcile_progressive_levels("exhibit_enrichment", 1) is True  # authoritative: RE-LOCKS 2/3
+    f = flags()
+    assert f[0x20] == 1 and f[0x30] == 1 and f[0x21] == 0 and f[0x32] == 0
+    assert flags()[0x10] == 1
+
+
+def test_reconcile_progressive_levels_generalizes_per_family():
+    # The same count gate serves every level family by name pattern <Species><Family>L<k>, with the family's
+    # OWN record type for bookkeeping (supplement = type 0). Levels run 1..2 here. Each family is isolated:
+    # the supplement gate must not touch breeding content (and vice versa).
+    s = FakeScanner()
+    names = {0x40: "aardvarksupplementl1", 0x41: "aardvarksupplementl2",
+             0x50: "aardvarkbreedingl1", 0x51: "aardvarkbreedingl2"}
+    _build(s, names=names, unlock_records=[(0x40, 0, 0), (0x41, 0, 0), (0x50, 2, 0), (0x51, 2, 0)])
+    g = _granter(s)
+    def flags():
+        return {cid: f for _, cid, _, f in rewards.UnlockMap(s, RS).iter_records()}
+    assert g.reconcile_progressive_levels("supplement", 1) is True
+    f = flags()
+    assert f[0x40] == 1 and f[0x41] == 0, "supplement level 1 unlocked, level 2 locked"
+    assert f[0x50] == 0 and f[0x51] == 0, "breeding content untouched by the supplement gate"
+    assert g.reconcile_progressive_levels("breeding", 2) is True
+    f = flags()
+    assert f[0x50] == 1 and f[0x51] == 1, "breeding levels 1+2 unlocked"
+    assert f[0x40] == 1 and f[0x41] == 0, "supplement state preserved"
+
+
+def test_reconcile_progressive_levels_unknown_family_is_false():
+    s = FakeScanner()
+    _build(s, names={0x40: "aardvarksupplementl1"}, unlock_records=[(0x40, 0, 0)])
+    assert _granter(s).reconcile_progressive_levels("zoopedia", 3) is False
+
+
+def test_reconcile_rewards_unreadable_map_retries():
+    s = FakeScanner()  # nothing built -> registry/map unreadable
+    g = _granter(s)
+    assert g.reconcile_rewards(["EN_Herbs"], ["EN_Herbs"]) is False, "unreadable maps -> False (caller retries)"
+
+
 class FakeBarrierResearch:
     """Fake ResearchReader for reconcile_barriers/reconcile_facilities: a mechanic items map (rs+0xF8) over the
     FakeScanner. Each item has a status byte at a fake address (start 0 = locked); scan_records reads it live so

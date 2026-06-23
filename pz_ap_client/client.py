@@ -203,6 +203,12 @@ class PZContext(CommonContext):
     # early-game tiny unlocked pool still offers a usable selection (see _reconcile_market_fill).
     MARKET_MIN_LISTINGS = 8
 
+    # Max poll ticks to hold item application while the fresh-save signal (park age) is still
+    # resolving, so a fresh zoo's starting-money baseline is written BEFORE any cash item lands on top
+    # (see _apply_new_items / _fresh_signal_pending). After this many waits we apply anyway, so a
+    # disabled/broken park-age anchor can never block items forever.
+    FRESH_WAIT_MAX = 8
+
     def __init__(self, server_address: Optional[str], password: Optional[str],
                  data_path: Optional[str] = None, applier: Optional[EffectApplier] = None,
                  state_dir: Optional[str] = None):
@@ -228,10 +234,12 @@ class PZContext(CommonContext):
         self._market_last_applied_ids = frozenset()  # last resolved id set applied (re-apply if it grows as the research map loads)
         self._park_age = None  # ParkAgeReader (memory mode); reads park years-open to detect a fresh save
         self._session = None  # ApSessionDetector (memory mode); is the LOADED park the AP scenario?
+        self._session_was_active = False  # was the AP park loaded last tick? (detect unload -> clean up market gates)
         self._scanner = None  # the shared MemoryScanner (memory mode)
         self._fresh_reset_done = False  # re-awarded all items for a fresh zoo once this session
         self._ovl_job_running = False  # one ovl install/restore at a time (see run_ovl_job)
         self._initial_applied: "Optional[int]" = None  # high-water mark at session start (drives re-award)
+        self._fresh_wait_ticks = 0  # ticks spent holding item apply for the park-age (fresh) signal to land
         self._preflight_done = False  # run the signatures self-check once on first attach (fail-loud)
         self._pending_checks: List[int] = []  # location ids queued by the poll thread, sent on the loop
         self.poll_interval: float = 1.0
@@ -401,7 +409,15 @@ class PZContext(CommonContext):
         detection, item application, gate installs/reconciles - NO server sends (checks are queued via
         _collect_check). Each step is isolated so one failure doesn't abort the rest of the tick."""
         if not self._session_active():
+            if self._session_was_active:
+                # The AP park just unloaded (Exit-to-Menu / loaded another save). Restore the market gates
+                # NOW, while the exchange manager may still resolve: their repointed include-set would
+                # otherwise be freed by the engine's teardown of its OWN buffer (a foreign-pointer free ->
+                # crash on exit). Best-effort + race-aware (restore() re-resolves + skips if already gone).
+                self._session_was_active = False
+                self._on_park_unload()
             return
+        self._session_was_active = True
         steps = (
             ("triggers", lambda: self.trigger_source.poll(self.effective_checked)),  # game events -> checks
             ("preflight", self._run_preflight),        # once, on first attach: self-check patch-sensitive sites
@@ -413,6 +429,7 @@ class PZContext(CommonContext):
             ("research", self._reconcile_research),        # research gate = (research facilities received?)
             ("facility_reveal", self._reconcile_facility_reveal),  # reveal RC/Workshop build items (fdb-hide)
             ("mechanic_content", self._reconcile_mechanic_content),  # shops/themes/blueprints/transport/staff/power gates
+            ("rewards", self._reconcile_rewards),          # animal research_reward (enrichment...) = unlocked iff received
             ("terrain", self._reconcile_terrain),          # native terrain-tool greying = received tool set
             ("market", self._reconcile_market),            # scenario market stocked = unlocked species only
             ("market_fill", self._reconcile_market_fill),  # bootstrap fill: keep a minimum selection in both markets
@@ -591,10 +608,35 @@ class PZContext(CommonContext):
             return 0
         return self.state.get(self.seed_name or "unknown", self.slot)
 
+    def _fresh_signal_pending(self) -> bool:
+        """True while the fresh-save signal (park age) is EXPECTED but not yet resolved. The park-age
+        anchor reads None on the first tick(s) and only lands a tick later; until it does we can't tell
+        a fresh zoo (which needs its starting-money baseline set first) from an established one, so item
+        application holds. False when park-age is disabled/unavailable (no signal to wait for) or once
+        it resolves - so this never blocks indefinitely."""
+        from .memory.zoodate import PARKAGE_ENABLED
+        if not PARKAGE_ENABLED or self._park_age is None:
+            return False
+        return self._park_years() is None
+
     def _apply_new_items(self) -> None:
         if self.state is None or self.slot is None:
             return
         seed = self.seed_name or "unknown"
+        # Hold item application until the fresh-save signal (park age) resolves, so a fresh zoo's
+        # starting-money baseline (_apply_starting_money, inside _maybe_fresh_reset) is written BEFORE
+        # any Cash Injection lands on top. Without this, the first tick reads park-age None -> the
+        # fresh-reset no-ops -> items apply on the scenario's BAKED starting cash, and the baseline
+        # write a tick later clobbers them (observed: cash climbs via injections, then snaps to $50k).
+        # Only holds when there's something to apply and the signal is still pending; bounded by
+        # FRESH_WAIT_MAX so a disabled/broken anchor degrades to applying anyway (old behaviour).
+        if (self.state.get(seed, self.slot) < len(self.items_received)
+                and self._fresh_signal_pending()
+                and self._fresh_wait_ticks < self.FRESH_WAIT_MAX):
+            self._fresh_wait_ticks += 1
+            logger.info("apply: holding items for the fresh-save signal (park age) to resolve so "
+                        "starting money lands first [%d/%d]", self._fresh_wait_ticks, self.FRESH_WAIT_MAX)
+            return
         # Capture the high-water mark at SESSION START (before this session applies anything). The
         # fresh-save re-award keys off THIS, not the live mark: a first connect to a fresh zoo (mark 0)
         # must apply items once - NOT apply then re-award (which would double cumulative cash/cc, since the
@@ -741,6 +783,46 @@ class PZContext(CommonContext):
         except Exception:
             logger.exception("mechanic content reconcile failed")
 
+    def _reconcile_rewards(self) -> None:
+        """Authoritatively gate ANIMAL research rewards each tick (restart-correct). Two pools:
+        (1) PER-CONTENT (enrichment items, etc.): unlocked byte = (its AP item received?). LOCKS content
+            the base scenario bin pre-unlocks (e.g. basic enrichment baked into Scenario_22_Empty -
+            research-locked in vanilla but the bin ships it unlocked) until its item arrives; the
+            applier's grant() is ONE-WAY (only unlocks), so without this such content is free from start.
+        (2) COUNT-BASED per-species LEVEL families (supplement/breeding/education/exhibit_enrichment):
+            the family's N received copies unlock level <= N for EVERY species that has it.
+        Mechanic content is excluded (gated at /pz_install)."""
+        if self.reward_granter is None:
+            return
+        from .memory.rewards import LEVEL_FAMILIES, is_mechanic_content
+
+        def _is_animal_rr(it) -> bool:
+            return (it is not None and it.effect_type == "research_reward"
+                    and bool(it.effect_args.get("content"))
+                    and not is_mechanic_content(it.effect_args["content"]))
+
+        universe = [i.effect_args["content"] for i in self.game_data.items if _is_animal_rr(i)]
+        received = [it.effect_args["content"] for net_item in self.items_received
+                    if _is_animal_rr(it := self.game_data.item_by_id.get(net_item.item))]
+        try:
+            self.reward_granter.reconcile_rewards(received, universe)
+        except Exception:
+            logger.exception("reward reconcile failed")
+        # Count-based level families: the k-th received copy of the family's progressive item unlocks
+        # level k for every species that has it (like barriers).
+        counts = dict.fromkeys(LEVEL_FAMILIES, 0)
+        for net_item in self.items_received:
+            it = self.game_data.item_by_id.get(net_item.item)
+            if it is not None and it.effect_type == "progressive_research_reward":
+                fam = it.effect_args.get("family")
+                if fam in counts:
+                    counts[fam] += 1
+        for fam, count in counts.items():
+            try:
+                self.reward_granter.reconcile_progressive_levels(fam, count)
+            except Exception:
+                logger.exception("%s level reconcile failed", fam)
+
     def _reconcile_research(self) -> None:
         """Drive the research-start gate from the COMPLETE set of received research facilities
         (research_centre -> animal research, workshop -> mechanic research). Authoritative +
@@ -812,6 +894,24 @@ class PZContext(CommonContext):
             if self.exhibit_gate is not None and self.exhibit_gate.scenario_mode():
                 self.exhibit_gate.apply_unlocked(allowed_ids)
                 self.exhibit_gate.expire_blocked_listings(allowed_ids)
+
+    def _on_park_unload(self) -> None:
+        """The AP park unloaded (Exit-to-Menu / loading another save). Restore the market gates' include-set
+        to the engine's own buffer BEFORE the game's park teardown frees it - otherwise the engine frees our
+        VirtualAllocEx buffer (a foreign pointer) and crashes. restore() re-resolves the manager and writes
+        only if it still resolves, so this is safe whether the manager is still alive or already gone (in the
+        latter case the crash window was already missed - nothing we can do from a ~1s poll). Resets the
+        apply-cache so the gate re-applies if the AP scenario reloads. Detours are process-stable and
+        self-heal on re-attach, so they're intentionally left installed."""
+        logger.info("AP park unloaded - restoring market gates before the engine tears them down")
+        for gate in (self.market_gate, self.exhibit_gate):
+            if gate is not None:
+                try:
+                    gate.restore()
+                except Exception:
+                    logger.exception("market gate restore on park-unload failed")
+        self._market_last_allowed = None        # force a fresh apply if the AP scenario reloads
+        self._market_last_applied_ids = frozenset()
 
     def _reconcile_market_fill(self) -> None:
         """Bootstrap fill: each tick, keep both autofill markets stocked with a minimum selection so an
@@ -984,13 +1084,16 @@ def _log_mod_status() -> None:
 
 
 def _shutdown_gates(ctx) -> None:
-    """Restore every installed code patch / detour on the way out (trigger birth-detour, the
-    permit / placement / research-start hooks, and the presence-fill + terrain bytecode patches).
+    """Restore every installed code patch / detour / market repoint on the way out (trigger birth+exhibit
+    detours, the permit / placement / research-start hooks, the presence-fill + terrain bytecode patches,
+    AND the two market gates - whose include-set repoint MUST be restored so the engine frees its own
+    buffer, not our VirtualAllocEx allocation = the Exit-to-Menu/Exit-Game crash).
 
     Each restore is isolated: one gate raising MUST NOT abort the loop and leave the rest of the
     detours installed - a leaked detour forces the NEXT startup into a recovery scan (and, for the
     trigger birth-detour, can require a game restart to clear). Best-effort, never raises."""
     for gate, method in ((ctx.trigger_source, "close"), (ctx.permit_gate, "shutdown"),
+                         (ctx.market_gate, "shutdown"), (ctx.exhibit_gate, "shutdown"),
                          (ctx.facility_gate, "shutdown"), (ctx.research_gate, "shutdown"),
                          (ctx.presence_gate, "shutdown"), (ctx.terrain_gate, "shutdown")):
         if gate is None:

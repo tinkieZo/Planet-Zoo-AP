@@ -190,8 +190,14 @@ class MemoryEffectApplier(EffectApplier):
         return self.reward_granter.grant(content)  # ANIMAL content -> rs+0x148 flag flip
 
     def on_progressive_research_reward(self, item: "Item") -> bool:
-        """Grant the next tier of a progressive reward family (supplement/education/breeding/
-        exhibit enrichment) - flips the lowest still-locked content of that record type."""
+        """Acknowledge a progressive reward. ALL current families are COUNT-BASED and reconciled each tick
+        from the received-copy COUNT (restart-correct, like on_program_unlock), so the high-water mark just
+        advances here and the tick does the authoritative work:
+          'barrier' (client._reconcile_barriers) -> grade<=N boundaries buildable;
+          'supplement'/'breeding'/'education'/'exhibit_enrichment' (client._reconcile_rewards ->
+          reward_granter.reconcile_progressive_levels) -> welfare/enrichment level<=N unlocked for EVERY
+          species that has it (the item's quantity = the tier count).
+        An unknown family falls back to the one-shot grant_progressive."""
         if not self._ensure_attached():
             return False
         family = item.effect_args.get("family")
@@ -201,12 +207,8 @@ class MemoryEffectApplier(EffectApplier):
         if self.reward_granter is None:
             logger.warning("progressive_research_reward %r: no RewardGranter wired - cannot apply", family)
             return False
-        if family == "barrier":
-            # Barriers are habitat-boundary build content gated by mechanic research, reconciled each tick
-            # from the received-level COUNT (client._reconcile_barriers -> reward_granter.reconcile_barriers):
-            # level N makes grade<=N barriers buildable via status-write (buildable>=3, location==4, so no
-            # false check). Acknowledge here so the high-water mark advances; the tick does the work
-            # (restart-correct), like on_program_unlock.
+        from .rewards import LEVEL_FAMILIES
+        if family == "barrier" or family in LEVEL_FAMILIES:
             return True
         return self.reward_granter.grant_progressive(family)
 

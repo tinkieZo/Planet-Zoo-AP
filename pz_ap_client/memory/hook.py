@@ -761,6 +761,103 @@ def read_insert_events(scanner, scratch: int, cursor: int) -> "tuple[int, List[d
     return count, out
 
 
+# Scratch layout for the EXHIBIT add-animal instrument (sess9 RE; see memory exhibit-detection-re.md):
+#   [scratch + 0x00]      u32  monotonic add count (poll cursor)
+#   [scratch + RING_OFF]  ring of EXHIBIT_RING slots (EXHIBIT_REC bytes each), per add:
+#       slot + 0x00  i32 iVar8 = [param_3+0xc] - the ACQUIRE-vs-BREED classifier: -1 (0xFFFFFFFF) for a
+#                    fresh-construct BIRTH, a real preset animal id (e.g. 0x10230) for an ACQUIRE (market
+#                    buy / transfer). Live-confirmed 2026-06-23 (purchase iVar8=0x10230; 4 births all -1).
+#       slot + 0x04  pad
+#       slot + 0x08  EXHIBIT_NAME_BYTES of the species NAME token (ascii, null-terminated), copied from
+#                    [*param_3] - param_3 (=r8 at entry) is the input params; its first qword points at the
+#                    species name string ("GoliathBeetle"/"GiantDesertHairyScorpion"). The fn interns this on
+#                    the common path, so it's populated for BOTH purchase and birth. The client maps it ->
+#                    species_key via ResearchReader.species_key_for_name (registry/index-namespace-free).
+# Hook site = module_base + 0xA31F20 = FUN_140a31f20 ENTRY (the only runtime exhibit-animal construct; save/
+# load use separate fns). The 0xA3202C commit point is inside the `if(iVar8==-1)` branch = BIRTH-ONLY -> a
+# purchase (iVar8 != -1) takes the else branch and never reaches it, so we hook the ENTRY (common to both).
+# Original 7 bytes = `MOV RAX,RSP; MOV [RAX+0x20],R9` (488bc44c894820, position-independent -> relocatable).
+# At entry: rcx/rdx/r8/r9 = param_1..4 (the prologue spills them - the detour must NOT corrupt them; it only
+# READS r8), and rsp+0x28 = the entry rsp (after the detour's 5 pushes). Wired via "exhibit_insert".
+# NOTE: the caller-stack 0xC1BF1D2 marker was REJECTED as a classifier - stale stack from a prior purchase
+# leaked a false positive onto the next birth (live 2026-06-23); iVar8 is the reliable, stateless signal.
+EXHIBIT_RING = 8
+EXHIBIT_RING_OFF = 0x100
+EXHIBIT_NAME_BYTES = 0x28           # bytes of the species name token copied (covers the longest; ascii+null)
+EXHIBIT_REC = 0x8 + EXHIBIT_NAME_BYTES  # iVar8(+pad) + name = 0x30; RING_OFF+RING*REC = 0x280 < 0x1000
+EXHIBIT_IVAR8_PARAM_OFF = 0xC      # [param_3 + 0xc] = iVar8 (the classifier; param_3 = r8 at entry)
+EXHIBIT_BIRTH_SENTINEL = 0xFFFFFFFF  # iVar8 == -1 => fresh construct = BIRTH; any other value => ACQUIRE
+
+
+def make_exhibit_instrument(region: int, scratch: int, resume_addr: int, original: bytes) -> bytes:
+    """Trampoline for the exhibit add-animal construct ENTRY (Planet Zoo 0xA31F20 = FUN_140a31f20 entry).
+
+    At entry r8 = param_3 (the input params); the function spills rcx/rdx/r8/r9 in its prologue, so the
+    detour must leave those (and rsp) untouched - it only READS r8. Captures, per add, into a ring slot:
+    (1) iVar8 = [r8+0xc] (the acquire-vs-breed classifier; -1 = birth, else = acquire), and (2) the species
+    NAME string from [*param_3] = [[r8]] (the token the fn interns - resolvable + namespace-free). Bumps the
+    count, then runs the relocated `MOV RAX,RSP; MOV [RAX+0x20],R9` and jmps back to entry+7. Uses
+    rax/rcx/rsi/rdi + flags (push/pop), all restored before the original runs (so RAX=RSP is captured
+    correctly and the arg spills see the real args). *param_3 is set by the caller before the call, so it's
+    valid here. Fires for BOTH purchase and birth (both pass through the entry)."""
+    body = (
+        b"\x9C"                                          # pushfq
+        b"\x50"                                          # push rax
+        b"\x51"                                          # push rcx
+        b"\x56"                                          # push rsi
+        b"\x57"                                          # push rdi
+        + b"\x48\xB8" + struct.pack("<Q", scratch)       # movabs rax, scratch
+        + b"\x8B\x08"                                    # mov  ecx, [rax]      ; count
+        + b"\xFF\xC1"                                    # inc  ecx
+        + b"\x89\x08"                                    # mov  [rax], ecx      ; count++
+        + b"\xFF\xC9"                                    # dec  ecx             ; old = index
+        + b"\x83\xE1" + bytes([EXHIBIT_RING - 1])        # and  ecx, RING-1
+        + b"\x69\xC9" + struct.pack("<i", EXHIBIT_REC)   # imul ecx, ecx, REC   ; slot byte offset
+        + b"\x48\x8D\xB8" + struct.pack("<i", EXHIBIT_RING_OFF)   # lea rdi,[rax+RING_OFF]
+        + b"\x48\x01\xCF"                                # add  rdi, rcx        ; rdi = dest slot
+        + b"\x41\x8B\x40" + bytes([EXHIBIT_IVAR8_PARAM_OFF])      # mov eax,[r8+0xc]  ; iVar8 (classifier)
+        + b"\x89\x07"                                    # mov  [rdi], eax      ; slot+0 = iVar8
+        + b"\x48\x83\xC7\x08"                            # add  rdi, 8          ; -> name area (slot+8)
+        + b"\x49\x8B\x30"                                # mov  rsi, [r8]       ; rsi = *param_3 = name ptr
+        + b"\xB9" + struct.pack("<I", EXHIBIT_NAME_BYTES // 8)    # mov ecx, NAME/8
+        + b"\xFC"                                        # cld
+        + b"\xF3\x48\xA5"                                # rep movsq            ; copy the name -> slot+8
+        + b"\x5F"                                        # pop  rdi
+        + b"\x5E"                                        # pop  rsi
+        + b"\x59"                                        # pop  rcx
+        + b"\x58"                                        # pop  rax
+        + b"\x9D"                                        # popfq
+        + original                                       # MOV RAX,RSP; MOV [RAX+0x20],R9 (relocated)
+    )
+    return _final_jmp(body, region, resume_addr)
+
+
+def read_exhibit_events(scanner, scratch: int, cursor: int) -> "tuple[int, List[dict]]":
+    """Drain new exhibit-animal adds recorded by ``make_exhibit_instrument``. Returns ``(new_cursor,
+    events)`` where each event is ``{"ivar8": int, "name": str}`` (the classifier value + species name
+    token). Caps at EXHIBIT_RING (older entries overwritten -> reported lost; harmless for once-per-species
+    detection - duplicate adds of the same species/type don't matter)."""
+    count = struct.unpack("<I", scanner.read_bytes(scratch, 4))[0]
+    if count <= cursor:
+        return count, []
+    out: List[dict] = []
+    first = max(cursor + 1, count - EXHIBIT_RING + 1)
+    for n in range(first, count + 1):
+        idx = (n - 1) & (EXHIBIT_RING - 1)
+        slot = scratch + EXHIBIT_RING_OFF + idx * EXHIBIT_REC
+        rec = scanner.read_bytes(slot, EXHIBIT_REC)
+        name = rec[0x8:0x8 + EXHIBIT_NAME_BYTES].split(b"\x00", 1)[0].decode("ascii", "replace")
+        out.append({"ivar8": struct.unpack_from("<I", rec, 0)[0], "name": name})
+    return count, out
+
+
+def exhibit_event_is_acquire(ivar8: int) -> bool:
+    """Classify a captured exhibit add as ACQUIRE (market buy / transfer) vs BREED. iVar8 = [param_3+0xc]
+    is -1 (0xFFFFFFFF) for a fresh-construct BIRTH and a real preset animal id for an ACQUIRE. Returns True
+    (ACQUIRE) iff iVar8 != -1. Live-confirmed 2026-06-23 (purchase iVar8=0x10230; 4 births all -1)."""
+    return (ivar8 & 0xFFFFFFFF) != EXHIBIT_BIRTH_SENTINEL
+
+
 def read_birth_events(scanner, scratch: int, cursor: int) -> "tuple[int, List[int]]":
     """Drain new birth events recorded by ``make_birth_trampoline``.
 

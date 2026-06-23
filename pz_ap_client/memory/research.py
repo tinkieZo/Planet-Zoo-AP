@@ -350,6 +350,15 @@ class ResearchReader:
             return None
         return self.token_to_key.get(_norm_token(name))
 
+    def species_key_for_name(self, name: str) -> Optional[str]:
+        """Resolve a raw engine species NAME/token (e.g. 'GoliathBeetle', 'GiantDesertHairyScorpion') to a
+        data.json species_key via the normalized token map - the same final step as species_key_for_handle
+        but starting from the name directly (no registry id lookup). Used by the exhibit detector, which
+        captures the species name from the construct params. None if no token map or the name is unmapped."""
+        if not name or not self.token_to_key:
+            return None
+        return self.token_to_key.get(_norm_token(name))
+
     def handle_key_map(self, snap: Optional[Tuple[dict, dict]] = None) -> Dict[int, str]:
         """{species_handle -> species_key} for every species present in the research map this
         session. Built from the registry (covers ALL species); falls back to the captured

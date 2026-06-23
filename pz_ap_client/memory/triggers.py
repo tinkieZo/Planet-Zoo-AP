@@ -22,6 +22,7 @@ from typing import Callable, List
 
 from .anchors import AnchorTable
 from .births import BirthDetector
+from .exhibits import ExhibitDetector
 from .releases import ReleaseDetector
 from .research import ResearchReader
 from .scanner import MemoryScanner
@@ -56,6 +57,12 @@ class MemoryTriggerSource:
         # (newborn vs bought); species attributed via entity+0x50 reverse-mapped through the
         # research handle table (shared reader). See births.py / the A2 spike.
         self.births = BirthDetector(scanner, research=self.research)
+        # A3 exhibit detection: EXHIBIT animals use a separate add path (FUN_140a31f20) and have no newborn
+        # life-stage, so the habitat detector misses them. The exhibit detour captures species id + a caller-
+        # stack window; acquire-vs-breed is classified by a buy-handler return address on the stack. Its
+        # detected keys feed the SAME bred/acquired sets, so the existing first_breed/first_acquire pollers
+        # fire for exhibit species too. Gated by EXHIBIT_DETECT_ENABLED; shares the registry-backed reader.
+        self.exhibits = ExhibitDetector(scanner, research=self.research)
         self._bred_species: set = set()      # species_keys observed born (cumulative)
         self._acquired_species: set = set()  # species_keys observed acquired (cumulative)
         self._released_species: set = set()  # species_keys observed released (cumulative)
@@ -109,11 +116,20 @@ class MemoryTriggerSource:
     # -- inserts (births + acquisitions share one drain) -----------------------
 
     def _poll_inserts(self, already: set) -> List[int]:
-        """Drain the add-animal insert ring once per tick and update the cumulative bred/acquired
-        sets. Fires nothing itself - _poll_first_breed / _poll_first_acquire read the sets."""
+        """Drain the add-animal rings once per tick and update the cumulative bred/acquired sets. Fires
+        nothing itself - _poll_first_breed / _poll_first_acquire read the sets. Both the habitat detector
+        (BirthDetector) and the exhibit detector (ExhibitDetector) feed the same sets; each must be drained
+        once per tick (its ring cursor advances), and an exhibit-detector failure can't abort the habitat
+        drain (or vice-versa)."""
         born, acquired = self.births.poll_events()
         self._bred_species.update(born)
         self._acquired_species.update(acquired)
+        try:
+            exh_born, exh_acquired = self.exhibits.poll_events()
+            self._bred_species.update(exh_born)
+            self._acquired_species.update(exh_acquired)
+        except Exception:
+            logger.exception("exhibit insert drain failed (skipping this tick)")
         return []
 
     def _poll_first_breed(self, already: set) -> List[int]:
@@ -201,6 +217,7 @@ class MemoryTriggerSource:
     def close(self) -> None:
         """Restore the code-patch detours (call on disconnect / shutdown)."""
         self.births.shutdown()
+        self.exhibits.shutdown()
         self.releases.shutdown()
 
     # -- milestones ------------------------------------------------------------

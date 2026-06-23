@@ -305,11 +305,63 @@ def test_autofill_gates() -> None:
         _check(m.read_i32(mgr + g._TARGET) == 99999, f"{label}: insane target left untouched")
 
 
+def test_market_restore_and_underfill() -> None:
+    """Crash-fix + refill-fix guards. (1) apply captures the engine's ORIGINAL include-set; restore()
+    re-points it to the engine's own buffer (so the game frees its OWN allocation on park teardown, not our
+    VirtualAllocEx buffer = the Exit crash) and SKIPS if the manager no longer resolves (no foreign write).
+    (2) ensure_min_fill, when under-filled, WAKES the autofill (clears POOL_DIRTY + re-routes), not just
+    raising the target - the missing piece that left the market empty between permits."""
+    m = FakeMem()
+    mgr = 0x500000000
+    g = mk.SpeciesMarketGate(m, research=FakeResearch({}))
+    g._mgr_cache = mgr
+    g._alloc_buffer = lambda _s: 0x900000000        # fake our target buffer (skip VirtualAllocEx)
+    wl = mgr + g._DEFAULT_WL
+    inc = wl + mk.WL_INCLUDE_SET
+    # seed the ENGINE's original include-set state (its own buffer + flags) before we gate
+    ORIG_BUF, ORIG_CAP, ORIG_CNT = 0x111111111, 64, 9
+    m.write_i64(inc + mk.SET_BUFFER, ORIG_BUF)
+    m.write_i64(inc + mk.SET_CAP, ORIG_CAP)
+    m.write_i64(inc + mk.SET_COUNT, ORIG_CNT)
+    m.write_bytes(wl + mk.WL_INCLUDE_ACTIVE, b"\x00")
+    m.write_i32(mgr + g._WL_ID_SCEN, 7)
+
+    g.apply_unlocked([0x3042, 0x3025])
+    _check(g._orig is not None and g._orig["buffer"] == ORIG_BUF, "apply captured the engine's original buffer")
+    _check(m.read_qword(inc + mk.SET_BUFFER) == 0x900000000, "include-set now points at OUR buffer (gated)")
+
+    g.exchange_mgr = lambda: mgr                     # restore re-resolves -> same mgr -> writes back
+    _check(g.restore() is True, "restore returns True")
+    _check(m.read_i64(inc + mk.SET_BUFFER) == ORIG_BUF, "include-set re-pointed to the engine's own buffer")
+    _check(m.read_i64(inc + mk.SET_CAP) == ORIG_CAP and m.read_i64(inc + mk.SET_COUNT) == ORIG_CNT,
+           "cap/count restored")
+    _check(m.read_i32(mgr + g._WL_ID_SCEN) == 7, "active whitelist id restored")
+    _check(g._orig is None and g.restore() is False, "restore is idempotent (clears saved original)")
+
+    # restore must SKIP (no write through a freed/foreign manager) if the park unloaded
+    g.apply_unlocked([0x1])
+    g.exchange_mgr = lambda: None
+    _check(g.restore() is False, "restore skips when the manager no longer resolves")
+
+    # under-filled -> wake the autofill (POOL_DIRTY clear + re-route), not just raise the target
+    g2 = mk.SpeciesMarketGate(m, research=FakeResearch({}))
+    g2._mgr_cache = mgr
+    m.write_i32(mgr + g2._TARGET, 2)
+    m.write_bytes(mgr + g2._POOL_DIRTY, b"\x01")     # dormant (dirty bit set, autofill idle)
+    m.write_bytes(mgr + g2._LIVE_COUNT, struct.pack("<q", 0))   # empty market
+    m.write_i32(mgr + g2._WL_ID_SCEN, 5)
+    g2.ensure_min_fill(8)
+    _check(m.read_bytes(mgr + g2._POOL_DIRTY, 1) == b"\x00", "under-filled -> POOL_DIRTY cleared (autofill woken)")
+    _check(m.read_i32(mgr + g2._WL_ID_SCEN) == 0, "under-filled -> re-routed to the default whitelist")
+    _check(m.read_bytes(mgr + g2._FORCE_SPAWN, 1) == b"\x01", "under-filled -> force-spawn set")
+
+
 def main() -> None:
     test_hash_set()
     test_registry()
     test_schedule_spawner()
     test_autofill_gates()
+    test_market_restore_and_underfill()
     print("\nAll market-gate tests passed.")
 
 

@@ -4,10 +4,17 @@
 #   .\build-exe.ps1                      # bundle .\vendor\Archipelago (default)
 #   .\build-exe.ps1 -ApSource D:\Archipelago   # bundle an Archipelago install from elsewhere
 #   $env:PZ_AP_SOURCE = 'D:\Archipelago'; .\build-exe.ps1   # same, via env var
-param([string]$ApSource, [string]$CobraSource, [switch]$SkipSelfTest)
+param([string]$ApSource, [string]$CobraSource, [switch]$SkipSelfTest, [string]$VenvPath = '.venv')
 $ErrorActionPreference = 'Stop'
 $root = $PSScriptRoot
-$venvPy = Join-Path $root '.venv\Scripts\python.exe'
+# Which venv to freeze. Default .venv. Pass -VenvPath .venv313 to build on the staged Python 3.13 venv:
+# 3.11.9 is the LAST Python 3.11 with a Windows installer (3.11.10-3.11.13 are source-only), so AP's
+# ModuleUpdate "Python ... has security issues" warning (it wants >=3.11.13) can only be cleared by
+# building on 3.12/3.13. A relative path resolves against the repo root. (The whole script invokes the
+# venv via `& $venvPy -m ...`, never a Scripts\*.exe launcher, so the venv also survives being moved.)
+if (-not $VenvPath) { $VenvPath = '.venv' }
+$venvDir = if ([System.IO.Path]::IsPathRooted($VenvPath)) { $VenvPath } else { Join-Path $root $VenvPath }
+$venvPy = Join-Path $venvDir 'Scripts\python.exe'
 
 if (-not (Test-Path $venvPy)) {
     Write-Error "venv Python not found at $venvPy. Set up the venv first (see docs/PACKAGING.md)."

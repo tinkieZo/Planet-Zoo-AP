@@ -58,6 +58,9 @@ HOOKS: List[HookSite] = [
     HookSite("research_start", 0xE461C6, "41c6474902",
              "research-START status write (ResearchGate)",
              aob="41 C6 47 49 02 48 8B 11 48 3B 51 10 72 11 48 8D 55 40 E8 ?? ?? ?? ?? 8B 75 40"),
+    HookSite("exhibit_insert", 0xA31F20, "488bc44c894820",
+             "exhibit add-animal construct ENTRY (ExhibitDetector; FUN_140a31f20, common to buy+birth)",
+             aob="48 8B C4 4C 89 48 20 4C 89 40 18 48 89 50 10 48 89 48 08 55 53 56 57 41 54 41 55 41 56 41 57 48 8D A8 08 F7 FF FF"),
 ]
 
 # ── data anchors (resolved via anchors.json chains) with plausible-value sanity ranges ───────────────

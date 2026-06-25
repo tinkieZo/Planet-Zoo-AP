@@ -1172,6 +1172,43 @@ def _watch_gui_task(ctx) -> None:
     task.add_done_callback(_done)
 
 
+_FILE_LOG_INSTALLED = False
+
+
+def _setup_file_logging() -> "Optional[Path]":
+    """Persist the client's console output to a rotating file so third-party users (who run the packaged
+    exe with no console) have something to send when something breaks. Attaches a RotatingFileHandler to
+    the ROOT logger - so it captures every child logger (PZClient, Client, the websockets debug, AP's
+    FileLog/StreamLog) AND the /pz_install run, which shares this process. Lives next to the client state
+    (%LOCALAPPDATA%\\PlanetZooAP\\logs\\pz_client.log; falls back to ~). INFO by default, DEBUG under
+    PZAP_DEBUG. Idempotent (guards against a double install) and best-effort (never blocks startup if the
+    dir/file can't be created). Returns the log path, or None on failure."""
+    global _FILE_LOG_INSTALLED
+    if _FILE_LOG_INSTALLED:
+        return None
+    import logging.handlers
+    try:
+        log_dir = Path(os.environ.get("LOCALAPPDATA") or Path.home()) / "PlanetZooAP" / "logs"
+        log_dir.mkdir(parents=True, exist_ok=True)
+        path = log_dir / "pz_client.log"
+        fh = logging.handlers.RotatingFileHandler(path, maxBytes=2_000_000, backupCount=3, encoding="utf-8")
+        fh.setFormatter(logging.Formatter("%(asctime)s %(levelname)s %(name)s: %(message)s"))
+        fh.setLevel(logging.DEBUG if os.environ.get("PZAP_DEBUG") else logging.INFO)
+        root = logging.getLogger()
+        # Ensure the root passes records to the handler even if main() runs outside the __main__ guard
+        # (e.g. a packaged entry point) - the root is left at WARNING after the AP-import mute is restored.
+        if root.level == logging.NOTSET or root.level > fh.level:
+            root.setLevel(fh.level)
+        root.addHandler(fh)
+        _FILE_LOG_INSTALLED = True
+        logging.getLogger("Client").info("Logging to %s", path)
+        return path
+    except Exception as e:
+        # Logging must never crash the client; fall back to console-only.
+        logging.getLogger("Client").warning("Could not set up file logging (%s) - console only", e)
+        return None
+
+
 def main(args=None):
     # Build-time GUI smoke test (build-exe.ps1 runs `--selftest`). Handle it before the normal startup
     # flow so it neither prompts for a connection nor spins up the asyncio client - it just loads the
@@ -1179,6 +1216,7 @@ def main(args=None):
     _argv = list(sys.argv[1:] if args is None else args)
     if "--selftest" in _argv:
         sys.exit(_gui_selftest())
+    _setup_file_logging()   # persist console output to a rotating file for third-party debugging
 
     async def _run(args):
         ctx = PZContext(args.connect, args.password, data_path=getattr(args, "data", None))

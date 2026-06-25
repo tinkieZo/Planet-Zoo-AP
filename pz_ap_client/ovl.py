@@ -165,7 +165,9 @@ TRACKEDRIDES_FDB = "c0trackedrides.fdb"
 CONTENT0_FDBS = (HABITAT_BOUNDARY_FDB, MODULAR_SCENERY_FDB, BLUEPRINTS_FDB, RESEARCH_FDB, TRACKEDRIDES_FDB)
 # Bump when the DERIVED install edits change so existing installs read 'stale'. v1 = scriptutils+pack;
 # v2 = + barrier/facility fdb gating + rename; v3 = full research decouple (mint gates + re-point all content).
-SHELL_LOGIC_VERSION = "3-full-decouple"
+# v4 = stop re-pointing the pack-id columns with the item-keyed dict (was unlocking 4 enrichments globally
+#      via an id-namespace collision; enrichment now stays vet-gated). See _apply_content0_fdb_edits.
+SHELL_LOGIC_VERSION = "4-packid-namespace-fix"
 
 
 def _mechanic_content_names() -> "List[str]":
@@ -294,8 +296,16 @@ def _apply_content0_fdb_edits(fdb_dir: Path, log: LogFn = logger.info) -> None:
     minted = _mint_gate_rows(fdb_dir)
     _repoint_boundary(fdb_dir)
     _repoint_int_col(fdb_dir, MODULAR_SCENERY_FDB, "Simulation", "ResearchItemID", repoint)
-    _repoint_int_col(fdb_dir, MODULAR_SCENERY_FDB, "Simulation", "ResearchPackID", repoint)
-    _repoint_int_col(fdb_dir, TRACKEDRIDES_FDB, "Simulation", "ResearchPack", repoint)
+    # NB: do NOT re-point the *pack-id* columns (ResearchPackID / trackedrides ResearchPack) with `repoint`.
+    # `repoint` is keyed by research ITEM ids (ResearchItemData), but those columns hold research PACK ids
+    # (ResearchPackData) - a different id space that overlaps in the low integers. Applying it there
+    # corrupted enrichment whose pack id collides with a mechanic item id (e.g. EN_Slow_Feeder pack 16 ==
+    # a transport item id) -> the pack id got rewritten to a NoneResearchable ITEM gate, which the engine
+    # can't resolve as a pack -> it treats the item as "no research required" and UNLOCKS it (globally, in
+    # every zoo). Enrichment is normally gated by the vet-research reward pack (see tools/research_catalog.
+    # json), so leaving these pack columns intact keeps that gating: locked at scenario start (empty vet
+    # config), unlocked only by the AP item. Proper pack-namespace gating of pack-gated mechanic content
+    # is deferred to the scenario-scoping rework (item-gates can't gate pack content anyway). 2026-06-25.
     _repoint_blueprints(fdb_dir, repoint)
     _repoint_facility_rooms(fdb_dir)
     log("Applied AP full-decouple gating: minted %d gates, re-pointed %d content + 12 barriers."

@@ -163,7 +163,9 @@ def map_item(name: str, lab2sid: dict, token_index: dict) -> dict:
 def map_location(stringid: str, loc) -> dict:
     sp = loc.species_type
     if loc.type.value == "research welfare":
-        m = re.match(r"welfare(\d+)_", stringid)
+        # Exhibit-species welfare stringids carry an "e_" prefix (e_welfare1_gdscorpian); habitat
+        # ones don't (welfare1_aardvark). Accept either so the per-level location gets its level.
+        m = re.match(r"(?:e_)?welfare(\d+)_", stringid)
         level = int(m.group(1)) if m else None
         return {"trigger_type": "research_complete",
                 "trigger_args": {"research_key": f"welfare_{sp}", "level": level, "species_key": sp}}

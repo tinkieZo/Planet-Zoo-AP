@@ -80,7 +80,7 @@
     },
     {
       "key": "blemur",
-      "name": "Black a White Ruffed Lemur",
+      "name": "Black and White Ruffed Lemur",
       "engine_token": "blackwhiteruffedlemur",
       "gate": "permit_blemur"
     },
@@ -1619,7 +1619,7 @@
     },
     {
       "id": 1126,
-      "name": "Permit: Black a White Ruffed Lemur",
+      "name": "Permit: Black and White Ruffed Lemur",
       "classification": "progression",
       "effect_type": "species_unlock",
       "effect_args": {
@@ -2465,7 +2465,7 @@
     },
     {
       "id": 1220,
-      "name": "Progressive Education Level ",
+      "name": "Progressive Education Level",
       "classification": "useful",
       "effect_type": "progressive_research_reward",
       "effect_args": {
@@ -3427,7 +3427,7 @@
     },
     {
       "id": 2099,
-      "name": "Research Welfare 1 - Black a White Ruffed Lemur",
+      "name": "Research Welfare 1 - Black and White Ruffed Lemur",
       "trigger_type": "research_complete",
       "trigger_args": {
         "research_key": "welfare_blemur",
@@ -3437,7 +3437,7 @@
     },
     {
       "id": 2100,
-      "name": "Research Welfare 2 - Black a White Ruffed Lemur",
+      "name": "Research Welfare 2 - Black and White Ruffed Lemur",
       "trigger_type": "research_complete",
       "trigger_args": {
         "research_key": "welfare_blemur",
@@ -3447,7 +3447,7 @@
     },
     {
       "id": 2101,
-      "name": "Research Welfare 3 - Black a White Ruffed Lemur",
+      "name": "Research Welfare 3 - Black and White Ruffed Lemur",
       "trigger_type": "research_complete",
       "trigger_args": {
         "research_key": "welfare_blemur",
@@ -3457,7 +3457,7 @@
     },
     {
       "id": 2102,
-      "name": "Research Welfare 4 - Black a White Ruffed Lemur",
+      "name": "Research Welfare 4 - Black and White Ruffed Lemur",
       "trigger_type": "research_complete",
       "trigger_args": {
         "research_key": "welfare_blemur",
@@ -3467,7 +3467,7 @@
     },
     {
       "id": 2103,
-      "name": "Research Welfare 5 - Black a White Ruffed Lemur",
+      "name": "Research Welfare 5 - Black and White Ruffed Lemur",
       "trigger_type": "research_complete",
       "trigger_args": {
         "research_key": "welfare_blemur",
@@ -3477,7 +3477,7 @@
     },
     {
       "id": 2104,
-      "name": "Research Welfare 6 - Black a White Ruffed Lemur",
+      "name": "Research Welfare 6 - Black and White Ruffed Lemur",
       "trigger_type": "research_complete",
       "trigger_args": {
         "research_key": "welfare_blemur",
@@ -3487,7 +3487,7 @@
     },
     {
       "id": 2105,
-      "name": "First Breeding - Black a White Ruffed Lemur",
+      "name": "First Breeding - Black and White Ruffed Lemur",
       "trigger_type": "first_breed",
       "trigger_args": {
         "species_key": "blemur"
@@ -3495,7 +3495,7 @@
     },
     {
       "id": 2106,
-      "name": "First Acquisition - Black a White Ruffed Lemur",
+      "name": "First Acquisition - Black and White Ruffed Lemur",
       "trigger_type": "first_acquire",
       "trigger_args": {
         "species_key": "blemur"
@@ -3503,7 +3503,7 @@
     },
     {
       "id": 2107,
-      "name": "Conservation Release - Black a White Ruffed Lemur",
+      "name": "Conservation Release - Black and White Ruffed Lemur",
       "trigger_type": "conservation_release",
       "trigger_args": {
         "species_key": "blemur"
@@ -7043,7 +7043,7 @@
       "trigger_type": "research_complete",
       "trigger_args": {
         "research_key": "welfare_acentipede",
-        "level": null,
+        "level": 1,
         "species_key": "acentipede"
       }
     },
@@ -7053,7 +7053,7 @@
       "trigger_type": "research_complete",
       "trigger_args": {
         "research_key": "welfare_acentipede",
-        "level": null,
+        "level": 2,
         "species_key": "acentipede"
       }
     },
@@ -7063,7 +7063,7 @@
       "trigger_type": "research_complete",
       "trigger_args": {
         "research_key": "welfare_acentipede",
-        "level": null,
+        "level": 3,
         "species_key": "acentipede"
       }
     },
@@ -7097,7 +7097,7 @@
       "trigger_type": "research_complete",
       "trigger_args": {
         "research_key": "welfare_bconstrictor",
-        "level": null,
+        "level": 1,
         "species_key": "bconstrictor"
       }
     },
@@ -7107,7 +7107,7 @@
       "trigger_type": "research_complete",
       "trigger_args": {
         "research_key": "welfare_bconstrictor",
-        "level": null,
+        "level": 2,
         "species_key": "bconstrictor"
       }
     },
@@ -7117,7 +7117,7 @@
       "trigger_type": "research_complete",
       "trigger_args": {
         "research_key": "welfare_bconstrictor",
-        "level": null,
+        "level": 3,
         "species_key": "bconstrictor"
       }
     },
@@ -7151,7 +7151,7 @@
       "trigger_type": "research_complete",
       "trigger_args": {
         "research_key": "welfare_btarantula",
-        "level": null,
+        "level": 1,
         "species_key": "btarantula"
       }
     },
@@ -7161,7 +7161,7 @@
       "trigger_type": "research_complete",
       "trigger_args": {
         "research_key": "welfare_btarantula",
-        "level": null,
+        "level": 2,
         "species_key": "btarantula"
       }
     },
@@ -7171,7 +7171,7 @@
       "trigger_type": "research_complete",
       "trigger_args": {
         "research_key": "welfare_btarantula",
-        "level": null,
+        "level": 3,
         "species_key": "btarantula"
       }
     },
@@ -7205,7 +7205,7 @@
       "trigger_type": "research_complete",
       "trigger_args": {
         "research_key": "welfare_bspider",
-        "level": null,
+        "level": 1,
         "species_key": "bspider"
       }
     },
@@ -7215,7 +7215,7 @@
       "trigger_type": "research_complete",
       "trigger_args": {
         "research_key": "welfare_bspider",
-        "level": null,
+        "level": 2,
         "species_key": "bspider"
       }
     },
@@ -7225,7 +7225,7 @@
       "trigger_type": "research_complete",
       "trigger_args": {
         "research_key": "welfare_bspider",
-        "level": null,
+        "level": 3,
         "species_key": "bspider"
       }
     },
@@ -7259,7 +7259,7 @@
       "trigger_type": "research_complete",
       "trigger_args": {
         "research_key": "welfare_cadder",
-        "level": null,
+        "level": 1,
         "species_key": "cadder"
       }
     },
@@ -7269,7 +7269,7 @@
       "trigger_type": "research_complete",
       "trigger_args": {
         "research_key": "welfare_cadder",
-        "level": null,
+        "level": 2,
         "species_key": "cadder"
       }
     },
@@ -7279,7 +7279,7 @@
       "trigger_type": "research_complete",
       "trigger_args": {
         "research_key": "welfare_cadder",
-        "level": null,
+        "level": 3,
         "species_key": "cadder"
       }
     },
@@ -7313,7 +7313,7 @@
       "trigger_type": "research_complete",
       "trigger_args": {
         "research_key": "welfare_esnake",
-        "level": null,
+        "level": 1,
         "species_key": "esnake"
       }
     },
@@ -7323,7 +7323,7 @@
       "trigger_type": "research_complete",
       "trigger_args": {
         "research_key": "welfare_esnake",
-        "level": null,
+        "level": 2,
         "species_key": "esnake"
       }
     },
@@ -7333,7 +7333,7 @@
       "trigger_type": "research_complete",
       "trigger_args": {
         "research_key": "welfare_esnake",
-        "level": null,
+        "level": 3,
         "species_key": "esnake"
       }
     },
@@ -7367,7 +7367,7 @@
       "trigger_type": "research_complete",
       "trigger_args": {
         "research_key": "welfare_groach",
-        "level": null,
+        "level": 1,
         "species_key": "groach"
       }
     },
@@ -7377,7 +7377,7 @@
       "trigger_type": "research_complete",
       "trigger_args": {
         "research_key": "welfare_groach",
-        "level": null,
+        "level": 2,
         "species_key": "groach"
       }
     },
@@ -7387,7 +7387,7 @@
       "trigger_type": "research_complete",
       "trigger_args": {
         "research_key": "welfare_groach",
-        "level": null,
+        "level": 3,
         "species_key": "groach"
       }
     },
@@ -7421,7 +7421,7 @@
       "trigger_type": "research_complete",
       "trigger_args": {
         "research_key": "welfare_gdscorpian",
-        "level": null,
+        "level": 1,
         "species_key": "gdscorpian"
       }
     },
@@ -7431,7 +7431,7 @@
       "trigger_type": "research_complete",
       "trigger_args": {
         "research_key": "welfare_gdscorpian",
-        "level": null,
+        "level": 2,
         "species_key": "gdscorpian"
       }
     },
@@ -7441,7 +7441,7 @@
       "trigger_type": "research_complete",
       "trigger_args": {
         "research_key": "welfare_gdscorpian",
-        "level": null,
+        "level": 3,
         "species_key": "gdscorpian"
       }
     },
@@ -7475,7 +7475,7 @@
       "trigger_type": "research_complete",
       "trigger_args": {
         "research_key": "welfare_gfscorpion",
-        "level": null,
+        "level": 1,
         "species_key": "gfscorpion"
       }
     },
@@ -7485,7 +7485,7 @@
       "trigger_type": "research_complete",
       "trigger_args": {
         "research_key": "welfare_gfscorpion",
-        "level": null,
+        "level": 2,
         "species_key": "gfscorpion"
       }
     },
@@ -7495,7 +7495,7 @@
       "trigger_type": "research_complete",
       "trigger_args": {
         "research_key": "welfare_gfscorpion",
-        "level": null,
+        "level": 3,
         "species_key": "gfscorpion"
       }
     },
@@ -7529,7 +7529,7 @@
       "trigger_type": "research_complete",
       "trigger_args": {
         "research_key": "welfare_gsnail",
-        "level": null,
+        "level": 1,
         "species_key": "gsnail"
       }
     },
@@ -7539,7 +7539,7 @@
       "trigger_type": "research_complete",
       "trigger_args": {
         "research_key": "welfare_gsnail",
-        "level": null,
+        "level": 2,
         "species_key": "gsnail"
       }
     },
@@ -7549,7 +7549,7 @@
       "trigger_type": "research_complete",
       "trigger_args": {
         "research_key": "welfare_gsnail",
-        "level": null,
+        "level": 3,
         "species_key": "gsnail"
       }
     },
@@ -7583,7 +7583,7 @@
       "trigger_type": "research_complete",
       "trigger_args": {
         "research_key": "welfare_gmonster",
-        "level": null,
+        "level": 1,
         "species_key": "gmonster"
       }
     },
@@ -7593,7 +7593,7 @@
       "trigger_type": "research_complete",
       "trigger_args": {
         "research_key": "welfare_gmonster",
-        "level": null,
+        "level": 2,
         "species_key": "gmonster"
       }
     },
@@ -7603,7 +7603,7 @@
       "trigger_type": "research_complete",
       "trigger_args": {
         "research_key": "welfare_gmonster",
-        "level": null,
+        "level": 3,
         "species_key": "gmonster"
       }
     },
@@ -7637,7 +7637,7 @@
       "trigger_type": "research_complete",
       "trigger_args": {
         "research_key": "welfare_gpfrog",
-        "level": null,
+        "level": 1,
         "species_key": "gpfrog"
       }
     },
@@ -7647,7 +7647,7 @@
       "trigger_type": "research_complete",
       "trigger_args": {
         "research_key": "welfare_gpfrog",
-        "level": null,
+        "level": 2,
         "species_key": "gpfrog"
       }
     },
@@ -7657,7 +7657,7 @@
       "trigger_type": "research_complete",
       "trigger_args": {
         "research_key": "welfare_gpfrog",
-        "level": null,
+        "level": 3,
         "species_key": "gpfrog"
       }
     },
@@ -7691,7 +7691,7 @@
       "trigger_type": "research_complete",
       "trigger_args": {
         "research_key": "welfare_gbeetle",
-        "level": null,
+        "level": 1,
         "species_key": "gbeetle"
       }
     },
@@ -7701,7 +7701,7 @@
       "trigger_type": "research_complete",
       "trigger_args": {
         "research_key": "welfare_gbeetle",
-        "level": null,
+        "level": 2,
         "species_key": "gbeetle"
       }
     },
@@ -7711,7 +7711,7 @@
       "trigger_type": "research_complete",
       "trigger_args": {
         "research_key": "welfare_gbeetle",
-        "level": null,
+        "level": 3,
         "species_key": "gbeetle"
       }
     },
@@ -7745,7 +7745,7 @@
       "trigger_type": "research_complete",
       "trigger_args": {
         "research_key": "welfare_gbirdeater",
-        "level": null,
+        "level": 1,
         "species_key": "gbirdeater"
       }
     },
@@ -7755,7 +7755,7 @@
       "trigger_type": "research_complete",
       "trigger_args": {
         "research_key": "welfare_gbirdeater",
-        "level": null,
+        "level": 2,
         "species_key": "gbirdeater"
       }
     },
@@ -7765,7 +7765,7 @@
       "trigger_type": "research_complete",
       "trigger_args": {
         "research_key": "welfare_gbirdeater",
-        "level": null,
+        "level": 3,
         "species_key": "gbirdeater"
       }
     },
@@ -7799,7 +7799,7 @@
       "trigger_type": "research_complete",
       "trigger_args": {
         "research_key": "welfare_gfrog",
-        "level": null,
+        "level": 1,
         "species_key": "gfrog"
       }
     },
@@ -7809,7 +7809,7 @@
       "trigger_type": "research_complete",
       "trigger_args": {
         "research_key": "welfare_gfrog",
-        "level": null,
+        "level": 2,
         "species_key": "gfrog"
       }
     },
@@ -7819,7 +7819,7 @@
       "trigger_type": "research_complete",
       "trigger_args": {
         "research_key": "welfare_gfrog",
-        "level": null,
+        "level": 3,
         "species_key": "gfrog"
       }
     },
@@ -7853,7 +7853,7 @@
       "trigger_type": "research_complete",
       "trigger_args": {
         "research_key": "welfare_giguana",
-        "level": null,
+        "level": 1,
         "species_key": "giguana"
       }
     },
@@ -7863,7 +7863,7 @@
       "trigger_type": "research_complete",
       "trigger_args": {
         "research_key": "welfare_giguana",
-        "level": null,
+        "level": 2,
         "species_key": "giguana"
       }
     },
@@ -7873,7 +7873,7 @@
       "trigger_type": "research_complete",
       "trigger_args": {
         "research_key": "welfare_giguana",
-        "level": null,
+        "level": 3,
         "species_key": "giguana"
       }
     },
@@ -7907,7 +7907,7 @@
       "trigger_type": "research_complete",
       "trigger_args": {
         "research_key": "welfare_lfrog",
-        "level": null,
+        "level": 1,
         "species_key": "lfrog"
       }
     },
@@ -7917,7 +7917,7 @@
       "trigger_type": "research_complete",
       "trigger_args": {
         "research_key": "welfare_lfrog",
-        "level": null,
+        "level": 2,
         "species_key": "lfrog"
       }
     },
@@ -7927,7 +7927,7 @@
       "trigger_type": "research_complete",
       "trigger_args": {
         "research_key": "welfare_lfrog",
-        "level": null,
+        "level": 3,
         "species_key": "lfrog"
       }
     },
@@ -7961,7 +7961,7 @@
       "trigger_type": "research_complete",
       "trigger_args": {
         "research_key": "welfare_liguana",
-        "level": null,
+        "level": 1,
         "species_key": "liguana"
       }
     },
@@ -7971,7 +7971,7 @@
       "trigger_type": "research_complete",
       "trigger_args": {
         "research_key": "welfare_liguana",
-        "level": null,
+        "level": 2,
         "species_key": "liguana"
       }
     },
@@ -7981,7 +7981,7 @@
       "trigger_type": "research_complete",
       "trigger_args": {
         "research_key": "welfare_liguana",
-        "level": null,
+        "level": 3,
         "species_key": "liguana"
       }
     },
@@ -8015,7 +8015,7 @@
       "trigger_type": "research_complete",
       "trigger_args": {
         "research_key": "welfare_mrose",
-        "level": null,
+        "level": 1,
         "species_key": "mrose"
       }
     },
@@ -8025,7 +8025,7 @@
       "trigger_type": "research_complete",
       "trigger_args": {
         "research_key": "welfare_mrose",
-        "level": null,
+        "level": 2,
         "species_key": "mrose"
       }
     },
@@ -8035,7 +8035,7 @@
       "trigger_type": "research_complete",
       "trigger_args": {
         "research_key": "welfare_mrose",
-        "level": null,
+        "level": 3,
         "species_key": "mrose"
       }
     },
@@ -8069,7 +8069,7 @@
       "trigger_type": "research_complete",
       "trigger_args": {
         "research_key": "welfare_mtarantula",
-        "level": null,
+        "level": 1,
         "species_key": "mtarantula"
       }
     },
@@ -8079,7 +8079,7 @@
       "trigger_type": "research_complete",
       "trigger_args": {
         "research_key": "welfare_mtarantula",
-        "level": null,
+        "level": 2,
         "species_key": "mtarantula"
       }
     },
@@ -8089,7 +8089,7 @@
       "trigger_type": "research_complete",
       "trigger_args": {
         "research_key": "welfare_mtarantula",
-        "level": null,
+        "level": 3,
         "species_key": "mtarantula"
       }
     },
@@ -8123,7 +8123,7 @@
       "trigger_type": "research_complete",
       "trigger_args": {
         "research_key": "welfare_padder",
-        "level": null,
+        "level": 1,
         "species_key": "padder"
       }
     },
@@ -8133,7 +8133,7 @@
       "trigger_type": "research_complete",
       "trigger_args": {
         "research_key": "welfare_padder",
-        "level": null,
+        "level": 2,
         "species_key": "padder"
       }
     },
@@ -8143,7 +8143,7 @@
       "trigger_type": "research_complete",
       "trigger_args": {
         "research_key": "welfare_padder",
-        "level": null,
+        "level": 3,
         "species_key": "padder"
       }
     },
@@ -8177,7 +8177,7 @@
       "trigger_type": "research_complete",
       "trigger_args": {
         "research_key": "welfare_tbeetle",
-        "level": null,
+        "level": 1,
         "species_key": "tbeetle"
       }
     },
@@ -8187,7 +8187,7 @@
       "trigger_type": "research_complete",
       "trigger_args": {
         "research_key": "welfare_tbeetle",
-        "level": null,
+        "level": 2,
         "species_key": "tbeetle"
       }
     },
@@ -8197,7 +8197,7 @@
       "trigger_type": "research_complete",
       "trigger_args": {
         "research_key": "welfare_tbeetle",
-        "level": null,
+        "level": 3,
         "species_key": "tbeetle"
       }
     },
@@ -8231,7 +8231,7 @@
       "trigger_type": "research_complete",
       "trigger_args": {
         "research_key": "welfare_wrattlesnake",
-        "level": null,
+        "level": 1,
         "species_key": "wrattlesnake"
       }
     },
@@ -8241,7 +8241,7 @@
       "trigger_type": "research_complete",
       "trigger_args": {
         "research_key": "welfare_wrattlesnake",
-        "level": null,
+        "level": 2,
         "species_key": "wrattlesnake"
       }
     },
@@ -8251,7 +8251,7 @@
       "trigger_type": "research_complete",
       "trigger_args": {
         "research_key": "welfare_wrattlesnake",
-        "level": null,
+        "level": 3,
         "species_key": "wrattlesnake"
       }
     },
@@ -8285,7 +8285,7 @@
       "trigger_type": "research_complete",
       "trigger_args": {
         "research_key": "welfare_yanaconda",
-        "level": null,
+        "level": 1,
         "species_key": "yanaconda"
       }
     },
@@ -8295,7 +8295,7 @@
       "trigger_type": "research_complete",
       "trigger_args": {
         "research_key": "welfare_yanaconda",
-        "level": null,
+        "level": 2,
         "species_key": "yanaconda"
       }
     },
@@ -8305,7 +8305,7 @@
       "trigger_type": "research_complete",
       "trigger_args": {
         "research_key": "welfare_yanaconda",
-        "level": null,
+        "level": 3,
         "species_key": "yanaconda"
       }
     },

@@ -20,10 +20,13 @@ hooked site back and frees its trampoline (call it on disconnect / in a finally)
 from __future__ import annotations
 
 import ctypes
+import logging
 import struct
 from ctypes import wintypes
 from dataclasses import dataclass, field
 from typing import Dict, List, Optional
+
+logger = logging.getLogger("PZClient")
 
 MEM_COMMIT = 0x1000
 MEM_RESERVE = 0x2000
@@ -65,11 +68,61 @@ def _alloc_near(handle: int, target: int, size: int = 0x1000) -> int:
     return 0
 
 
+# ── shared trampoline arena ──────────────────────────────────────────────────────────────────────────
+# Each hook needs a small (<0x200 B) trampoline reachable by a rel32 jmp from its site. Allocating a whole
+# page PER hook needs one MEM_FREE hole per hook within +/-2GB - and a game's address space near the module
+# can have very few such holes (observed live: only 3, which starved the 4th hook -> install returned False
+# -> species_capture=False, no per-species conservation-release detection). Since ALL hook sites lie inside
+# the module (< 0.5GB span), ONE block is rel32-reachable from every site, so we draw all trampolines from a
+# shared 64KB block: N hooks now need ONE hole, not N. Process-global because each detector owns its own
+# HookManager but they all compete for the same holes. Slots are bump-allocated; the block(s) are freed once
+# every slot is released (ref-counted across all managers).
+_ARENA_BLOCK = 0x10000          # 64KB == allocation granularity; holds _ARENA_BLOCK/_ARENA_SLOT = 16 slots
+_ARENA_SLOT = 0x1000            # per-hook page: keeps the original 0x1000-per-hook budget every trampoline
+#                                 was sized against (the insert ring alone spans [0x200, 0x400)); 16 slots
+#                                 per block >> the ~7 hooks, so one near-module block still serves them all.
+_arenas: List[list] = []        # [[base, cap, used], ...] blocks allocated near the module
+_arena_live = 0                 # outstanding slots across ALL HookManagers (free blocks when this hits 0)
+
+
+def _arena_alloc(handle: int, site: int, size: int = _ARENA_SLOT) -> int:
+    """Bump-allocate a trampoline slot reachable by rel32 from ``site``, from a shared near-module block.
+    Allocates a fresh 64KB block (via _alloc_near) only when no existing block both reaches ``site`` and
+    has room. Returns 0 if even a fresh block can't be placed in range."""
+    global _arena_live
+    for blk in _arenas:
+        base, cap, used = blk
+        if used + size <= cap and abs((base + used) - site) < _REL32_LIMIT:
+            blk[2] += size
+            _arena_live += 1
+            return base + used
+    base = _alloc_near(handle, site, _ARENA_BLOCK)
+    if not base:
+        return 0
+    _arenas.append([base, _ARENA_BLOCK, size])
+    _arena_live += 1
+    return base
+
+
+def _arena_release(handle: int) -> None:
+    """Account one freed trampoline slot; when none remain across any HookManager, free the shared
+    block(s). (Slots can't be freed individually - they're sub-allocations of one reservation.)"""
+    global _arena_live, _arenas
+    _arena_live = max(0, _arena_live - 1)
+    if _arena_live == 0 and _arenas:
+        for base, _cap, _used in _arenas:
+            try:
+                _k32.VirtualFreeEx(handle, ctypes.c_void_p(base), 0, MEM_RELEASE)
+            except Exception:
+                pass
+        _arenas = []
+
+
 @dataclass
 class _Hook:
     site: int
     original: bytes          # the exact bytes we overwrote (for restore)
-    region: int              # allocated trampoline region (to free)
+    region: int              # trampoline slot in the shared arena (scratch @+0, code @+0x40)
 
 
 @dataclass
@@ -98,9 +151,14 @@ class HookManager:
             raise ValueError("need >=5 bytes to place a rel32 jmp")
         cur = self.scanner.read_bytes(site, len(original))
         if cur != original:
+            logger.warning("hook %r: install aborted - bytes @0x%X are %s, expected ORIG %s "
+                           "(site not clean - leaked/foreign detour or wrong address)",
+                           name, site, cur.hex(), original.hex())
             return False
-        region = _alloc_near(self._handle, site)
+        region = _arena_alloc(self._handle, site)
         if not region:
+            logger.warning("hook %r: install aborted - no trampoline slot within +/-2GB of 0x%X "
+                           "(shared-arena alloc failed)", name, site)
             return False
         scratch, code = region, region + 0x40
         self.scanner.write_bytes(scratch, b"\x00" * 0x40)
@@ -127,7 +185,7 @@ class HookManager:
             self.scanner.write_bytes(h.site, h.original)
         finally:
             self._resume()
-        _k32.VirtualFreeEx(self._handle, ctypes.c_void_p(h.region), 0, MEM_RELEASE)
+        _arena_release(self._handle)  # slot is a sub-allocation of the shared block; freed when all released
 
     def restore_all(self) -> None:
         # restore() pops from self.hooks, so drain by repeated pop rather than
@@ -784,7 +842,7 @@ def read_insert_events(scanner, scratch: int, cursor: int) -> "tuple[int, List[d
 EXHIBIT_RING = 8
 EXHIBIT_RING_OFF = 0x100
 EXHIBIT_NAME_BYTES = 0x28           # bytes of the species name token copied (covers the longest; ascii+null)
-EXHIBIT_REC = 0x8 + EXHIBIT_NAME_BYTES  # iVar8(+pad) + name = 0x30; RING_OFF+RING*REC = 0x280 < 0x1000
+EXHIBIT_REC = 0x8 + EXHIBIT_NAME_BYTES  # iVar8 (+pad) + name token = 0x30 bytes per ring slot
 EXHIBIT_IVAR8_PARAM_OFF = 0xC      # [param_3 + 0xc] = iVar8 (the classifier; param_3 = r8 at entry)
 EXHIBIT_BIRTH_SENTINEL = 0xFFFFFFFF  # iVar8 == -1 => fresh construct = BIRTH; any other value => ACQUIRE
 
@@ -800,35 +858,38 @@ def make_exhibit_instrument(region: int, scratch: int, resume_addr: int, origina
     rax/rcx/rsi/rdi + flags (push/pop), all restored before the original runs (so RAX=RSP is captured
     correctly and the arg spills see the real args). *param_3 is set by the caller before the call, so it's
     valid here. Fires for BOTH purchase and birth (both pass through the entry)."""
-    body = (
-        b"\x9C"                                          # pushfq
-        b"\x50"                                          # push rax
-        b"\x51"                                          # push rcx
-        b"\x56"                                          # push rsi
-        b"\x57"                                          # push rdi
-        + b"\x48\xB8" + struct.pack("<Q", scratch)       # movabs rax, scratch
-        + b"\x8B\x08"                                    # mov  ecx, [rax]      ; count
-        + b"\xFF\xC1"                                    # inc  ecx
-        + b"\x89\x08"                                    # mov  [rax], ecx      ; count++
-        + b"\xFF\xC9"                                    # dec  ecx             ; old = index
-        + b"\x83\xE1" + bytes([EXHIBIT_RING - 1])        # and  ecx, RING-1
-        + b"\x69\xC9" + struct.pack("<i", EXHIBIT_REC)   # imul ecx, ecx, REC   ; slot byte offset
-        + b"\x48\x8D\xB8" + struct.pack("<i", EXHIBIT_RING_OFF)   # lea rdi,[rax+RING_OFF]
-        + b"\x48\x01\xCF"                                # add  rdi, rcx        ; rdi = dest slot
-        + b"\x41\x8B\x40" + bytes([EXHIBIT_IVAR8_PARAM_OFF])      # mov eax,[r8+0xc]  ; iVar8 (classifier)
-        + b"\x89\x07"                                    # mov  [rdi], eax      ; slot+0 = iVar8
-        + b"\x48\x83\xC7\x08"                            # add  rdi, 8          ; -> name area (slot+8)
-        + b"\x49\x8B\x30"                                # mov  rsi, [r8]       ; rsi = *param_3 = name ptr
-        + b"\xB9" + struct.pack("<I", EXHIBIT_NAME_BYTES // 8)    # mov ecx, NAME/8
-        + b"\xFC"                                        # cld
-        + b"\xF3\x48\xA5"                                # rep movsq            ; copy the name -> slot+8
-        + b"\x5F"                                        # pop  rdi
-        + b"\x5E"                                        # pop  rsi
-        + b"\x59"                                        # pop  rcx
-        + b"\x58"                                        # pop  rax
-        + b"\x9D"                                        # popfq
-        + original                                       # MOV RAX,RSP; MOV [RAX+0x20],R9 (relocated)
-    )
+    # (machine-code bytes, disassembly) per instruction. The disassembly is DATA (a string), kept beside
+    # its bytes for readability without a trailing comment that a linter would read as commented-out code.
+    instructions = [
+        (b"\x9C", "pushfq"),
+        (b"\x50", "push rax"),
+        (b"\x51", "push rcx"),
+        (b"\x56", "push rsi"),
+        (b"\x57", "push rdi"),
+        (b"\x48\xB8" + struct.pack("<Q", scratch), "movabs rax, scratch"),
+        (b"\x8B\x08", "mov ecx, [rax]            -> count"),
+        (b"\xFF\xC1", "inc ecx"),
+        (b"\x89\x08", "mov [rax], ecx            -> count++"),
+        (b"\xFF\xC9", "dec ecx                   -> old index"),
+        (b"\x83\xE1" + bytes([EXHIBIT_RING - 1]), "and ecx, RING-1"),
+        (b"\x69\xC9" + struct.pack("<i", EXHIBIT_REC), "imul ecx, ecx, REC        -> slot byte offset"),
+        (b"\x48\x8D\xB8" + struct.pack("<i", EXHIBIT_RING_OFF), "lea rdi, [rax+RING_OFF]"),
+        (b"\x48\x01\xCF", "add rdi, rcx              -> rdi = dest slot"),
+        (b"\x41\x8B\x40" + bytes([EXHIBIT_IVAR8_PARAM_OFF]), "mov eax, [r8+0xc]         -> iVar8 (classifier)"),
+        (b"\x89\x07", "mov [rdi], eax            -> slot+0 holds iVar8"),
+        (b"\x48\x83\xC7\x08", "add rdi, 8                -> name area (slot+8)"),
+        (b"\x49\x8B\x30", "mov rsi, [r8]             -> rsi = *param_3 = name ptr"),
+        (b"\xB9" + struct.pack("<I", EXHIBIT_NAME_BYTES // 8), "mov ecx, NAME/8"),
+        (b"\xFC", "cld"),
+        (b"\xF3\x48\xA5", "rep movsq                 -> copy name to slot+8"),
+        (b"\x5F", "pop rdi"),
+        (b"\x5E", "pop rsi"),
+        (b"\x59", "pop rcx"),
+        (b"\x58", "pop rax"),
+        (b"\x9D", "popfq"),
+        (original, "relocated original: MOV RAX,RSP then MOV [RAX+0x20],R9"),
+    ]
+    body = b"".join(code for code, _ in instructions)
     return _final_jmp(body, region, resume_addr)
 
 

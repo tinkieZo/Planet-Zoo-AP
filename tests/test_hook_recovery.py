@@ -15,6 +15,7 @@ os.environ.setdefault("SKIP_REQUIREMENTS_UPDATE", "1")
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from pz_ap_client.memory import signatures as sig  # noqa: E402
+from pz_ap_client.memory import hook as hookmod  # noqa: E402
 
 # "release" has no AOB, so resolve_hook reaches the recovery path without a (slow) full-module scan.
 REL = next(h for h in sig.HOOKS if h.name == "release")
@@ -103,6 +104,62 @@ def test_jmp_within_module_is_not_a_dead_detour():
     m.write_bytes(site, b"\xE9" + struct.pack("<i", target - (site + 5)))
     m.unmapped.append((target - 0x10, target + 0x10))  # even if unreadable
     assert sig._is_dead_detour(m, site) is False
+
+
+def test_shared_arena_packs_many_hooks_in_one_block():
+    """The fix for species_capture=False (near-memory exhaustion): all trampolines are bump-allocated from
+    ONE shared near-module block, so N hooks need ONE free hole, not N. The block is freed only once every
+    slot is released (ref-counted across all HookManagers)."""
+    hookmod._arenas.clear(); hookmod._arena_live = 0
+    state = {"alloc_calls": 0, "freed": []}
+
+    def fake_alloc(_handle, target, _size=0x1000):
+        state["alloc_calls"] += 1
+        return target & ~0xFFFF                                # a 64KB-aligned block AT the target (as _alloc_near does: near it)
+
+    class FakeK32:
+        def VirtualFreeEx(self, _h, addr, _sz, _fl):
+            state["freed"].append(int(addr.value)); return 1
+
+    orig_alloc, orig_k32 = hookmod._alloc_near, hookmod._k32
+    hookmod._alloc_near, hookmod._k32 = fake_alloc, FakeK32()
+    try:
+        site = 0x140000000
+        slots = [hookmod._arena_alloc(0, site + i * 0x1000) for i in range(4)]  # 4 nearby hook sites
+        assert state["alloc_calls"] == 1                       # ONE block served all four
+        base = slots[0]
+        step = hookmod._ARENA_SLOT
+        assert slots == [base, base + step, base + 2 * step, base + 3 * step]  # bump-allocated slots
+        assert hookmod._arena_live == 4
+        for _ in range(3):
+            hookmod._arena_release(0)
+        assert state["freed"] == []                            # not freed while slots remain
+        hookmod._arena_release(0)
+        assert state["freed"] == [base] and hookmod._arena_live == 0 and hookmod._arenas == []
+    finally:
+        hookmod._alloc_near, hookmod._k32 = orig_alloc, orig_k32
+
+
+def test_shared_arena_new_block_when_out_of_reach():
+    """A hook site too far (> rel32) for the current block forces a second block, so reachability holds."""
+    hookmod._arenas.clear(); hookmod._arena_live = 0
+    state = {"n": 0}
+
+    def fake_alloc(_handle, target, _size=0x1000):
+        state["n"] += 1
+        return target & ~0xFFFF                                # a block at the (aligned) target
+
+    orig_alloc = hookmod._alloc_near
+    hookmod._alloc_near = fake_alloc
+    try:
+        a = hookmod._arena_alloc(0, 0x140000000)
+        b = hookmod._arena_alloc(0, 0x140000000 + 0x100)       # near -> same block
+        assert state["n"] == 1 and b == a + hookmod._ARENA_SLOT
+        hookmod._arena_alloc(0, 0x140000000 + 0x100000000)     # +4GB -> out of rel32 -> new block
+        assert state["n"] == 2
+    finally:
+        hookmod._alloc_near = orig_alloc
+        hookmod._arenas.clear(); hookmod._arena_live = 0
 
 
 def test_foreign_patch_is_not_touched():

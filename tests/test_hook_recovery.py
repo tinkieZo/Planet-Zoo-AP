@@ -21,18 +21,23 @@ REL = next(h for h in sig.HOOKS if h.name == "release")
 
 
 class FakeMem:
-    """Sparse byte-addressable memory with a module_base; read_bytes zero-fills gaps."""
+    """Sparse byte-addressable memory with a module_base; read_bytes zero-fills gaps. Addresses inside
+    any (start, end) range in ``unmapped`` raise on read - models a freed VirtualAlloc trampoline page."""
     def __init__(self, module_base: int = 0x140000000):
         self.module_base = module_base
         self.module_size = 0x10000000
         self.attached = True
         self._b: dict = {}
+        self.unmapped: list = []   # list of (start, end) byte ranges that raise on read
 
     def write_bytes(self, addr: int, data: bytes) -> None:
         for i, byte in enumerate(data):
             self._b[addr + i] = byte
 
     def read_bytes(self, addr: int, size: int) -> bytes:
+        for lo, hi in self.unmapped:
+            if addr < hi and addr + size > lo:
+                raise OSError("unmapped read @0x%X" % addr)
         return bytes(self._b.get(addr + i, 0) for i in range(size))
 
     def read_qword(self, addr: int) -> int:
@@ -65,6 +70,39 @@ def test_intact_site_needs_no_recovery():
     assert sig._is_leaked_detour(m, site, REL.orig) is False
     assert sig.recover_leaked_hook(m, "release") is False
     assert sig.resolve_hook(m, "release") == (site, REL.orig)
+
+
+def _install_dead_detour(m: FakeMem) -> int:
+    """Write our E9 jmp at the release site pointing at an out-of-module trampoline whose page is now
+    UNMAPPED (a prior client PROCESS died and its VirtualAlloc was freed). Returns the site address."""
+    site = m.module_base + REL.rva
+    tramp = m.module_base - 0x1000000          # below the module -> a freed VirtualAlloc page
+    m.write_bytes(site, b"\xE9" + struct.pack("<i", tramp - (site + 5)))
+    m.unmapped.append((tramp - 0x100, tramp + 0x400))  # reads there raise
+    return site
+
+
+def test_recovers_dead_detour_from_prior_process():
+    """The release_species-on-Auriana case: a leaked jmp whose trampoline was freed by a dead process.
+    The trampoline is unreadable, so the leaked-detour check can't verify it - but the jmp targets
+    unmapped memory (can't be a live foreign hook), so we restore the authoritative original bytes."""
+    m = FakeMem()
+    site = _install_dead_detour(m)
+    assert sig._is_leaked_detour(m, site, REL.orig) is False  # trampoline unreadable -> not verifiable
+    assert sig._is_dead_detour(m, site) is True
+    assert sig.recover_leaked_hook(m, "release") is True
+    assert m.read_bytes(site, len(REL.orig)) == REL.orig       # restored from the signature
+    assert sig.resolve_hook(m, "release") == (site, REL.orig)
+
+
+def test_jmp_within_module_is_not_a_dead_detour():
+    """A jmp that stays inside the module is not the freed-trampoline pattern - never auto-restore it."""
+    m = FakeMem()
+    site = m.module_base + REL.rva
+    target = m.module_base + 0x500000          # within the module
+    m.write_bytes(site, b"\xE9" + struct.pack("<i", target - (site + 5)))
+    m.unmapped.append((target - 0x10, target + 0x10))  # even if unreadable
+    assert sig._is_dead_detour(m, site) is False
 
 
 def test_foreign_patch_is_not_touched():

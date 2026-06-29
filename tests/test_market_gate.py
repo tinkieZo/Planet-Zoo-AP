@@ -356,12 +356,54 @@ def test_market_restore_and_underfill() -> None:
     _check(m.read_bytes(mgr + g2._FORCE_SPAWN, 1) == b"\x01", "under-filled -> force-spawn set")
 
 
+def test_orphan_includeset_neutralized() -> None:
+    """Hard-kill safety net. If a prior client process died without restoring, the manager still points at
+    our orphaned include-set buffer (tagged with SENTINEL_MAGIC just before the pointer). A fresh client's
+    first apply must NEUTRALISE it to empty BEFORE capturing the 'original' - else it captures our orphan as
+    the engine's buffer and restore re-points to (then frees) it = the foreign-free crash it's meant to stop."""
+    m = FakeMem()
+    mgr = 0x500000000
+    wl = mgr + mk.SpeciesMarketGate._DEFAULT_WL
+    inc = wl + mk.WL_INCLUDE_SET
+
+    # (1) ORPHAN present: include-set points at OUR buffer (data ptr = base + SENTINEL_SIZE), magic at base.
+    orphan_base = 0x900000000
+    orphan_data = orphan_base + mk.SENTINEL_SIZE
+    m.write_bytes(orphan_base, mk.SENTINEL_MAGIC)
+    m.write_i64(inc + mk.SET_BUFFER, orphan_data)
+    m.write_i64(inc + mk.SET_CAP, 64)
+    m.write_i64(inc + mk.SET_COUNT, 9)
+    m.write_bytes(wl + mk.WL_INCLUDE_ACTIVE, b"\x01")
+    g = mk.SpeciesMarketGate(m, research=FakeResearch({}))
+    g._mgr_cache = mgr
+    g._alloc_buffer = lambda _s: 0xA00000010          # a fresh buffer (skip VirtualAllocEx)
+    g.apply_unlocked([0x3042, 0x3025])
+    _check(g._orig is not None and g._orig["buffer"] == 0,
+           "orphan neutralised before capture -> captured original is EMPTY (buffer 0), not the orphan")
+    g.exchange_mgr = lambda: mgr
+    g.restore()
+    _check(m.read_i64(inc + mk.SET_BUFFER) == 0, "restore re-points to NULL -> engine frees nothing (no crash)")
+
+    # (2) genuine engine buffer (NO magic before it): must NOT be touched; captured as the real original.
+    m2 = FakeMem()
+    engine_buf = 0x111111111
+    m2.write_i64(inc + mk.SET_BUFFER, engine_buf)
+    m2.write_i64(inc + mk.SET_CAP, 32)
+    g2 = mk.SpeciesMarketGate(m2, research=FakeResearch({}))
+    g2._mgr_cache = mgr
+    g2._alloc_buffer = lambda _s: 0xA00000010
+    g2.apply_unlocked([0x1])
+    _check(g2._orig is not None and g2._orig["buffer"] == engine_buf,
+           "genuine engine buffer left intact -> captured as the original")
+
+
 def main() -> None:
     test_hash_set()
     test_registry()
     test_schedule_spawner()
     test_autofill_gates()
     test_market_restore_and_underfill()
+    test_orphan_includeset_neutralized()
     print("\nAll market-gate tests passed.")
 
 

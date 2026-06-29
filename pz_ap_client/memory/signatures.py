@@ -48,7 +48,11 @@ HOOKS: List[HookSite] = [
     HookSite("release", 0x5D84690, "48895c2410",
              "ReleaseAnimalIntoWild entry (conservation gate)", script_name="ReleaseAnimalIntoWild"),
     HookSite("release_species", 0x5D8478F, "488b4d484889f2",
-             "ReleaseAnimalIntoWild call-prep (released-species capture; entry+0xFF)"),
+             "ReleaseAnimalIntoWild call-prep (released-species capture; entry+0xFF)",
+             # The call-prep + epilogue alone repeats across 3 sibling release fns; the trailing bytes
+             # (past the ret/CC pad, into the next fn) disambiguate. Verified unique in-module 2026-06-29.
+             aob="48 8B 4D 48 48 89 F2 E8 ?? ?? ?? ?? 48 8B 5C 24 38 31 C0 48 8B 6C 24 40 "
+                 "48 8B 74 24 48 48 83 C4 20 5F C3 CC A0 0F A2 C3 FF FF FF FF 48 C7 C2 8B B7 A8 A5"),
     HookSite("birth_insert", 0xC82168, "488bbdd8000000",
              "add-animal insert instrument (BirthDetector)",
              aob="48 8B BD D8 00 00 00 4D 85 F6 75 3E 44 38 B5 F8 00 00 00 75 2A 49 8B 8D F8 04 00 00"),
@@ -135,36 +139,71 @@ def _is_leaked_detour(scanner, site: int, original: bytes) -> bool:
     trampoline still contains the site's original bytes. This distinguishes a hook leaked by a prior
     unclean exit (the console X button, a kill, a crash) - which we may safely restore in place - from
     a genuine code change or a foreign patch, which we must NOT touch."""
+    target = _detour_target(scanner, site)
+    if target is None:
+        return False
     try:
-        head = scanner.read_bytes(site, 5)
-        if head[0] != 0xE9:
-            return False
-        rel = int.from_bytes(head[1:5], "little", signed=True)
-        target = site + 5 + rel
         tramp = scanner.read_bytes(target, 0x200)
     except Exception:
         return False
     return original in tramp  # our trampoline embeds the relocated original instruction
 
 
+def _detour_target(scanner, site: int) -> "Optional[int]":
+    """If ``site`` begins with a rel32 jmp (0xE9), return the jmp's absolute target; else None."""
+    try:
+        head = scanner.read_bytes(site, 5)
+    except Exception:
+        return None
+    if head[0] != 0xE9:
+        return None
+    return site + 5 + int.from_bytes(head[1:5], "little", signed=True)
+
+
+def _is_dead_detour(scanner, site: int) -> bool:
+    """True iff ``site`` holds a rel32 jmp to a target OUTSIDE the module that is now UNMAPPED - a detour
+    whose trampoline page was freed when a PRIOR client PROCESS died (vs _is_leaked_detour, where the
+    trampoline is still mapped because the same process is re-attaching). The original code at the site is
+    lost, but the authoritative original bytes live in the signature (h.orig), so restoring is safe: an
+    unmapped jmp target cannot belong to a live foreign hook. This is the case that left release_species
+    'broken' on a fresh game start when an earlier client run had hooked it and exited uncleanly."""
+    target = _detour_target(scanner, site)
+    if target is None:
+        return False
+    base = getattr(scanner, "module_base", 0) or 0
+    size = getattr(scanner, "module_size", 0) or 0x20000000
+    if base <= target < base + size:
+        return False  # jmp stays within the module - not a freed-trampoline pattern; don't touch
+    try:
+        scanner.read_bytes(target, 16)
+        return False  # target still mapped - leave to _is_leaked_detour / never clobber a live hook
+    except Exception:
+        return True   # target unmapped -> a dead detour orphaned by a prior process
+
+
 def recover_leaked_hook(scanner, name: str) -> bool:
-    """If a hook site still holds our own leaked detour from a prior unclean exit, restore its original
+    """If a hook site still holds one of our own detours from a prior unclean exit, restore its original
     bytes in place so a fresh install can proceed (no game restart needed). Returns True if recovered.
-    Safe: only writes when the jmp target is verifiably our trampoline (see _is_leaked_detour). The
-    orphaned trampoline page is harmless (a no-op stub) and is reclaimed when the game process exits."""
+    Two cases, both safe: (a) the trampoline is still mapped and verifiably ours (_is_leaked_detour); or
+    (b) the trampoline was freed by a dead prior process (_is_dead_detour) - the jmp points to unmapped
+    memory, so it cannot be a live foreign hook, and we rewrite the authoritative h.orig. The orphaned
+    trampoline page (case a) is a harmless no-op stub reclaimed when the game process exits."""
     base = getattr(scanner, "module_base", None)
     h = next((x for x in HOOKS if x.name == name), None)
     if h is None or base is None:
         return False
     site = base + h.rva
-    if not _is_leaked_detour(scanner, site, h.orig):
+    if _is_leaked_detour(scanner, site, h.orig):
+        why = "a leaked detour (prior unclean exit, e.g. the console X button)"
+    elif _is_dead_detour(scanner, site):
+        why = "a dead detour (its trampoline was freed by a prior client process)"
+    else:
         return False
     try:
         scanner.write_bytes(site, h.orig)
     except Exception:
         return False
-    logger.info("hook %r: recovered a leaked detour @0x%X (restored original bytes from a prior unclean "
-                "exit, e.g. the console X button)", name, site)
+    logger.info("hook %r: recovered %s @0x%X (restored original bytes from the signature)", name, why, site)
     return True
 
 
@@ -258,6 +297,10 @@ def _classify_hook(scanner, h: HookSite) -> CheckResult:
     if _is_leaked_detour(scanner, site, h.orig):
         return CheckResult("hook", h.name, "leaked",
                            "our detour still installed @0x%X (prior unclean exit) - auto-recovers on next --memory attach" % site)
+    if _is_dead_detour(scanner, site):
+        return CheckResult("hook", h.name, "leaked",
+                           "a dead detour @0x%X (trampoline freed by a prior client process) - auto-recovers "
+                           "on next --memory attach (restored from signature)" % site)
     # Not our leak - a real patch may have shifted the RVA: try AOB auto-relocation.
     if h.aob:
         hits = module_aob_scan(scanner, h.aob)

@@ -44,6 +44,11 @@ class MemoryEffectApplier(EffectApplier):
         self.facility_gate = facility_gate  # FacilityGate; enforces facility_unlock placement
         self.research_gate = research_gate  # ResearchGate; enforces research_centre/workshop
         self.reward_granter = reward_granter  # RewardGranter; flips decoupled research rewards
+        # Anchors we've already warned are unresolved. A cumulative item that can't apply stays at the
+        # head of the retry queue and is re-attempted every poll tick; without this it would re-log the
+        # same warning ~1x/sec. Warn ONCE per unresolved episode; cleared on a successful apply so a
+        # later episode (anchor re-lost) warns again.
+        self._anchor_warned: set = set()
 
     def _ensure_attached(self) -> bool:
         if self.scanner.attached:
@@ -57,11 +62,17 @@ class MemoryEffectApplier(EffectApplier):
             return False
         current = self.anchors.read(self.scanner, anchor_name)
         if current is None:
-            logger.warning("[%s] anchor %r unresolved - cannot apply %s",
-                           item.effect_type, anchor_name, item.name)
+            # Warn once per unresolved episode (not every retry tick). The item stays queued and applies
+            # automatically once the anchor resolves (the finance manager is located on a later tick).
+            if anchor_name not in self._anchor_warned:
+                self._anchor_warned.add(anchor_name)
+                logger.warning("[%s] %s not applied yet - the %r anchor isn't resolved (finance data "
+                               "not located yet); it'll apply automatically once it is. Retrying quietly.",
+                               item.effect_type, item.name, anchor_name)
             return False
         ok = self.anchors.write(self.scanner, anchor_name, current + amount)
         if ok:
+            self._anchor_warned.discard(anchor_name)  # episode over; a future loss warns again
             logger.info("[apply] %s: %s %s -> %s", item.name, anchor_name, current, current + amount)
         return ok
 

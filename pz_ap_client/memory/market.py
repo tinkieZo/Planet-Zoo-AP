@@ -132,6 +132,15 @@ SET_COUNT = 0x08
 SET_CAP = 0x10
 SET_BUFFER = 0x18
 
+# Orphan-detection sentinel. Our include-set buffer is allocated with a SENTINEL_SIZE-byte prefix holding
+# SENTINEL_MAGIC; the engine's include-set pointer is set to (base + SENTINEL_SIZE), so the magic sits
+# immediately BEFORE the pointer the engine holds. If a prior client process is HARD-KILLED (Task Manager /
+# crash) before restoring, the manager keeps pointing at our orphaned buffer; a fresh client recognises it
+# by this magic and neutralises it (see _neutralize_orphan_includeset) so the engine never free()s a foreign
+# pointer on park teardown = the Exit crash. 16 bytes, fixed offset (cap-independent).
+SENTINEL_MAGIC = b"PZAP-MKT-ORPHAN!"
+SENTINEL_SIZE = 0x10
+
 # -- VirtualAllocEx plumbing (data alloc in the target; hook.py's _alloc_near is code-only) --
 _MEM_COMMIT = 0x1000
 _MEM_RESERVE = 0x2000
@@ -258,6 +267,7 @@ class _AutofillMarketGate:
         # the game tears the park down is what stops the engine from free()-ing OUR VirtualAllocEx buffer
         # (a foreign pointer -> heap corruption -> crash on Exit-to-Menu/Exit-Game). See restore()/shutdown().
         self._orig: Optional[dict] = None
+        self._orphan_checked = False   # one-shot: neutralise a prior process's orphan before first capture
 
     # -- manager location ------------------------------------------------------
 
@@ -344,20 +354,27 @@ class _AutofillMarketGate:
     # -- the gate --------------------------------------------------------------
 
     def _alloc_buffer(self, size: int) -> Optional[int]:
-        """(Re)allocate a target-process RW buffer big enough for ``size`` bytes. Frees a prior one."""
+        """(Re)allocate a target-process RW buffer for ``size`` DATA bytes, prefixed with SENTINEL_MAGIC.
+        Returns the DATA pointer (base + SENTINEL_SIZE) - what the include-set is repointed at; self._buffer
+        holds the allocation BASE (what we VirtualFreeEx). The sentinel lets a fresh client process detect
+        this buffer as OURS if a prior process was hard-killed without restoring. Frees a prior allocation."""
         handle = self.scanner.pm.process_handle
         if self._buffer and size > self._buffer_cap:
             _k32.VirtualFreeEx(handle, ctypes.c_void_p(self._buffer), 0, _MEM_RELEASE)
             self._buffer = None
         if not self._buffer:
-            got = _k32.VirtualAllocEx(handle, None, max(size, 0x1000),
-                                      _MEM_COMMIT | _MEM_RESERVE, _PAGE_READWRITE)
+            total = max(size + SENTINEL_SIZE, 0x1000)
+            got = _k32.VirtualAllocEx(handle, None, total, _MEM_COMMIT | _MEM_RESERVE, _PAGE_READWRITE)
             if not got:
                 logger.warning("market: VirtualAllocEx failed (err %d)", ctypes.get_last_error())
                 return None
             self._buffer = int(got)
-            self._buffer_cap = max(size, 0x1000)
-        return self._buffer
+            self._buffer_cap = total - SENTINEL_SIZE
+            try:
+                self.scanner.write_bytes(self._buffer, SENTINEL_MAGIC)  # tag the base for orphan detection
+            except Exception:
+                pass
+        return self._buffer + SENTINEL_SIZE
 
     def use_default_whitelist(self) -> bool:
         """Route the autofill rebuild to the DEFAULT whitelist (the one apply_unlocked writes) by
@@ -392,7 +409,8 @@ class _AutofillMarketGate:
             return False
         wl = mgr + self._DEFAULT_WL
         inc = wl + WL_INCLUDE_SET
-        self._capture_original(mgr, wl, inc)   # save the pre-gate state ONCE, so we can restore it cleanly
+        self._neutralize_orphan_includeset(mgr, wl, inc)  # clear a prior process's orphan FIRST (else we'd
+        self._capture_original(mgr, wl, inc)   # capture it as the "original" + restore back to it later)
         try:
             self.scanner.write_bytes(buf, blob)
             # set struct: buffer ptr (+0x18), capacity (+0x10), count (+0x08, best-effort)
@@ -499,6 +517,34 @@ class _AutofillMarketGate:
             return None
         return target
 
+    def _neutralize_orphan_includeset(self, mgr: int, wl: int, inc: int) -> None:
+        """Before the FIRST capture/apply this session, check whether the manager's include-set still points
+        at one of OUR buffers orphaned by a prior client process that was hard-killed (so its restore never
+        ran). Such a buffer carries SENTINEL_MAGIC in the SENTINEL_SIZE bytes immediately before the engine's
+        pointer. If found, reset the include-set to EMPTY (null buffer/cap/count, include-active off) so the
+        engine frees nothing on park teardown - this prevents the foreign-pointer free crash even when the
+        prior exit bypassed every cleanup path. One-shot; a no-op for a genuine engine buffer (no magic)."""
+        if self._orphan_checked:
+            return
+        self._orphan_checked = True
+        try:
+            p = self.scanner.read_i64(inc + SET_BUFFER)
+            if not p:
+                return
+            if self.scanner.read_bytes(p - SENTINEL_SIZE, len(SENTINEL_MAGIC)) != SENTINEL_MAGIC:
+                return  # a genuine engine buffer (or unreadable) - never touch it
+            self.scanner.write_i64(inc + SET_BUFFER, 0)
+            self.scanner.write_i64(inc + SET_CAP, 0)
+            self.scanner.write_i64(inc + SET_COUNT, 0)
+            self.scanner.write_bytes(wl + WL_INCLUDE_ACTIVE, b"\x00")
+            self.scanner.write_i32(mgr + self._WL_ID_SCEN, 0)
+            self.scanner.write_i32(mgr + self._WL_ID_SANDBOX, 0)
+            self.scanner.write_bytes(mgr + self._POOL_DIRTY, b"\x00")
+            logger.warning("market: found an ORPHAN include-set buffer @0x%X from a prior unclean exit - "
+                           "neutralised to empty (the engine now frees nothing on Exit = no crash)", p)
+        except Exception as e:
+            logger.warning("market: orphan include-set check failed (%s) - continuing", e)
+
     def _capture_original(self, mgr: int, wl: int, inc: int) -> None:
         """Snapshot the manager's pre-gate include-set state ONCE (before the first apply overwrites it),
         so restore() can put the engine's OWN buffer pointer + flags back and the game frees its own
@@ -551,18 +597,34 @@ class _AutofillMarketGate:
 
     def shutdown(self) -> None:
         """Restore the manager's original include-set (so the engine frees its OWN buffer, not ours), THEN
-        free our buffer. Safe to call on park unload or process exit - restore() re-resolves the manager and
-        skips if the park is already gone."""
+        free our buffer - but ONLY if the engine no longer points at it. Safe to call on park unload or
+        process exit - restore() re-resolves the manager and skips if the park is already gone.
+
+        Free ONLY when it's provably safe: restore() succeeded (engine now points at its own buffer) OR the
+        park is gone (the manager + its include-set are already freed, so our buffer is unreferenced). If we
+        can't confirm either, we LEAK our buffer instead of freeing it: a leaked VirtualAllocEx page is
+        benign (reclaimed when the game exits), but freeing a buffer the engine still references leaves it a
+        dangling pointer -> the engine free()s it on park teardown -> crash on Exit. The leak is the safe side."""
+        restored = False
         try:
-            self.restore()
+            restored = self.restore()
         except Exception:
             logger.exception("market: restore during shutdown failed")
-        if self._buffer and self.scanner.attached:
+        self._mgr_cache = None
+        park_gone = False
+        try:
+            park_gone = self.exchange_mgr() is None
+        except Exception:
+            park_gone = False
+        if self._buffer and self.scanner.attached and (restored or park_gone):
             try:
                 _k32.VirtualFreeEx(self.scanner.pm.process_handle,
                                    ctypes.c_void_p(self._buffer), 0, _MEM_RELEASE)
             except Exception:
                 pass
+        elif self._buffer:
+            logger.warning("market: include-set re-point unconfirmed - LEAKING our buffer 0x%X (benign, "
+                           "reclaimed on game exit) rather than risk a dangling free/crash", self._buffer)
         self._buffer = None
         self._buffer_cap = 0
         self._mgr_cache = None

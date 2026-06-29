@@ -359,8 +359,11 @@ def test_apply_content0_fdb_edits(tmp_path):
     bd.commit(); bd.close()
     ms = sqlite3.connect(d / ovl.MODULAR_SCENERY_FDB)
     ms.execute("CREATE TABLE Simulation (SceneryPartName TEXT, ResearchItemID INTEGER, ResearchPackID INTEGER)")
+    # EnrichmentItem's ResearchPackID 16 collides (same low int) with a transport item id - the regression
+    # the pack-id fix guards: the pack column must be left ALONE (re-pointing it unlocked enrichment globally).
     ms.executemany("INSERT INTO Simulation VALUES (?,?,?)", [
-        ("PizzaPenShop", 9001, 0), ("RS_Room_4x4", 0, 0), ("WS_Room_4x4", 0, 0), ("Untouched", 8888, 0)])
+        ("PizzaPenShop", 9001, 0), ("RS_Room_4x4", 0, 0), ("WS_Room_4x4", 0, 0), ("Untouched", 8888, 0),
+        ("EnrichmentItem", 0, 16)])
     ms.commit(); ms.close()
     tr = sqlite3.connect(d / ovl.TRACKEDRIDES_FDB)
     tr.execute("CREATE TABLE Simulation (RideType TEXT, ResearchPack INTEGER)")
@@ -385,12 +388,17 @@ def test_apply_content0_fdb_edits(tmp_path):
     packs = dict(bd.execute("SELECT BoundaryType, ResearchPack FROM Simulation").fetchall()); bd.close()
     assert packs == {"Hedge": 50002, "Glass_One_Way": 50004, "Concrete": 50007, "Null": 0}  # Null ungated
     ms = sqlite3.connect(d / ovl.MODULAR_SCENERY_FDB)
-    rows = dict(ms.execute("SELECT SceneryPartName, ResearchItemID FROM Simulation").fetchall()); ms.close()
-    assert rows["PizzaPenShop"] == gate_id["FoodShopsPizzaPen"]   # content 9001 re-pointed -> gate
+    rows = dict(ms.execute("SELECT SceneryPartName, ResearchItemID FROM Simulation").fetchall())
+    packids = dict(ms.execute("SELECT SceneryPartName, ResearchPackID FROM Simulation").fetchall()); ms.close()
+    assert rows["PizzaPenShop"] == gate_id["FoodShopsPizzaPen"]   # content 9001 re-pointed -> gate (ITEM col)
     assert rows["RS_Room_4x4"] == 50000 and rows["WS_Room_4x4"] == 50001  # facility rooms
     assert rows["Untouched"] == 8888   # unrelated research item left alone
+    assert packids["EnrichmentItem"] == 16   # pack-id col NOT re-pointed (regression: re-pointing it
+    #                                           unlocked enrichment globally - the pack-id namespace fix)
     tr = sqlite3.connect(d / ovl.TRACKEDRIDES_FDB)
-    assert tr.execute("SELECT ResearchPack FROM Simulation").fetchone()[0] == gate_id["TransportSteamTrainStation"]
+    # trackedrides ResearchPack is a PACK-id column - also left vanilla (same fix). Transport pack-gated
+    # content gating is deferred to the scenario-scoping rework; re-pointing the pack id would unlock it.
+    assert tr.execute("SELECT ResearchPack FROM Simulation").fetchone()[0] == 9003   # unchanged
     tr.close()
     bp = sqlite3.connect(d / ovl.BLUEPRINTS_FDB)
     ids = dict(bp.execute("SELECT BlueprintID, ResearchItemIDs FROM PrebuiltBlueprints").fetchall()); bp.close()

@@ -29,6 +29,12 @@ from .scanner import MemoryScanner
 
 logger = logging.getLogger("PZClient")
 
+# Ticks (~1s each) to wait for a deferred exhibit-census decrement before giving up on attributing a
+# detected exhibit release. "Release to wild" can animate for a few seconds before the census updates, so
+# this is generous; if it elapses with no drop the +0x318 census likely isn't the right live structure
+# (the give-up diag dumps state to confirm). The count + conservation gate already fired regardless.
+EXHIBIT_GIVEUP_TICKS = 20
+
 # metric name in data.json -> anchor name in anchors.json
 _MILESTONE_ANCHOR = {
     "zoo_rating": "zoo_rating",
@@ -200,34 +206,31 @@ class MemoryTriggerSource:
                 if loc.id not in already and loc.trigger_args.get("species_key") in self._released_species]
 
     def _read_exhibit_census(self) -> "dict | None":
-        """{species_key -> count} for exhibit animals in the zoo (placed + stored), or None if the exhibit
-        manager isn't resolvable (no zoo / mid-load). Reverse-maps the census species handles through the
-        research map; unmapped handles are dropped (their releases simply won't fire cr_, same limit as
-        habitat). Empty dict (zoo loaded, no exhibit animals) is distinct from None (not resolvable)."""
+        """RAW {species_handle -> count} for exhibit animals in the zoo (placed + stored), or None if the
+        exhibit manager isn't resolvable (no zoo / mid-load). We keep RAW handles (not species_keys) so the
+        diff sees a drop even for a handle the research map doesn't cover - mapping happens at attribution
+        time, and an unmapped drop is logged (not silently lost). Empty dict (zoo, no exhibit animals) is
+        distinct from None (not resolvable)."""
         resolver = self.births.resolver
         mgr = resolver.resolve_exhibit_manager()
         if not mgr:
             return None
-        raw = resolver.read_exhibit_census(mgr)
-        if raw is None:
-            return None
-        h2k = self.research.handle_key_map() or {}
-        return {h2k[h]: c for h, c in raw.items() if h in h2k and c > 0}
+        return resolver.read_exhibit_census(mgr)
 
     def _poll_exhibit_release(self) -> None:
-        """Attribute exhibit conservation_release by diffing the {species->count} census across a detected
-        exhibit release. The release hook count rises synchronously but the census decrement is deferred, so
-        a detected release is held 'pending' until a species' count drops below the held baseline (which then
-        attributes it). Pairing the census drop with the hook count is what distinguishes a RELEASE from a
-        death/transfer (those drop the census with no release event, so they're never attributed)."""
-        census = self._read_exhibit_census()
-        if census is None:
+        """Attribute exhibit conservation_release by diffing the {species_handle->count} census across a
+        detected exhibit release. The release hook count rises synchronously but the census decrement is
+        deferred, so a detected release is held 'pending' until a handle's count drops below the held
+        baseline (mapped to a species_key then). Pairing the census drop with the hook count is what
+        distinguishes a RELEASE from a death/transfer (those drop the census with no release event)."""
+        raw = self._read_exhibit_census()
+        if raw is None:
             return  # manager not resolvable this tick; baseline/pending preserved
         ecount = self.releases.exhibit_count()
         if self._exhibit_baseline is None:
             # prime: adopt the current census AND release-count high-water so pre-existing exhibit
             # animals (and any release that predates the baseline) never fire.
-            self._exhibit_baseline = census
+            self._exhibit_baseline = raw
             self._last_exhibit_count = ecount
             return
         new = ecount - self._last_exhibit_count
@@ -235,24 +238,60 @@ class MemoryTriggerSource:
             self._pending_exhibit += new
         self._last_exhibit_count = ecount
         if self._pending_exhibit > 0:
-            for sp, base_c in self._exhibit_baseline.items():
-                now = census.get(sp, 0)
-                while now < base_c and self._pending_exhibit > 0:
-                    self._released_species.add(sp)
-                    base_c -= 1
-                    self._exhibit_baseline[sp] = base_c   # account this drop (don't re-attribute)
-                    self._pending_exhibit -= 1
-                    logger.info("conservation_release: exhibit release attributed -> %s (census drop)", sp)
+            self._attribute_exhibit_drops(raw)
             self._pending_exhibit_ticks += 1
-            if self._pending_exhibit > 0 and self._pending_exhibit_ticks >= 8:
-                # give up on an unresolved drop (e.g. released species' handle not in the research map):
-                # the count + milestone already fired; resync so we don't hold a stale baseline forever.
-                logger.info("conservation_release: %d exhibit release(s) detected but no census drop "
-                            "attributed (unmapped species?); resyncing baseline.", self._pending_exhibit)
+            if self._pending_exhibit > 0 and self._pending_exhibit_ticks >= EXHIBIT_GIVEUP_TICKS:
+                self._exhibit_giveup_diag(raw)
                 self._pending_exhibit = 0
         if self._pending_exhibit == 0:
             self._pending_exhibit_ticks = 0
-            self._exhibit_baseline = census   # advance baseline (accounts buys/births + resolved drops)
+            self._exhibit_baseline = raw   # advance baseline (accounts buys/births + resolved drops)
+
+    def _attribute_exhibit_drops(self, raw: dict) -> None:
+        """For each baseline handle whose census count dropped, consume one pending release and (if the
+        handle maps to a species) fire its cr_. An unmapped drop is logged, not silently lost."""
+        h2k = self.research.handle_key_map() or {}
+        for handle, base_c in self._exhibit_baseline.items():
+            now = raw.get(handle, 0)
+            while now < base_c and self._pending_exhibit > 0:
+                key = h2k.get(handle)
+                if key:
+                    self._released_species.add(key)
+                    logger.info("conservation_release: exhibit release attributed -> %s "
+                                "(species handle 0x%X census drop)", key, handle)
+                else:
+                    logger.info("conservation_release: exhibit census dropped for handle 0x%X but it's NOT "
+                                "in the research map (cr_ can't fire). Research-map handles: %s",
+                                handle, [hex(k) for k in list(h2k)[:16]])
+                base_c -= 1
+                self._exhibit_baseline[handle] = base_c   # account this drop (don't re-attribute)
+                self._pending_exhibit -= 1
+
+    def _exhibit_giveup_diag(self, raw: dict) -> None:
+        """No census entry dropped for the pending release(s): the +0x318 census may not track live exhibit
+        population on this build/scenario, or park+0x1D0 isn't the exhibit manager here. Dump state so one
+        repro tells us which (the count + gate already worked; only per-species cr_ is affected)."""
+        resolver = self.births.resolver
+        mgr = resolver.resolve_exhibit_manager()
+        pop = resolver.read_exhibit_population(mgr) if mgr else None
+        baseline = {hex(k): v for k, v in (self._exhibit_baseline or {}).items()}
+        logger.info("conservation_release[exhibit-diag]: %d release(s) detected but NO census entry dropped "
+                    "in %d ticks. mgr=0x%X live-pop=%s baseline-census=%s now-census=%s . live-pop is the "
+                    "count of animals in the exhibit roster: if it DROPPED while the census didn't, +0x318 is "
+                    "the wrong structure (use the roster/UID map); if both unchanged, park+0x1D0 isn't the "
+                    "exhibit mgr here; if the census handles aren't species-like ids, same.",
+                    self._pending_exhibit, self._pending_exhibit_ticks, mgr or 0, pop,
+                    baseline, {hex(k): v for k, v in raw.items()})
+        # If +0x1D0 might be the wrong manager, scan the park for any object with a species-like census so
+        # we can re-target it directly from one repro instead of another RE round.
+        try:
+            h2k = self.research.handle_key_map() or {}
+            cands = [(hex(off), hex(p), {hex(k): v for k, v in c.items()})
+                     for off, p, c in resolver.scan_exhibit_census_candidates(set(h2k))]
+            logger.info("conservation_release[exhibit-diag]: park census candidates (park_off, obj, census) "
+                        "= %s", cands or "<none - no species-like census found under the park>")
+        except Exception:
+            logger.exception("conservation_release[exhibit-diag]: candidate scan failed")
 
     def _attribute_release(self) -> "str | None":
         """Resolve the last released animal handle -> species_key. None if it can't be attributed.

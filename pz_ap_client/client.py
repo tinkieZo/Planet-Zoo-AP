@@ -240,6 +240,8 @@ class PZContext(CommonContext):
         self._ovl_job_running = False  # one ovl install/restore at a time (see run_ovl_job)
         self._initial_applied: "Optional[int]" = None  # high-water mark at session start (drives re-award)
         self._fresh_wait_ticks = 0  # ticks spent holding item apply for the park-age (fresh) signal to land
+        self._paused_at_idx: "Optional[int]" = None  # item idx we last logged a pause for; throttles the
+        # "Pausing item application" line (a stuck cumulative item retries every tick - log once per episode)
         self._preflight_done = False  # run the signatures self-check once on first attach (fail-loud)
         self._pending_checks: List[int] = []  # location ids queued by the poll thread, sent on the loop
         self.poll_interval: float = 1.0
@@ -659,11 +661,16 @@ class PZContext(CommonContext):
                 self.state.set(seed, self.slot, idx + 1)
                 continue
             if not self.applier.apply(item):
-                # Transient failure (e.g. game not attached / write failed):
-                # stop here, leave the high-water mark, retry on next event.
-                logger.info("Pausing item application at #%s (%s); will retry", idx, item.name)
+                # Transient failure (e.g. game not attached / anchor not resolved yet): stop here, leave the
+                # high-water mark, retry on the next event. Log ONCE per episode - this item stays at the head
+                # of the queue and is re-attempted every poll tick, so logging each time floods the console.
+                if idx != self._paused_at_idx:
+                    logger.info("Pausing item application at #%s (%s); will retry quietly until it applies",
+                                idx, item.name)
+                    self._paused_at_idx = idx
                 break
             self.state.set(seed, self.slot, idx + 1)
+            self._paused_at_idx = None  # progress made; a later pause (new stuck item) logs again
         # Re-derive the purchase gate authoritatively right after applying, so a tool/permit
         # just received takes effect immediately (not only on the next poll tick), and any
         # transient over-unblock from a per-item unlock() is corrected within this call.

@@ -192,7 +192,9 @@ def _exhibit_src(census_handles, exhibit_count):
     exhibit manager returns; exhibit_count is a callable -> current release-hook count."""
     resolver = types.SimpleNamespace(
         resolve_exhibit_manager=lambda: 0xE0,
-        read_exhibit_census=lambda mgr: dict(census_handles))
+        read_exhibit_census=lambda mgr: dict(census_handles),
+        read_exhibit_population=lambda mgr: sum(census_handles.values()),
+        scan_exhibit_census_candidates=lambda handle_set: iter(()))
     src = types.SimpleNamespace(
         births=types.SimpleNamespace(resolver=resolver),
         research=types.SimpleNamespace(handle_key_map=lambda: {0x3033: "mtarantula", 0x3084: "gorilla"}),
@@ -200,6 +202,8 @@ def _exhibit_src(census_handles, exhibit_count):
         _released_species=set(), _last_exhibit_count=0,
         _exhibit_baseline=None, _pending_exhibit=0, _pending_exhibit_ticks=0)
     src._read_exhibit_census = lambda: MemoryTriggerSource._read_exhibit_census(src)
+    src._attribute_exhibit_drops = lambda raw: MemoryTriggerSource._attribute_exhibit_drops(src, raw)
+    src._exhibit_giveup_diag = lambda raw: MemoryTriggerSource._exhibit_giveup_diag(src, raw)
     return src
 
 
@@ -210,8 +214,8 @@ def test_exhibit_release_attributed_by_census_diff():
     ec = [0]                    # release-hook count (mutable)
     src = _exhibit_src(census, lambda: ec[0])
     poll = lambda: MemoryTriggerSource._poll_exhibit_release(src)
-    poll()                      # prime baseline; no fire
-    assert src._exhibit_baseline == {"mtarantula": 2}
+    poll()                      # prime baseline (RAW handles); no fire
+    assert src._exhibit_baseline == {0x3033: 2}
     assert src._released_species == set()
     ec[0] = 1                   # release detected by the hook, but census not yet decremented
     poll()
@@ -219,9 +223,9 @@ def test_exhibit_release_attributed_by_census_diff():
     assert src._released_species == set()        # held pending until the census drops
     census[0x3033] = 1          # deferred message processed: one tarantula gone
     poll()
-    assert src._released_species == {"mtarantula"}
+    assert src._released_species == {"mtarantula"}   # handle 0x3033 mapped at attribution time
     assert src._pending_exhibit == 0
-    assert src._exhibit_baseline == {"mtarantula": 1}
+    assert src._exhibit_baseline == {0x3033: 1}
 
 
 def test_exhibit_census_drop_without_release_not_attributed():
@@ -243,12 +247,30 @@ def test_exhibit_release_gives_up_when_no_mapped_drop():
     poll = lambda: MemoryTriggerSource._poll_exhibit_release(src)
     poll()                      # prime (adopts ecount=1, so no pending yet)
     assert src._pending_exhibit == 0
-    # now a genuinely new release of an UNMAPPED species (census for mapped species unchanged)
+    # now a genuinely new release whose species' census never drops (census for mapped species unchanged)
     src.releases.exhibit_count = lambda: 2
-    for _ in range(9):
+    from pz_ap_client.memory.triggers import EXHIBIT_GIVEUP_TICKS
+    for _ in range(EXHIBIT_GIVEUP_TICKS + 1):
         poll()
-    assert src._pending_exhibit == 0             # given up
+    assert src._pending_exhibit == 0             # given up after the budget
     assert src._released_species == set()
+
+
+def test_exhibit_release_unmapped_handle_drop_consumes_pending_without_firing():
+    """If the census drops for a handle NOT in the research map, the pending release is still consumed
+    (logged, not stuck waiting) but no cr_ fires - so the diagnostic shows the exact handle to map."""
+    census = {0x9999: 1}        # 0x9999 is not in the stub research map
+    ec = [0]
+    src = _exhibit_src(census, lambda: ec[0])
+    poll = lambda: MemoryTriggerSource._poll_exhibit_release(src)
+    poll()                      # prime baseline {0x9999: 1}
+    ec[0] = 1                   # release detected
+    poll()                      # pending=1, census not yet dropped
+    assert src._pending_exhibit == 1
+    census[0x9999] = 0          # the unmapped species' census drops
+    poll()
+    assert src._pending_exhibit == 0             # consumed (not stuck -> no spurious give-up later)
+    assert src._released_species == set()        # unmapped -> no cr_, but the drop was accounted
 
 
 def test_trigger_fires_cr_for_resolved_release():

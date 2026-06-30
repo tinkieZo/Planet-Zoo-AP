@@ -63,6 +63,7 @@ OFF_PARK_ANIMAL_MGR = 0x188
 # this census, so diffing it across a detected release attributes the species (see triggers).
 OFF_PARK_EXHIBIT_MGR = 0x1D0
 OFF_EXHIBIT_CENSUS = 0x318   # {species_handle -> count} map header (obj @+0, count @+8, cap @+0x10, buckets @+0x18)
+OFF_EXHIBIT_UIDMAP = 0x298   # UID<->EntityID roster map header; +8 = live exhibit-animal count (diagnostic cross-check)
 
 
 class AnimalResolver:
@@ -162,21 +163,49 @@ class AnimalResolver:
         mgr = self.scanner.read_qword(park + OFF_PARK_ANIMAL_MGR)
         return mgr or None
 
-    def resolve_exhibit_manager(self) -> Optional[int]:
-        """The exhibit-animal manager (root -> park -> +0x1D0), or None if no zoo is loaded / unreachable.
-        Separate from the habitat roster (+0x188). Reachable from the stable root, so it works on a
-        freshly-loaded save before any exhibit insert/release."""
+    def resolve_park(self) -> Optional[int]:
+        """The PARK object (root -> [0] -> +0x20 -> +0x658), or None if no zoo is loaded. The anchor for
+        both the habitat roster (+0x188) and the exhibit manager (+0x1D0)."""
         from .signatures import resolve_root
         if getattr(self.scanner, "module_base", None) is None:
             return None
         root = resolve_root(self.scanner, ANIMAL_ROOT_RVA)
         if not root:
             return None
-        park = self.scanner.resolve_pointer_chain(root, [0, *PARK_CHAIN])
+        return self.scanner.resolve_pointer_chain(root, [0, *PARK_CHAIN]) or None
+
+    def resolve_exhibit_manager(self) -> Optional[int]:
+        """The exhibit-animal manager (park + 0x1D0), or None if no zoo is loaded / unreachable. Separate
+        from the habitat roster (+0x188). Reachable from the stable root, so it works on a freshly-loaded
+        save before any exhibit insert/release."""
+        park = self.resolve_park()
         if not park:
             return None
-        mgr = self.scanner.read_qword(park + OFF_PARK_EXHIBIT_MGR)
-        return mgr or None
+        return self.scanner.read_qword(park + OFF_PARK_EXHIBIT_MGR) or None
+
+    def scan_exhibit_census_candidates(self, handle_set, span: int = 0x1800):
+        """DIAGNOSTIC: scan park[0:span] for pointers whose +0x318 reads as a valid {species_handle->count}
+        census containing at least one handle in ``handle_set`` (the research-map species handles). Yields
+        (park_offset, obj_addr, census) for each. Used when attribution fails to reveal whether the exhibit
+        manager is somewhere other than +0x1D0 on this scenario (or confirm +0x1D0 is right)."""
+        park = self.resolve_park()
+        if not park:
+            return
+        try:
+            data = self.scanner.read_bytes(park, span)
+        except Exception:
+            return
+        if not data:
+            return
+        seen = set()
+        for off in range(0, len(data) - 8, 8):
+            p = struct.unpack_from("<Q", data, off)[0]
+            if not (0x1000000 < p < 0x7FFFFFFFFFFF) or p in seen:
+                continue
+            seen.add(p)
+            census = self.read_exhibit_census(p)
+            if census and any(h in handle_set for h in census):
+                yield off, p, census
 
     def read_exhibit_census(self, mgr: int) -> "Optional[dict]":
         """{species_handle -> count} for every exhibit-animal species currently in the zoo (placed +
@@ -206,6 +235,17 @@ class AnimalResolver:
             if count:
                 out[handle] = count
         return out
+
+    def read_exhibit_population(self, mgr: int) -> "Optional[int]":
+        """Live count of exhibit animals (the UID-map's count field @+0x2a0), or None. Diagnostic
+        cross-check: if a release drops THIS but not the +0x318 census, the census is the wrong
+        structure (or park+0x1D0 isn't the exhibit manager on this scenario)."""
+        if not mgr:
+            return None
+        try:
+            return self.scanner.read_qword(mgr + OFF_EXHIBIT_UIDMAP + 0x8)
+        except Exception:
+            return None
 
     def iter_roster(self, mgr: int):
         """Yield (handle, entity) for every animal in the manager's roster (habitat + storage). Reads the

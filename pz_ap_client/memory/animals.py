@@ -43,6 +43,27 @@ OFF_MAP_CAP = 0x10
 OFF_MAP_BUCKETS = 0x18
 RECORD_STRIDE = 0x3F0
 
+# The owned-animal roster manager hangs off the PARK (root -> park -> +0x188). The SAME roster holds both
+# placed (habitat) and stored animals (live-confirmed: a bought-unplaced animal appears here), so a single
+# enumeration caches every owned animal. This is the race-free source for release attribution: a released
+# animal is removed from the roster within ms (faster than the ~1s poll can resolve it live), but a periodic
+# sweep cached it beforehand - and it covers loaded/continued saves whose animals never tripped the insert
+# hook. park = *(*(base+ANIMAL_ROOT_RVA)+0x20)+0x658 (same chain market.py uses for the exchange managers).
+ANIMAL_ROOT_RVA = 0x29446A0
+PARK_CHAIN = (0x20, 0x658)
+OFF_PARK_ANIMAL_MGR = 0x188
+
+# EXHIBIT animals live in a SEPARATE manager (park + 0x1D0; matches *(exhibit_obj+0x1d0) in the
+# GetCCValueOfReleasingExhibitAnimal decompile), NOT the +0x188 habitat roster - which is why a habitat
+# roster sweep never sees exhibit animals. That manager carries a {species_handle(u32) -> count(u32)}
+# CENSUS open-addressing map at +0x318 (count @+0x320, cap @+0x328 [power of two], buckets @+0x330;
+# 8-byte bitmap-then-entries, entry stride 8 = [u32 species_handle, u32 count]). The census is the
+# race-free source for per-species exhibit conservation_release: exhibit animals have no +0x50 species
+# handle reachable via a simple roster walk (the roster maps are id<->id only), but a release DECREMENTS
+# this census, so diffing it across a detected release attributes the species (see triggers).
+OFF_PARK_EXHIBIT_MGR = 0x1D0
+OFF_EXHIBIT_CENSUS = 0x318   # {species_handle -> count} map header (obj @+0, count @+8, cap @+0x10, buckets @+0x18)
+
 
 class AnimalResolver:
     def __init__(self, scanner):
@@ -125,6 +146,92 @@ class AnimalResolver:
             return struct.unpack("<I", self.scanner.read_bytes(entity + OFF_SPECIES_HANDLE, 4))[0]
         except Exception:
             return None
+
+    def resolve_animal_manager(self) -> Optional[int]:
+        """The owned-animal roster manager (root -> park -> +0x188), or None if no zoo is loaded.
+        Reachable from a stable root, so it works on a freshly-loaded save before any insert/release."""
+        from .signatures import resolve_root
+        if getattr(self.scanner, "module_base", None) is None:
+            return None
+        root = resolve_root(self.scanner, ANIMAL_ROOT_RVA)
+        if not root:
+            return None
+        park = self.scanner.resolve_pointer_chain(root, [0, *PARK_CHAIN])
+        if not park:
+            return None
+        mgr = self.scanner.read_qword(park + OFF_PARK_ANIMAL_MGR)
+        return mgr or None
+
+    def resolve_exhibit_manager(self) -> Optional[int]:
+        """The exhibit-animal manager (root -> park -> +0x1D0), or None if no zoo is loaded / unreachable.
+        Separate from the habitat roster (+0x188). Reachable from the stable root, so it works on a
+        freshly-loaded save before any exhibit insert/release."""
+        from .signatures import resolve_root
+        if getattr(self.scanner, "module_base", None) is None:
+            return None
+        root = resolve_root(self.scanner, ANIMAL_ROOT_RVA)
+        if not root:
+            return None
+        park = self.scanner.resolve_pointer_chain(root, [0, *PARK_CHAIN])
+        if not park:
+            return None
+        mgr = self.scanner.read_qword(park + OFF_PARK_EXHIBIT_MGR)
+        return mgr or None
+
+    def read_exhibit_census(self, mgr: int) -> "Optional[dict]":
+        """{species_handle -> count} for every exhibit-animal species currently in the zoo (placed +
+        stored), read from the exhibit manager's +0x318 census map. None if mgr is wrong/unreadable
+        (the power-of-two cap guard rejects a bad pointer, so callers can probe safely). Reverse-map the
+        handles through the research map to get species_keys (same namespace as habitat entity+0x50)."""
+        if not mgr:
+            return None
+        base = mgr + OFF_EXHIBIT_CENSUS
+        cap = self.scanner.read_qword(base + OFF_MAP_CAP)
+        buckets = self.scanner.read_qword(base + OFF_MAP_BUCKETS)
+        if not cap or not buckets or cap > (1 << 20) or (cap & (cap - 1)) != 0:
+            return None
+        bitmap_sz = ((cap >> 3) + 7) & ~7
+        try:
+            data = self.scanner.read_bytes(buckets, bitmap_sz + cap * 8)
+        except Exception:
+            return None
+        if not data or len(data) < bitmap_sz + cap * 8:
+            return None
+        out: dict = {}
+        for i in range(cap):
+            word = struct.unpack_from("<Q", data, (i >> 6) * 8)[0]
+            if not ((word >> (i & 0x3F)) & 1):
+                continue
+            handle, count = struct.unpack_from("<II", data, bitmap_sz + i * 8)
+            if count:
+                out[handle] = count
+        return out
+
+    def iter_roster(self, mgr: int):
+        """Yield (handle, entity) for every animal in the manager's roster (habitat + storage). Reads the
+        whole open-addressing bucket array once; same structure _lookup_index probes. No-op if mgr is wrong
+        (cap not a power of two) or unreadable."""
+        if not mgr:
+            return
+        cap = self.scanner.read_qword(mgr + OFF_MGR_HASHMAP + OFF_MAP_CAP)
+        buckets = self.scanner.read_qword(mgr + OFF_MGR_HASHMAP + OFF_MAP_BUCKETS)
+        table = self.scanner.read_qword(mgr + OFF_MGR_TABLE)
+        if not (cap and buckets and table) or cap > (1 << 24) or (cap & (cap - 1)) != 0:
+            return
+        bitmap_sz = ((cap >> 3) + 7) & ~7
+        try:
+            data = self.scanner.read_bytes(buckets, bitmap_sz + cap * 0x10)
+        except Exception:
+            return
+        for i in range(cap):
+            word = struct.unpack_from("<Q", data, (i >> 6) * 8)[0]
+            if not ((word >> (i & 0x3F)) & 1):
+                continue
+            entry = bitmap_sz + i * 0x10
+            handle = struct.unpack_from("<Q", data, entry)[0]
+            idx = struct.unpack_from("<I", data, entry + 8)[0]
+            if idx != 0xFFFFFFFF:
+                yield handle, table + idx * RECORD_STRIDE
 
     def is_newborn(self, zoo: int, handle: int) -> Optional[bool]:
         """True if the handle resolves to a newborn (life stage 0) = a BIRTH.

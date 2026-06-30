@@ -142,17 +142,23 @@ class _StubResolver:
     def species_handle(self, entity):
         return 0x30A2 if entity == self.ENTITY else None
 
+    def resolve_exhibit_manager(self):
+        return None   # no exhibit manager in the habitat-attribution tests -> exhibit path is a no-op
+
 
 def _src(*, handle, mgr_cand, last_zoo, count=1, cache=None):
     return types.SimpleNamespace(
         releases=types.SimpleNamespace(
             count=lambda: count,
+            habitat_count=lambda: count,
+            exhibit_count=lambda: 0,
             last_released_handle=lambda: handle,
             last_release_manager=lambda: mgr_cand),
         births=types.SimpleNamespace(resolver=_StubResolver(), last_zoo=last_zoo,
-                                     handle_species=cache or {}),
+                                     handle_species=cache or {}, sweep_roster=lambda: 0),
         research=types.SimpleNamespace(handle_key_map=lambda: {0x30A2: "aardvark"}),
-        _released_species=set(), _last_release_count=0, _warned_release_attr=False)
+        _released_species=set(), _last_habitat_count=0, _warned_release_attr=False,
+        _last_exhibit_count=0, _exhibit_baseline=None, _pending_exhibit=0, _pending_exhibit_ticks=0)
 
 
 def test_attribute_release_uses_insert_cache_first():
@@ -179,6 +185,70 @@ def test_attribute_release_returns_none_when_all_sources_fail():
     # no handle captured at all -> None
     src2 = _src(handle=None, mgr_cand=_StubResolver.MGR_GOOD, last_zoo=0)
     assert MemoryTriggerSource._attribute_release(src2) is None
+
+
+def _exhibit_src(census_handles, exhibit_count):
+    """Build a src for _poll_exhibit_release: census_handles is the live {species_handle->count} the fake
+    exhibit manager returns; exhibit_count is a callable -> current release-hook count."""
+    resolver = types.SimpleNamespace(
+        resolve_exhibit_manager=lambda: 0xE0,
+        read_exhibit_census=lambda mgr: dict(census_handles))
+    src = types.SimpleNamespace(
+        births=types.SimpleNamespace(resolver=resolver),
+        research=types.SimpleNamespace(handle_key_map=lambda: {0x3033: "mtarantula", 0x3084: "gorilla"}),
+        releases=types.SimpleNamespace(exhibit_count=exhibit_count),
+        _released_species=set(), _last_exhibit_count=0,
+        _exhibit_baseline=None, _pending_exhibit=0, _pending_exhibit_ticks=0)
+    src._read_exhibit_census = lambda: MemoryTriggerSource._read_exhibit_census(src)
+    return src
+
+
+def test_exhibit_release_attributed_by_census_diff():
+    """An exhibit release is attributed when the census count drops, even though the drop LAGS the hook
+    count (the release posts a deferred message): the pending release is held until the census reflects it."""
+    census = {0x3033: 2}        # two tarantulas in exhibits
+    ec = [0]                    # release-hook count (mutable)
+    src = _exhibit_src(census, lambda: ec[0])
+    poll = lambda: MemoryTriggerSource._poll_exhibit_release(src)
+    poll()                      # prime baseline; no fire
+    assert src._exhibit_baseline == {"mtarantula": 2}
+    assert src._released_species == set()
+    ec[0] = 1                   # release detected by the hook, but census not yet decremented
+    poll()
+    assert src._pending_exhibit == 1
+    assert src._released_species == set()        # held pending until the census drops
+    census[0x3033] = 1          # deferred message processed: one tarantula gone
+    poll()
+    assert src._released_species == {"mtarantula"}
+    assert src._pending_exhibit == 0
+    assert src._exhibit_baseline == {"mtarantula": 1}
+
+
+def test_exhibit_census_drop_without_release_not_attributed():
+    """A death/transfer drops the census with NO release event - must not fire cr_ (the hook count
+    is what distinguishes a release from a death)."""
+    census = {0x3033: 1}
+    src = _exhibit_src(census, lambda: 0)        # exhibit release count never rises
+    poll = lambda: MemoryTriggerSource._poll_exhibit_release(src)
+    poll()                      # prime
+    census[0x3033] = 0          # animal gone, but not released
+    poll()
+    assert src._released_species == set()
+
+
+def test_exhibit_release_gives_up_when_no_mapped_drop():
+    """A release is detected but no MAPPED species' census drops (e.g. the released species' handle isn't
+    in the research map): give up after the tick budget so the baseline doesn't stick forever."""
+    src = _exhibit_src({0x3033: 1}, lambda: 1)   # count says a release happened
+    poll = lambda: MemoryTriggerSource._poll_exhibit_release(src)
+    poll()                      # prime (adopts ecount=1, so no pending yet)
+    assert src._pending_exhibit == 0
+    # now a genuinely new release of an UNMAPPED species (census for mapped species unchanged)
+    src.releases.exhibit_count = lambda: 2
+    for _ in range(9):
+        poll()
+    assert src._pending_exhibit == 0             # given up
+    assert src._released_species == set()
 
 
 def test_trigger_fires_cr_for_resolved_release():

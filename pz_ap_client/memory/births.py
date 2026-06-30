@@ -88,6 +88,27 @@ class BirthDetector:
         species. Handles are per-session but resolved live, so this is restart-correct."""
         return self.research.handle_key_map()
 
+    def sweep_roster(self) -> int:
+        """Enumerate the owned-animal roster (habitat + storage) and cache handle->species_key for EVERY
+        animal. This is the race-free source for conservation_release attribution: a released animal is
+        removed from the roster within ms - too fast for the ~1s poll to resolve it live - but a prior
+        sweep already cached it. Covers cases the insert hook misses: loaded/continued saves (pre-existing
+        animals) and animals bought + released straight from storage (never entered a habitat). Returns the
+        number cached this sweep (0 if no zoo is loaded / the manager isn't resolvable). Cheap for normal
+        zoos (one bucket-array read + one species read per animal); called on a throttle from the poll."""
+        mgr = self.resolver.resolve_animal_manager()
+        if not mgr:
+            return 0
+        h2k = self._handle_to_key() or {}
+        n = 0
+        for handle, entity in self.resolver.iter_roster(mgr):
+            sh = self.resolver.species_handle(entity)
+            key = h2k.get(sh) if sh is not None else None
+            if key and self.handle_species.get(handle) != key:
+                self.handle_species[handle] = key
+                n += 1
+        return n
+
     def poll(self) -> List[str]:
         """Drain new inserts; return species_keys of those that were BIRTHS (newborns).
         (Back-compat: first_breed detection. Use poll_events for births + acquisitions.)"""

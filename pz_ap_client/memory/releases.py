@@ -27,6 +27,17 @@ TWO detours on this one function:
     AnimalReleasedIntoWildMessage), so the entity is still in the roster right after the
     capture for the next poll to resolve.
 
+EXHIBIT releases use a SEPARATE native action (``FUN_146048940`` @rva 0x6048940; no script binding -
+it resolves the released exhibit animal and posts ``ExhibitAnimalReleasedMessage``), so the habitat
+hook never sees them - which is why exhibit releases previously did nothing. ``_install_exhibit_gate``
+adds the SAME gate+counter (``make_release_gate``) on that entry; its count folds into ``count()`` and
+its lock tracks the Conservation Program, so exhibit releases register toward conservation_release and
+are gated identically. Per-species ``cr_`` for exhibit is attributed WITHOUT a handle capture: the
+exhibit manager (park+0x1D0) keeps a {species_handle -> count} CENSUS map (+0x318), and a release
+decrements it, so the client diffs the census across a detected exhibit release to learn the species
+(``triggers._poll_exhibit_release``; ``habitat_count``/``exhibit_count`` split the two paths so each uses
+its own attribution). Found via Ghidra (FindStrRefs on ExhibitAnimalReleasedMessage); see [[exhibit-release-RE]].
+
 The gate defaults LOCKED on install; the client calls ``set_locked(False)`` once the
 Conservation Program item is received (reconciled from the full received set each tick).
 
@@ -60,6 +71,7 @@ class ReleaseDetector:
         self.installed = False
         self.scratch: Optional[int] = None        # entry-gate scratch (count @+0, lock @+4)
         self.sp_scratch: Optional[int] = None     # species-capture scratch (handle @+8, mgr @+0x10)
+        self.exhibit_scratch: Optional[int] = None  # EXHIBIT release gate scratch (count @+0, lock @+4)
         self._locked = True   # conservation gated until the program_unlock item arrives
 
     def ensure_installed(self) -> bool:
@@ -82,9 +94,34 @@ class ReleaseDetector:
             self.scratch = self.hm.scratch("release")
             self._write_lock()  # apply the current gate state
             self._install_species_capture()  # best-effort per-species attribution
-            logger.info("release detector+gate installed @0x%X (locked=%s, species_capture=%s)",
-                        site, self._locked, self.sp_scratch is not None)
+            self._install_exhibit_gate()      # EXHIBIT releases use a separate native action
+            logger.info("release detector+gate installed @0x%X (locked=%s, species_capture=%s, exhibit_gate=%s)",
+                        site, self._locked, self.sp_scratch is not None, self.exhibit_scratch is not None)
         return self.installed
+
+    def _install_exhibit_gate(self) -> None:
+        """Install the gate+counter on the EXHIBIT release action (FUN_146048940), the exhibit analog of
+        the habitat release executor. Exhibit animals release via a SEPARATE native path (no script binding;
+        it posts ExhibitAnimalReleasedMessage), so the habitat hook never sees them - this is why exhibit
+        releases previously did nothing. Counting here makes them register toward conservation_release and
+        respects the Conservation Program lock. Best-effort: a miss only disables exhibit-release detection
+        (habitat unaffected). Reuses make_release_gate (count@+0, lock@+4; the relocated push-prologue is
+        position-independent, and the gate's `xor eax,eax; ret` abort is valid at this clean entry too)."""
+        from .signatures import resolve_hook
+        resolved = resolve_hook(self.scanner, "exhibit_release")
+        if resolved is None:
+            logger.info("release: exhibit-release site unresolved - exhibit releases won't count "
+                        "(habitat release detection unaffected)")
+            return
+        site, orig = resolved
+        try:
+            if self.hm.install("exhibit_release", site, orig,
+                               lambda r, sc, res: make_release_gate(r, sc, res, orig)):
+                self.exhibit_scratch = self.hm.scratch("exhibit_release")
+                self._write_lock()   # apply the current lock to the exhibit gate too
+                logger.info("exhibit-release gate installed @0x%X", site)
+        except Exception as e:
+            logger.info("release: exhibit-release install failed (%s) - exhibit releases won't count", e)
 
     def _install_species_capture(self) -> None:
         """Install the second detour that records the released animal's handle + manager candidate.
@@ -104,10 +141,11 @@ class ReleaseDetector:
             logger.info("release: species-capture install failed (%s) - cr_ attribution off", e)
 
     def _write_lock(self) -> None:
-        if self.scratch is not None:
+        for sc in (self.scratch, self.exhibit_scratch):   # gate BOTH habitat + exhibit release paths
+            if sc is None:
+                continue
             try:
-                self.scanner.write_bytes(self.scratch + RELEASE_LOCK_OFF,
-                                         struct.pack("<I", 1 if self._locked else 0))
+                self.scanner.write_bytes(sc + RELEASE_LOCK_OFF, struct.pack("<I", 1 if self._locked else 0))
             except Exception as e:
                 logger.warning("release: failed to write gate lock: %s", e)
 
@@ -121,13 +159,37 @@ class ReleaseDetector:
             logger.info("conservation release gate -> %s", "LOCKED" if locked else "OPEN")
 
     def count(self) -> int:
-        """Cumulative releases observed this session (0 if not installable)."""
-        if not self.ensure_installed() or self.scratch is None:
+        """Cumulative releases observed this session - habitat + exhibit (0 if not installable)."""
+        if not self.ensure_installed():
+            return 0
+        total = 0
+        for sc in (self.scratch, self.exhibit_scratch):
+            if sc is None:
+                continue
+            try:
+                total += struct.unpack("<I", self.scanner.read_bytes(sc, 4))[0]
+            except Exception:
+                pass
+        return total
+
+    def _scratch_count(self, sc: "Optional[int]") -> int:
+        if sc is None:
             return 0
         try:
-            return struct.unpack("<I", self.scanner.read_bytes(self.scratch, 4))[0]
+            return struct.unpack("<I", self.scanner.read_bytes(sc, 4))[0]
         except Exception:
             return 0
+
+    def habitat_count(self) -> int:
+        """Releases via the HABITAT executor (ReleaseAnimalIntoWild) this session. Attributed per-species
+        by handle (release_species capture). Separated from exhibit releases so each path uses its own
+        attribution (handle-based vs census-diff) without one mis-firing on the other's count."""
+        return self._scratch_count(self.scratch) if self.ensure_installed() else 0
+
+    def exhibit_count(self) -> int:
+        """Releases via the EXHIBIT action (FUN_146048940) this session. Attributed per-species by
+        diffing the exhibit census (no handle is captured here - the exhibit roster is id<->id only)."""
+        return self._scratch_count(self.exhibit_scratch) if self.ensure_installed() else 0
 
     def last_released_handle(self) -> "Optional[int]":
         """The ENTITY HANDLE (nAnimalID) of the most recently released animal, captured at the
@@ -154,10 +216,11 @@ class ReleaseDetector:
             return None
 
     def shutdown(self) -> None:
-        for name in ("release", "release_species"):
+        for name in ("release", "release_species", "exhibit_release"):
             try:
                 self.hm.restore(name)
             except Exception:
                 pass
         self.installed = False
         self.sp_scratch = None
+        self.exhibit_scratch = None

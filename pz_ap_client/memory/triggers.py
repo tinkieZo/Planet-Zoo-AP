@@ -66,8 +66,19 @@ class MemoryTriggerSource:
         self._bred_species: set = set()      # species_keys observed born (cumulative)
         self._acquired_species: set = set()  # species_keys observed acquired (cumulative)
         self._released_species: set = set()  # species_keys observed released (cumulative)
-        self._last_release_count = 0         # release-count high-water (attribute only NEW releases)
+        self._last_habitat_count = 0         # habitat-release high-water (attribute only NEW releases)
         self._warned_release_attr = False    # one-shot notice that per-species release is unmapped
+        # Exhibit conservation_release is attributed by census-diff (no handle is captured at the exhibit
+        # action). The release HOOK count rises synchronously, but the census decrement is DEFERRED (the
+        # release posts ExhibitAnimalReleasedMessage, processed later), so we hold a baseline census across
+        # the lag: each detected exhibit release is "pending" until a species' census count drops below the
+        # baseline, which attributes it. Baseline only advances when nothing is pending (so buys/births don't
+        # erase a not-yet-resolved drop). A pending release is given up after a few ticks (count + milestone
+        # still fire) to avoid a stuck baseline if the released species' handle isn't in the research map.
+        self._last_exhibit_count = 0
+        self._exhibit_baseline: "dict | None" = None   # {species_key -> count} accounted-for census
+        self._pending_exhibit = 0                      # detected exhibit releases awaiting a census drop
+        self._pending_exhibit_ticks = 0                # ticks a pending release has waited (give-up guard)
         # A3 conservation_release: software-detour on the release-to-wild executor that
         # counts releases (no stable game counter exists - see releases.py / the A2 spike).
         self.releases = ReleaseDetector(scanner)
@@ -149,30 +160,99 @@ class MemoryTriggerSource:
                 if loc.id not in already and loc.trigger_args.get("species_key") in self._acquired_species]
 
     def _poll_conservation_release(self, already: set) -> List[int]:
-        """Per-species conservation_release (cr_<species>). On each NEW release (entry-gate count
-        rises) the species-capture detour has, in the same call, recorded the released animal's
-        handle + the manager it was resolved through; we resolve that to a species_key (same
-        entity->+0x50->research-map path as births) and accumulate it, firing the matching cr_
-        locations. Degrades to nothing (no false checks) if attribution fails - logged once."""
+        """Per-species conservation_release (cr_<species>), two attribution paths that share the cr_ set:
+        HABITAT - on each NEW habitat release the species-capture detour recorded the released animal's
+        handle (resolved to a species_key via the insert/roster cache, race-free); EXHIBIT - exhibit
+        animals capture no handle, so _poll_exhibit_release diffs the exhibit {species->count} census
+        across a detected exhibit release. Both degrade to nothing (no false checks) if attribution fails."""
         locs = self.game_data.locations_by_trigger("conservation_release")
         if not locs:
             return []
-        count = self.releases.count()
-        if count > self._last_release_count:
-            self._last_release_count = count
+        # Keep handle->species fresh from the live roster (habitat + storage) so a release resolves from
+        # cache. A released animal leaves the roster within ms - too fast to resolve live on the next poll -
+        # but this sweep cached it on a prior tick. Also covers loaded saves + release-straight-from-storage,
+        # which the insert hook never sees. Cheap for normal zoos; best-effort (no-op if no zoo / not resolvable).
+        try:
+            self.births.sweep_roster()
+        except Exception:
+            pass
+        # HABITAT releases: handle-based attribution (release_species capture + insert/roster cache).
+        hcount = self.releases.habitat_count()
+        if hcount > self._last_habitat_count:
+            self._last_habitat_count = hcount
             key = self._attribute_release()
             if key:
                 self._released_species.add(key)
             elif not self._warned_release_attr:
                 self._warned_release_attr = True
-                logger.info("conservation_release: release #%d observed but species attribution "
+                logger.info("conservation_release: habitat release #%d observed but species attribution "
                             "failed (handle unresolved against any animal manager - entity already "
                             "freed, or species-capture hook not installed). cr_ checks won't fire "
-                            "for it; the milestone (count) still works.", count)
+                            "for it; the milestone (count) still works.", hcount)
+        # EXHIBIT releases: census-diff attribution (no handle is captured for the exhibit action).
+        try:
+            self._poll_exhibit_release()
+        except Exception:
+            logger.exception("conservation_release: exhibit census-diff failed (skipping this tick)")
         if not self._released_species:
             return []
         return [loc.id for loc in locs
                 if loc.id not in already and loc.trigger_args.get("species_key") in self._released_species]
+
+    def _read_exhibit_census(self) -> "dict | None":
+        """{species_key -> count} for exhibit animals in the zoo (placed + stored), or None if the exhibit
+        manager isn't resolvable (no zoo / mid-load). Reverse-maps the census species handles through the
+        research map; unmapped handles are dropped (their releases simply won't fire cr_, same limit as
+        habitat). Empty dict (zoo loaded, no exhibit animals) is distinct from None (not resolvable)."""
+        resolver = self.births.resolver
+        mgr = resolver.resolve_exhibit_manager()
+        if not mgr:
+            return None
+        raw = resolver.read_exhibit_census(mgr)
+        if raw is None:
+            return None
+        h2k = self.research.handle_key_map() or {}
+        return {h2k[h]: c for h, c in raw.items() if h in h2k and c > 0}
+
+    def _poll_exhibit_release(self) -> None:
+        """Attribute exhibit conservation_release by diffing the {species->count} census across a detected
+        exhibit release. The release hook count rises synchronously but the census decrement is deferred, so
+        a detected release is held 'pending' until a species' count drops below the held baseline (which then
+        attributes it). Pairing the census drop with the hook count is what distinguishes a RELEASE from a
+        death/transfer (those drop the census with no release event, so they're never attributed)."""
+        census = self._read_exhibit_census()
+        if census is None:
+            return  # manager not resolvable this tick; baseline/pending preserved
+        ecount = self.releases.exhibit_count()
+        if self._exhibit_baseline is None:
+            # prime: adopt the current census AND release-count high-water so pre-existing exhibit
+            # animals (and any release that predates the baseline) never fire.
+            self._exhibit_baseline = census
+            self._last_exhibit_count = ecount
+            return
+        new = ecount - self._last_exhibit_count
+        if new > 0:
+            self._pending_exhibit += new
+        self._last_exhibit_count = ecount
+        if self._pending_exhibit > 0:
+            for sp, base_c in self._exhibit_baseline.items():
+                now = census.get(sp, 0)
+                while now < base_c and self._pending_exhibit > 0:
+                    self._released_species.add(sp)
+                    base_c -= 1
+                    self._exhibit_baseline[sp] = base_c   # account this drop (don't re-attribute)
+                    self._pending_exhibit -= 1
+                    logger.info("conservation_release: exhibit release attributed -> %s (census drop)", sp)
+            self._pending_exhibit_ticks += 1
+            if self._pending_exhibit > 0 and self._pending_exhibit_ticks >= 8:
+                # give up on an unresolved drop (e.g. released species' handle not in the research map):
+                # the count + milestone already fired; resync so we don't hold a stale baseline forever.
+                logger.info("conservation_release: %d exhibit release(s) detected but no census drop "
+                            "attributed (unmapped species?); resyncing baseline.", self._pending_exhibit)
+                self._pending_exhibit = 0
+        if self._pending_exhibit == 0:
+            self._pending_exhibit_ticks = 0
+            self._exhibit_baseline = census   # advance baseline (accounts buys/births + resolved drops)
 
     def _attribute_release(self) -> "str | None":
         """Resolve the last released animal handle -> species_key. None if it can't be attributed.
@@ -188,6 +268,9 @@ class MemoryTriggerSource:
         (never inserted), though it may miss if the entity was freed before this tick."""
         handle = self.releases.last_released_handle()
         if not handle:
+            logger.info("conservation_release[diag]: species-capture hook fired but recorded NO handle "
+                        "(sp_scratch=%s) - the capture isn't writing rsi",
+                        bool(getattr(self.releases, "sp_scratch", None)))
             return None
         cached = self.births.handle_species.get(handle)
         if cached:
@@ -212,6 +295,15 @@ class MemoryTriggerSource:
                 logger.info("conservation_release: attributed released handle 0x%X -> %s "
                             "(live resolve, species handle 0x%X)", handle, key, sh)
                 return key
+        # Attribution failed: dump what we had, so one release tells us WHY. The decisive clue is whether
+        # the released handle (rsi = nAnimalID) is the same id-space as the births-cache keys (the insert
+        # handle); if not, the cache can never hit and we need GetSpecies(nAnimalID)-style resolution.
+        sample = [hex(k) for k in list(self.births.handle_species)[:6]]
+        live_hits = sum(1 for e in candidates if e is not None)
+        logger.info("conservation_release[diag]: FAILED. released handle=0x%X; births cache=%d entries "
+                    "(sample keys: %s); mgr_cand=0x%X; live-resolve found %d/%d candidate entities. If the "
+                    "released handle is nowhere near the cache keys, it's a different id-space (nAnimalID).",
+                    handle, len(self.births.handle_species), sample, mgr_cand or 0, live_hits, len(candidates))
         return None
 
     def close(self) -> None:

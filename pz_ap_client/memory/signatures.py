@@ -65,6 +65,12 @@ HOOKS: List[HookSite] = [
     HookSite("exhibit_insert", 0xA31F20, "488bc44c894820",
              "exhibit add-animal construct ENTRY (ExhibitDetector; FUN_140a31f20, common to buy+birth)",
              aob="48 8B C4 4C 89 48 20 4C 89 40 18 48 89 50 10 48 89 48 08 55 53 56 57 41 54 41 55 41 56 41 57 48 8D A8 08 F7 FF FF"),
+    HookSite("exhibit_release", 0x6048940, "4055535657",
+             "EXHIBIT release action FUN_146048940 entry (posts ExhibitAnimalReleasedMessage); separate "
+             "native path from habitat ReleaseAnimalIntoWild - gate+count so exhibit releases register "
+             "toward conservation_release. Found via Ghidra FindStrRefs on ExhibitAnimalReleasedMessage.",
+             aob="40 55 53 56 57 41 56 48 8D AC 24 20 FF FF FF 48 81 EC E0 01 00 00 48 8B 41 20 31 F6 48 8B "
+                 "59 10 49 89 CA 48 89 DA 48 2B 10 48 B8 AB AA AA AA AA AA AA 2A"),
 ]
 
 # ── data anchors (resolved via anchors.json chains) with plausible-value sanity ranges ───────────────

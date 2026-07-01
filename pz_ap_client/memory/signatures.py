@@ -286,10 +286,15 @@ class CheckResult:
     detail: str = ""
 
 
-def _classify_hook(scanner, h: HookSite) -> CheckResult:
-    """Health of one hook site: ok (intact) | relocated (AOB re-found) | leaked (our own detour from an
-    unclean exit, auto-recovers) | broken (genuine code change, needs re-RE) | unresolved (unreadable)."""
+def _classify_hook(scanner, h: HookSite, installed_hooks=None) -> CheckResult:
+    """Health of one hook site: ok (intact / active this session) | relocated (AOB re-found) | leaked (our
+    own detour from an unclean exit, auto-recovers) | broken (genuine code change, needs re-RE) | unresolved.
+
+    ``installed_hooks`` (names the client installed THIS session) short-circuits to OK: those sites hold our
+    own live detour, which would otherwise look byte-identical to a leaked prior-crash detour."""
     site = scanner.module_base + h.rva
+    if installed_hooks and h.name in installed_hooks:
+        return CheckResult("hook", h.name, "ok", "active (installed this session) @0x%X" % site)
     try:
         cur = scanner.read_bytes(site, len(h.orig))
     except Exception:
@@ -318,8 +323,8 @@ def _classify_hook(scanner, h: HookSite) -> CheckResult:
     return CheckResult("hook", h.name, "broken", detail)
 
 
-def check_hooks(scanner) -> List[CheckResult]:
-    return [_classify_hook(scanner, h) for h in HOOKS]
+def check_hooks(scanner, installed_hooks=None) -> List[CheckResult]:
+    return [_classify_hook(scanner, h, installed_hooks) for h in HOOKS]
 
 
 def check_anchors(scanner, anchor_table) -> List[CheckResult]:
@@ -424,14 +429,19 @@ def check_session(scanner, reader=None) -> List[CheckResult]:
                         "no park-info instance (no loaded zoo, or vtable RVA stale after a patch)")]
 
 
-def run_selfcheck(scanner, anchor_table=None, *, session_reader=None, terrain_gate=None) -> List[CheckResult]:
+def run_selfcheck(scanner, anchor_table=None, *, session_reader=None, terrain_gate=None,
+                  installed_hooks=None) -> List[CheckResult]:
     """Resolve every dependency and return a health report. anchor_table optional (skips anchor checks).
 
     session_reader / terrain_gate: the client passes its own already-resolved instances so the preflight
     reuses their state instead of repeating their full-heap scans (~20s each). Standalone callers omit
-    them (tools/selfcheck.py) and get fresh scans."""
+    them (tools/selfcheck.py) and get fresh scans.
+
+    installed_hooks: names of hooks the CLIENT has already installed this session (HookManager.active_hooks()).
+    Those sites hold our own detours, so they're reported OK ('active') rather than misclassified as a leaked
+    prior-crash detour. Standalone callers omit it (they inspect a game the client hasn't hooked)."""
     results: List[CheckResult] = []
-    results += check_hooks(scanner)
+    results += check_hooks(scanner, installed_hooks)
     results += check_roots(scanner)
     if anchor_table is not None:
         results += check_anchors(scanner, anchor_table)

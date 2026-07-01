@@ -162,6 +162,34 @@ def test_shared_arena_new_block_when_out_of_reach():
         hookmod._arenas.clear(); hookmod._arena_live = 0
 
 
+def test_installed_hook_is_ok_not_leaked():
+    """A site holding OUR detour installed THIS session must classify OK, not 'leaked' - it's byte-identical
+    to a leaked prior-crash detour, so the preflight needs the installed-hooks hint to tell them apart (the
+    false-positive the user saw: every freshly-installed hook reported 'leaked (prior unclean exit)')."""
+    m = FakeMem()
+    _install_our_leak(m)
+    assert sig._classify_hook(m, REL).status == "leaked"                      # no hint -> looks like a leak
+    r = sig._classify_hook(m, REL, installed_hooks={"release"})              # client installed it this session
+    assert r.status == "ok" and "active" in r.detail
+    # and the whole-inventory entry point threads the hint through:
+    hooks = {c.name: c for c in sig.check_hooks(m, installed_hooks={"release"})}
+    assert hooks["release"].status == "ok"
+
+
+def test_active_hooks_registry_tracks_install_and_restore():
+    """HookManager records installed names session-wide (removed on restore) so the preflight can query
+    what's ours across every manager without enumerating them."""
+    hookmod.HookManager._active_names.clear()
+    try:
+        hookmod.HookManager._active_names.add("release")   # simulate a successful install
+        assert hookmod.HookManager.active_hooks() == {"release"}
+        assert hookmod.HookManager.active_hooks() is not hookmod.HookManager._active_names  # a copy
+        hookmod.HookManager._active_names.discard("release")  # simulate restore
+        assert hookmod.HookManager.active_hooks() == set()
+    finally:
+        hookmod.HookManager._active_names.clear()
+
+
 def test_foreign_patch_is_not_touched():
     """A jmp whose trampoline does NOT contain our original bytes is someone else's hook - leave it."""
     m = FakeMem()

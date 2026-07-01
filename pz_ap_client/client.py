@@ -242,6 +242,7 @@ class PZContext(CommonContext):
         self._fresh_wait_ticks = 0  # ticks spent holding item apply for the park-age (fresh) signal to land
         self._paused_at_idx: "Optional[int]" = None  # item idx we last logged a pause for; throttles the
         # "Pausing item application" line (a stuck cumulative item retries every tick - log once per episode)
+        self._fresh_latch_logged = False  # throttle the "fresh_pending already latched" notice (once/episode)
         self._preflight_done = False  # run the signatures self-check once on first attach (fail-loud)
         self._pending_checks: List[int] = []  # location ids queued by the poll thread, sent on the loop
         self.poll_interval: float = 1.0
@@ -421,8 +422,14 @@ class PZContext(CommonContext):
             return
         self._session_was_active = True
         steps = (
-            ("triggers", lambda: self.trigger_source.poll(self.effective_checked)),  # game events -> checks
+            # preflight FIRST, before anything installs its detours: it's a read-only health check of the
+            # game's PRISTINE code sites (orig bytes / AOB). Running it after our own hooks install made it
+            # inspect our freshly-installed detours and misreport them as "leaked (prior unclean exit)" /
+            # "broken" - false positives on every clean start. On a genuine prior crash the leaked detour is
+            # still present here (we haven't reinstalled yet) so real leaks are still caught + then recovered
+            # by the install path (resolve_hook -> recover_leaked_hook) in the steps that follow.
             ("preflight", self._run_preflight),        # once, on first attach: self-check patch-sensitive sites
+            ("triggers", lambda: self.trigger_source.poll(self.effective_checked)),  # game events -> checks
             ("apply_items", self._apply_new_items),    # apply/retry received items (+ fresh-save re-award)
             ("permits", self._reconcile_permits),      # purchase gate = full received-permit set
             ("conservation", self._reconcile_conservation),  # release gate = (conservation received?)
@@ -574,8 +581,21 @@ class PZContext(CommonContext):
         if years >= FRESH_YEARS:
             if pending:
                 self.state.set_fresh_pending(seed, self.slot, False)  # matured -> arm for the next new save
+                self._fresh_latch_logged = False
+                logger.info("fresh-reset: zoo matured (%d >= %d years) - re-armed for the next new save", years, FRESH_YEARS)
             return applied
         if pending:
+            # KNOWN LIMITATION: the latch only re-arms when a zoo MATURES past FRESH_YEARS. Restarting the
+            # scenario (a new Year-1 save) without ever maturing leaves it latched, so this genuinely-new
+            # fresh save is mistaken for the already-handled one -> no starting money, no re-award. The real
+            # fix is per-save state scoping (a save-unique id); until then, clear the client state file to
+            # force a re-award. Logged ONCE per episode (this runs every poll tick).
+            if not self._fresh_latch_logged:
+                self._fresh_latch_logged = True
+                logger.info("fresh-reset: fresh zoo (%d < %d years) but fresh_pending already latched for "
+                            "seed:%s slot:%s - treating as already-handled (NO starting money / re-award). "
+                            "If this is a genuinely new save, clear the client state to force a re-award.",
+                            years, FRESH_YEARS, seed, self.slot)
             return applied                                            # this fresh save already handled
         # First handling of this fresh park: set the room's starting cash baseline, then arm the
         # re-award (which re-applies all received items, incl. cash, on top of that baseline).
@@ -944,6 +964,7 @@ class PZContext(CommonContext):
         try:
             from .memory import signatures as sig
             from .memory.anchors import AnchorTable
+            from .memory.hook import HookManager
             try:
                 at = AnchorTable.load()
             except Exception:
@@ -951,10 +972,14 @@ class PZContext(CommonContext):
             # Reuse the session reader (already scanned + cached by _session_active, which fronts this
             # very tick) and the terrain gate, so the preflight doesn't repeat their ~20s full-heap
             # scans - the single biggest first-tick cost. See run_selfcheck / check_session / check_terrain.
+            # installed_hooks tells the check which sites already hold OUR detour (e.g. the permit gate can
+            # install during the Connected handler, before this first-tick preflight) so they aren't
+            # misreported as leaked prior-crash detours.
             results = sig.run_selfcheck(
                 scanner, at,
                 session_reader=(self._session.names if self._session is not None else None),
                 terrain_gate=self.terrain_gate,
+                installed_hooks=HookManager.active_hooks(),
             )
             bad = [r for r in results if r.status not in ("ok", "relocated")]
             reloc = [r for r in results if r.status == "relocated"]

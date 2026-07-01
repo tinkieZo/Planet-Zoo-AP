@@ -82,9 +82,10 @@ class MemoryTriggerSource:
         # erase a not-yet-resolved drop). A pending release is given up after a few ticks (count + milestone
         # still fire) to avoid a stuck baseline if the released species' handle isn't in the research map.
         self._last_exhibit_count = 0
-        self._exhibit_baseline: "dict | None" = None   # {species_key -> count} accounted-for census
+        self._exhibit_baseline: "dict | None" = None   # {species_handle -> count} accounted-for PLACED census
         self._pending_exhibit = 0                      # detected exhibit releases awaiting a census drop
         self._pending_exhibit_ticks = 0                # ticks a pending release has waited (give-up guard)
+        self._exhibit_storage_hint_logged = False      # once-only "place-then-release" hint (storage releases)
         # A3 conservation_release: software-detour on the release-to-wild executor that
         # counts releases (no stable game counter exists - see releases.py / the A2 spike).
         self.releases = ReleaseDetector(scanner)
@@ -223,29 +224,43 @@ class MemoryTriggerSource:
         deferred, so a detected release is held 'pending' until a handle's count drops below the held
         baseline (mapped to a species_key then). Pairing the census drop with the hook count is what
         distinguishes a RELEASE from a death/transfer (those drop the census with no release event)."""
-        raw = self._read_exhibit_census()
-        if raw is None:
-            return  # manager not resolvable this tick; baseline/pending preserved
+        # DETECT the release FIRST, independent of the census. The exhibit hook count (exhibit_count) is
+        # session-scoped (starts at 0), so counting from 0 captures every release since attach. Doing this
+        # before reading the census is critical: if exhibit animals are ONLY in storage (no PLACED ones),
+        # the placed census at +0x1D0 is empty/unresolvable (raw is None) - the old code returned there and
+        # never even saw the release, suppressing both detection AND the give-up diagnostic.
         ecount = self.releases.exhibit_count()
-        if self._exhibit_baseline is None:
-            # prime: adopt the current census AND release-count high-water so pre-existing exhibit
-            # animals (and any release that predates the baseline) never fire.
-            self._exhibit_baseline = raw
-            self._last_exhibit_count = ecount
-            return
         new = ecount - self._last_exhibit_count
         if new > 0:
             self._pending_exhibit += new
+            logger.info("conservation_release: exhibit release detected (hook count %d, +%d) - resolving "
+                        "species via census diff", ecount, new)
         self._last_exhibit_count = ecount
+        raw = self._read_exhibit_census()   # PLACED census (may be None: no placed animals / mid-load)
+        if raw is not None:
+            if self._exhibit_baseline is None:
+                self._exhibit_baseline = raw            # prime the placed-census baseline (no fire)
+            elif self._pending_exhibit > 0:
+                self._attribute_exhibit_drops(raw)      # a PLACED release drops a baseline count
+        # Retire pending releases after the budget even if no census drop explained them. A PLACED release
+        # attributes via the census diff above; a release that never drops the census was released straight
+        # from STORAGE/trade-center, which has no per-species census to diff (confirmed: no such map exists
+        # under the park). We can't attribute those per-species - the workaround is place-then-release.
         if self._pending_exhibit > 0:
-            self._attribute_exhibit_drops(raw)
             self._pending_exhibit_ticks += 1
-            if self._pending_exhibit > 0 and self._pending_exhibit_ticks >= EXHIBIT_GIVEUP_TICKS:
-                self._exhibit_giveup_diag(raw)
+            if self._pending_exhibit_ticks >= EXHIBIT_GIVEUP_TICKS:
+                if not self._exhibit_storage_hint_logged:
+                    self._exhibit_storage_hint_logged = True
+                    logger.info("conservation_release: an exhibit release wasn't attributed to a species "
+                                "(no placed-exhibit census drop - likely released straight from storage/"
+                                "trade-center, which isn't tracked per-species). To register a species' cr_ "
+                                "check, place the exhibit animal in an exhibit before releasing it. (The "
+                                "release count + milestone are still credited.)")
                 self._pending_exhibit = 0
         if self._pending_exhibit == 0:
             self._pending_exhibit_ticks = 0
-            self._exhibit_baseline = raw   # advance baseline (accounts buys/births + resolved drops)
+            if raw is not None:
+                self._exhibit_baseline = raw   # advance baseline (accounts buys/births + resolved drops)
 
     def _attribute_exhibit_drops(self, raw: dict) -> None:
         """For each baseline handle whose census count dropped, consume one pending release and (if the
@@ -266,32 +281,6 @@ class MemoryTriggerSource:
                 base_c -= 1
                 self._exhibit_baseline[handle] = base_c   # account this drop (don't re-attribute)
                 self._pending_exhibit -= 1
-
-    def _exhibit_giveup_diag(self, raw: dict) -> None:
-        """No census entry dropped for the pending release(s): the +0x318 census may not track live exhibit
-        population on this build/scenario, or park+0x1D0 isn't the exhibit manager here. Dump state so one
-        repro tells us which (the count + gate already worked; only per-species cr_ is affected)."""
-        resolver = self.births.resolver
-        mgr = resolver.resolve_exhibit_manager()
-        pop = resolver.read_exhibit_population(mgr) if mgr else None
-        baseline = {hex(k): v for k, v in (self._exhibit_baseline or {}).items()}
-        logger.info("conservation_release[exhibit-diag]: %d release(s) detected but NO census entry dropped "
-                    "in %d ticks. mgr=0x%X live-pop=%s baseline-census=%s now-census=%s . live-pop is the "
-                    "count of animals in the exhibit roster: if it DROPPED while the census didn't, +0x318 is "
-                    "the wrong structure (use the roster/UID map); if both unchanged, park+0x1D0 isn't the "
-                    "exhibit mgr here; if the census handles aren't species-like ids, same.",
-                    self._pending_exhibit, self._pending_exhibit_ticks, mgr or 0, pop,
-                    baseline, {hex(k): v for k, v in raw.items()})
-        # If +0x1D0 might be the wrong manager, scan the park for any object with a species-like census so
-        # we can re-target it directly from one repro instead of another RE round.
-        try:
-            h2k = self.research.handle_key_map() or {}
-            cands = [(hex(off), hex(p), {hex(k): v for k, v in c.items()})
-                     for off, p, c in resolver.scan_exhibit_census_candidates(set(h2k))]
-            logger.info("conservation_release[exhibit-diag]: park census candidates (park_off, obj, census) "
-                        "= %s", cands or "<none - no species-like census found under the park>")
-        except Exception:
-            logger.exception("conservation_release[exhibit-diag]: candidate scan failed")
 
     def _attribute_release(self) -> "str | None":
         """Resolve the last released animal handle -> species_key. None if it can't be attributed.

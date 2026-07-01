@@ -63,7 +63,6 @@ OFF_PARK_ANIMAL_MGR = 0x188
 # this census, so diffing it across a detected release attributes the species (see triggers).
 OFF_PARK_EXHIBIT_MGR = 0x1D0
 OFF_EXHIBIT_CENSUS = 0x318   # {species_handle -> count} map header (obj @+0, count @+8, cap @+0x10, buckets @+0x18)
-OFF_EXHIBIT_UIDMAP = 0x298   # UID<->EntityID roster map header; +8 = live exhibit-animal count (diagnostic cross-check)
 
 
 class AnimalResolver:
@@ -183,40 +182,13 @@ class AnimalResolver:
             return None
         return self.scanner.read_qword(park + OFF_PARK_EXHIBIT_MGR) or None
 
-    def scan_exhibit_census_candidates(self, handle_set, span: int = 0x1800):
-        """DIAGNOSTIC: scan park[0:span] for pointers whose +0x318 reads as a valid {species_handle->count}
-        census containing at least one handle in ``handle_set`` (the research-map species handles). Yields
-        (park_offset, obj_addr, census) for each. Used when attribution fails to reveal whether the exhibit
-        manager is somewhere other than +0x1D0 on this scenario (or confirm +0x1D0 is right)."""
-        park = self.resolve_park()
-        if not park:
-            return
-        try:
-            data = self.scanner.read_bytes(park, span)
-        except Exception:
-            return
-        if not data:
-            return
-        seen = set()
-        for off in range(0, len(data) - 8, 8):
-            p = struct.unpack_from("<Q", data, off)[0]
-            if not (0x1000000 < p < 0x7FFFFFFFFFFF) or p in seen:
-                continue
-            seen.add(p)
-            census = self.read_exhibit_census(p)
-            if census and any(h in handle_set for h in census):
-                yield off, p, census
-
-    def read_exhibit_census(self, mgr: int) -> "Optional[dict]":
-        """{species_handle -> count} for every exhibit-animal species currently in the zoo (placed +
-        stored), read from the exhibit manager's +0x318 census map. None if mgr is wrong/unreadable
-        (the power-of-two cap guard rejects a bad pointer, so callers can probe safely). Reverse-map the
-        handles through the research map to get species_keys (same namespace as habitat entity+0x50)."""
-        if not mgr:
-            return None
-        base = mgr + OFF_EXHIBIT_CENSUS
-        cap = self.scanner.read_qword(base + OFF_MAP_CAP)
-        buckets = self.scanner.read_qword(base + OFF_MAP_BUCKETS)
+    def _decode_count_map(self, hdr: int) -> "Optional[dict]":
+        """Decode an open-addressing {u32 key -> u32 count} map whose header is at ``hdr`` (cap @+0x10
+        [power of two], buckets @+0x18; 8-byte bitmap then stride-8 [u32 key, u32 count]). None if the
+        header isn't a valid map (the power-of-two cap guard rejects a bad pointer, so callers can probe
+        addresses safely). Used for the exhibit census (placed + stored share this layout)."""
+        cap = self.scanner.read_qword(hdr + OFF_MAP_CAP)
+        buckets = self.scanner.read_qword(hdr + OFF_MAP_BUCKETS)
         if not cap or not buckets or cap > (1 << 20) or (cap & (cap - 1)) != 0:
             return None
         bitmap_sz = ((cap >> 3) + 7) & ~7
@@ -236,16 +208,14 @@ class AnimalResolver:
                 out[handle] = count
         return out
 
-    def read_exhibit_population(self, mgr: int) -> "Optional[int]":
-        """Live count of exhibit animals (the UID-map's count field @+0x2a0), or None. Diagnostic
-        cross-check: if a release drops THIS but not the +0x318 census, the census is the wrong
-        structure (or park+0x1D0 isn't the exhibit manager on this scenario)."""
+    def read_exhibit_census(self, mgr: int) -> "Optional[dict]":
+        """{species_handle -> count} for the PLACED exhibit animals (the manager's +0x318 census map). None
+        if mgr is wrong/unreadable. NOTE: this is placed animals only - stored/trade-center exhibit animals
+        are NOT in this roster (live-pop == census sum confirmed it), so a storage release won't drop it.
+        Reverse-map the handles through the research map to get species_keys (habitat entity+0x50 namespace)."""
         if not mgr:
             return None
-        try:
-            return self.scanner.read_qword(mgr + OFF_EXHIBIT_UIDMAP + 0x8)
-        except Exception:
-            return None
+        return self._decode_count_map(mgr + OFF_EXHIBIT_CENSUS)
 
     def iter_roster(self, mgr: int):
         """Yield (handle, entity) for every animal in the manager's roster (habitat + storage). Reads the

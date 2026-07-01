@@ -32,11 +32,13 @@ it resolves the released exhibit animal and posts ``ExhibitAnimalReleasedMessage
 hook never sees them - which is why exhibit releases previously did nothing. ``_install_exhibit_gate``
 adds the SAME gate+counter (``make_release_gate``) on that entry; its count folds into ``count()`` and
 its lock tracks the Conservation Program, so exhibit releases register toward conservation_release and
-are gated identically. Per-species ``cr_`` for exhibit is attributed WITHOUT a handle capture: the
-exhibit manager (park+0x1D0) keeps a {species_handle -> count} CENSUS map (+0x318), and a release
-decrements it, so the client diffs the census across a detected exhibit release to learn the species
-(``triggers._poll_exhibit_release``; ``habitat_count``/``exhibit_count`` split the two paths so each uses
-its own attribution). Found via Ghidra (FindStrRefs on ExhibitAnimalReleasedMessage); see [[exhibit-release-RE]].
+are gated identically. Per-species ``cr_`` for exhibit is attributed WITHOUT a handle capture, by diffing
+the exhibit manager's {species_handle -> count} CENSUS map (park+0x1D0, +0x318) across a detected release:
+whichever species' count drops was released (``triggers._poll_exhibit_release``; ``habitat_count`` /
+``exhibit_count`` split the two paths so each uses its own attribution). LIMITATION: that census covers only
+PLACED exhibit animals - stored/trade-center animals aren't aggregated per-species anywhere reachable, so a
+release straight from storage can't be attributed (count + milestone still credit; the player places the
+animal first to register its cr_). Found via Ghidra (FindStrRefs on ExhibitAnimalReleasedMessage); see [[exhibit-release-RE]].
 
 The gate defaults LOCKED on install; the client calls ``set_locked(False)`` once the
 Conservation Program item is received (reconciled from the full received set each tick).

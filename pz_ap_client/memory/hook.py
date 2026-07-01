@@ -24,7 +24,7 @@ import logging
 import struct
 from ctypes import wintypes
 from dataclasses import dataclass, field
-from typing import Dict, List, Optional
+from typing import ClassVar, Dict, List, Optional, Set
 
 logger = logging.getLogger("PZClient")
 
@@ -130,6 +130,11 @@ class HookManager:
     """Installs jmp-detour hooks and guarantees clean teardown."""
     scanner: "object"        # MemoryScanner (duck-typed: read_bytes/write_bytes/module_base)
     hooks: Dict[str, _Hook] = field(default_factory=dict)
+    # Session-wide record of hook NAMES currently installed by ANY manager. A name lands here only after a
+    # verified-clean install (install() aborts on a byte-mismatch), so membership means "this is OUR detour,
+    # placed THIS session" - which lets the preflight self-check distinguish our own live hooks from a leaked
+    # prior-crash detour (see signatures._classify_hook / client._run_preflight). Removed on restore.
+    _active_names: ClassVar[Set[str]] = set()
 
     @property
     def _handle(self) -> int:
@@ -170,7 +175,14 @@ class HookManager:
         finally:
             self._resume()
         self.hooks[name] = _Hook(site=site, original=original, region=region)
+        HookManager._active_names.add(name)   # session-wide: this detour is ours, placed this session
         return True
+
+    @classmethod
+    def active_hooks(cls) -> Set[str]:
+        """Names of every hook currently installed (by any manager) this session. The preflight passes this
+        to the self-check so our own live detours aren't misreported as leaked prior-crash detours."""
+        return set(cls._active_names)
 
     def scratch(self, name: str) -> Optional[int]:
         h = self.hooks.get(name)
@@ -178,6 +190,7 @@ class HookManager:
 
     def restore(self, name: str) -> None:
         h = self.hooks.pop(name, None)
+        HookManager._active_names.discard(name)
         if not h:
             return
         self._suspend()

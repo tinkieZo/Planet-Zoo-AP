@@ -192,18 +192,15 @@ def _exhibit_src(census_handles, exhibit_count):
     exhibit manager returns; exhibit_count is a callable -> current release-hook count."""
     resolver = types.SimpleNamespace(
         resolve_exhibit_manager=lambda: 0xE0,
-        read_exhibit_census=lambda mgr: dict(census_handles),
-        read_exhibit_population=lambda mgr: sum(census_handles.values()),
-        scan_exhibit_census_candidates=lambda handle_set: iter(()))
+        read_exhibit_census=lambda mgr: dict(census_handles))
     src = types.SimpleNamespace(
         births=types.SimpleNamespace(resolver=resolver),
         research=types.SimpleNamespace(handle_key_map=lambda: {0x3033: "mtarantula", 0x3084: "gorilla"}),
         releases=types.SimpleNamespace(exhibit_count=exhibit_count),
-        _released_species=set(), _last_exhibit_count=0,
+        _released_species=set(), _last_exhibit_count=0, _exhibit_storage_hint_logged=False,
         _exhibit_baseline=None, _pending_exhibit=0, _pending_exhibit_ticks=0)
     src._read_exhibit_census = lambda: MemoryTriggerSource._read_exhibit_census(src)
     src._attribute_exhibit_drops = lambda raw: MemoryTriggerSource._attribute_exhibit_drops(src, raw)
-    src._exhibit_giveup_diag = lambda raw: MemoryTriggerSource._exhibit_giveup_diag(src, raw)
     return src
 
 
@@ -242,18 +239,47 @@ def test_exhibit_census_drop_without_release_not_attributed():
 
 def test_exhibit_release_gives_up_when_no_mapped_drop():
     """A release is detected but no MAPPED species' census drops (e.g. the released species' handle isn't
-    in the research map): give up after the tick budget so the baseline doesn't stick forever."""
-    src = _exhibit_src({0x3033: 1}, lambda: 1)   # count says a release happened
+    in the research map, or it's a storage animal absent from the placed census): give up after the tick
+    budget so the baseline doesn't stick forever."""
+    src = _exhibit_src({0x3033: 1}, lambda: 0)   # start with no releases
     poll = lambda: MemoryTriggerSource._poll_exhibit_release(src)
-    poll()                      # prime (adopts ecount=1, so no pending yet)
+    poll()                      # prime baseline {0x3033:1}; count 0 -> no pending
     assert src._pending_exhibit == 0
-    # now a genuinely new release whose species' census never drops (census for mapped species unchanged)
-    src.releases.exhibit_count = lambda: 2
+    # now a genuinely new release whose species' census never drops (placed census unchanged)
+    src.releases.exhibit_count = lambda: 1
     from pz_ap_client.memory.triggers import EXHIBIT_GIVEUP_TICKS
     for _ in range(EXHIBIT_GIVEUP_TICKS + 1):
         poll()
     assert src._pending_exhibit == 0             # given up after the budget
     assert src._released_species == set()
+
+
+def test_exhibit_release_detected_without_placed_census():
+    """Storage-only zoo: the PLACED census is unresolvable (None), but a release must still be DETECTED
+    (count) and, after the budget, hit the give-up diagnostic (whose scan locates the storage census).
+    Regression for the bug where reading the census first suppressed detection entirely."""
+    resolver = types.SimpleNamespace(
+        resolve_exhibit_manager=lambda: 0,           # no placed manager
+        read_exhibit_census=lambda mgr: None)
+    ec = [0]
+    src = types.SimpleNamespace(
+        births=types.SimpleNamespace(resolver=resolver),
+        research=types.SimpleNamespace(handle_key_map=lambda: {}),
+        releases=types.SimpleNamespace(exhibit_count=lambda: ec[0]),
+        _released_species=set(), _last_exhibit_count=0, _exhibit_storage_hint_logged=False,
+        _exhibit_baseline=None, _pending_exhibit=0, _pending_exhibit_ticks=0)
+    src._read_exhibit_census = lambda: MemoryTriggerSource._read_exhibit_census(src)
+    src._attribute_exhibit_drops = lambda raw: MemoryTriggerSource._attribute_exhibit_drops(src, raw)
+    poll = lambda: MemoryTriggerSource._poll_exhibit_release(src)
+    poll()                       # census None; no release yet
+    assert src._pending_exhibit == 0
+    ec[0] = 1                     # release from storage -> hook count rises
+    poll()
+    assert src._pending_exhibit == 1, "release detected even though the placed census is None"
+    from pz_ap_client.memory.triggers import EXHIBIT_GIVEUP_TICKS
+    for _ in range(EXHIBIT_GIVEUP_TICKS):
+        poll()
+    assert src._pending_exhibit == 0, "give-up diagnostic ran and retired the pending release"
 
 
 def test_exhibit_release_unmapped_handle_drop_consumes_pending_without_firing():

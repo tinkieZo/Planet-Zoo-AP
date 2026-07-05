@@ -6,9 +6,11 @@ installing Python or Archipelago.
 
 ## Prerequisites
 
-- **Python 3.11.x–3.13.x from python.org** (`py -3.11 -m venv .venv`; `ModuleUpdate` hard-rejects 3.10).
+- **Python 3.11.x–3.13.x from python.org** (`py -3.13 -m venv .venv313`; `ModuleUpdate` hard-rejects 3.10).
   python.org is recommended (build-exe.ps1 refuses `uv`/python-build-standalone interpreters), though the
   STALE-RUNTIME bug below was the real "GUI closes on startup" cause, not the interpreter.
+  `build-exe.ps1` picks `.venv313` over `.venv` when both are staged (3.12+ clears AP ModuleUpdate's
+  "security issues" warning, which no installable 3.11 can satisfy); `-VenvPath <dir>` forces one.
 - **The "frozen GUI closes on startup, runs fine from source" bug, now auto-guarded.** The bundle is
   self-contained, so PyInstaller bundles the C/C++ runtime (`MSVCP140.dll`, `VCRUNTIME140.dll`,
   `ucrtbase.dll`, `api-ms-win-*.dll`). The trap: PyInstaller may grab a **stale** copy that a binary wheel

@@ -1,18 +1,25 @@
 # Build the distributable Planet Zoo AP client exe (PyInstaller one-dir). See docs/PACKAGING.md.
-# Prereqs: .venv (Python 3.11.9+) with deps + pyinstaller, and an Archipelago tree to bundle.
+# Prereqs: a venv (Python 3.11.9+; .venv313 preferred over .venv when both are staged) with deps +
+# pyinstaller, and an Archipelago tree to bundle. -VenvPath <dir> forces a specific venv.
 #
 #   .\build-exe.ps1                      # bundle .\vendor\Archipelago (default)
 #   .\build-exe.ps1 -ApSource D:\Archipelago   # bundle an Archipelago install from elsewhere
 #   $env:PZ_AP_SOURCE = 'D:\Archipelago'; .\build-exe.ps1   # same, via env var
-param([string]$ApSource, [string]$CobraSource, [switch]$SkipSelfTest, [string]$VenvPath = '.venv')
+param([string]$ApSource, [string]$CobraSource, [switch]$SkipSelfTest, [string]$VenvPath)
 $ErrorActionPreference = 'Stop'
 $root = $PSScriptRoot
-# Which venv to freeze. Default .venv. Pass -VenvPath .venv313 to build on the staged Python 3.13 venv:
-# 3.11.9 is the LAST Python 3.11 with a Windows installer (3.11.10-3.11.13 are source-only), so AP's
-# ModuleUpdate "Python ... has security issues" warning (it wants >=3.11.13) can only be cleared by
-# building on 3.12/3.13. A relative path resolves against the repo root. (The whole script invokes the
-# venv via `& $venvPy -m ...`, never a Scripts\*.exe launcher, so the venv also survives being moved.)
-if (-not $VenvPath) { $VenvPath = '.venv' }
+# Which venv to freeze. -VenvPath overrides; otherwise prefer the staged Python 3.13 venv (.venv313)
+# over the 3.11 one (.venv): 3.11.9 is the LAST Python 3.11 with a Windows installer (3.11.10-3.11.13
+# are source-only), so AP's ModuleUpdate "Python ... has security issues" warning (it wants >=3.11.13)
+# can only be cleared by building on 3.12/3.13. A relative path resolves against the repo root. (The
+# whole script invokes the venv via `& $venvPy -m ...`, never a Scripts\*.exe launcher, so the venv
+# also survives being moved.)
+if (-not $VenvPath) {
+    $VenvPath = @('.venv313', '.venv') |
+        Where-Object { Test-Path (Join-Path $root (Join-Path $_ 'Scripts\python.exe')) } |
+        Select-Object -First 1
+    if (-not $VenvPath) { $VenvPath = '.venv' }   # neither staged: fall through to the error below
+}
 $venvDir = if ([System.IO.Path]::IsPathRooted($VenvPath)) { $VenvPath } else { Join-Path $root $VenvPath }
 $venvPy = Join-Path $venvDir 'Scripts\python.exe'
 
@@ -32,7 +39,7 @@ if (-not $pyiOk) {
     Write-Error "PyInstaller not installed in the venv. Fix: `"$venvPy`" -m pip install pyinstaller (see docs/PACKAGING.md)."
     exit 1
 }
-Write-Host ("Build venv: Python " + (& $venvPy -c "import sys; print('%d.%d.%d' % sys.version_info[:3])").Trim())
+Write-Host ("Build venv: $venvDir (Python " + (& $venvPy -c "import sys; print('%d.%d.%d' % sys.version_info[:3])").Trim() + ")")
 
 # REFUSE a python-build-standalone interpreter (what `uv`/`uv venv` installs). PyInstaller builds
 # without error against it but produces a BROKEN GUI exe - runs fine from source, but the frozen GUI

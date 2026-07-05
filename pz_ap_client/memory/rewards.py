@@ -255,6 +255,11 @@ class RewardGranter:
         self.research = research          # ResearchReader (resolves the research system)
         self._registry: Optional[InternRegistry] = None
         self._level_maps: Dict[str, Dict[int, int]] = {}  # family -> {content id -> level k}, cached per family
+        # Contents we've already warned aren't grantable here (bogus token / not research-gated in this
+        # zoo, e.g. a non-researchable item that slipped into the pool). grant() acknowledges these as
+        # no-ops - returning False forever would stall the item-apply queue at that item (everything
+        # received after it would never apply) and re-log the warning every retry tick.
+        self._not_gated_warned: set = set()
 
     def _registry_index(self) -> Optional[InternRegistry]:
         if self._registry is None:
@@ -336,24 +341,37 @@ class RewardGranter:
     # -- public API ------------------------------------------------------------
 
     def grant(self, content: str) -> bool:
-        """Grant the named research-reward content. True on success (or already unlocked);
-        False if unresolvable/unreadable (caller retries)."""
+        """Grant the named research-reward content. True on success (or already unlocked, or the content
+        turns out not to be grantable here - acknowledged as a no-op so the item-apply queue advances);
+        False only on a TRANSIENT failure (registry/map not readable yet - caller retries next tick).
+
+        The distinction matters: a content that resolved against a loaded registry/map but isn't gated
+        (e.g. a non-researchable item that slipped into the pool, like ParkGate) will NEVER become
+        grantable - returning False stalled the whole apply queue at that item and re-warned every tick.
+        Acknowledging is safe: the per-tick reconcile (_reconcile_rewards) re-syncs every gated animal
+        content from the full received set, so a late-appearing record would still be unlocked there."""
         reg = self._registry_index()
         if reg is None:
             return False
         cid = reg.lookup(content)
         if cid is None:
-            logger.warning("reward: content %r not in intern registry (not a real content token?)", content)
-            return False
+            if content not in self._not_gated_warned:
+                self._not_gated_warned.add(content)
+                logger.warning("reward: content %r not in intern registry (not a real content token?) - "
+                               "acknowledging as a no-op so item application continues", content)
+            return True
         m = self._unlock_map()
         if m is None:
             return False
         rs = self.research._research_system()
         hit = m.find(cid)
         if hit is None:
-            logger.warning("reward: content %r (id 0x%X) not in the unlockables map "
-                           "(not research-reward-gated)", content, cid)
-            return False
+            if content not in self._not_gated_warned:
+                self._not_gated_warned.add(content)
+                logger.warning("reward: content %r (id 0x%X) not in the unlockables map (not "
+                               "research-reward-gated in this zoo) - acknowledging as a no-op so item "
+                               "application continues", content, cid)
+            return True
         rec, typ, flag = hit
         ok = self._flip(rs, rec, cid, typ, flag)
         if ok:

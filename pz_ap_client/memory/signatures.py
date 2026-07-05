@@ -34,6 +34,11 @@ class HookSite:
     role: str
     aob: Optional[str] = None        # unique wildcarded pattern for auto-relocation (None until baked)
     script_name: Optional[str] = None  # if script-bound, the registrar name (most robust resolve)
+    # orig split at instruction boundaries (hex), for hooks whose trampoline WEAVES instrumentation
+    # between the relocated original instructions (e.g. the release_species capture). The contiguous
+    # `orig in tramp` leak-check can't see those; the fragments are matched IN ORDER instead. None for
+    # plain gate trampolines (orig relocated as one block).
+    frags: Optional[Tuple[str, ...]] = None
 
     @property
     def orig(self) -> bytes:
@@ -49,6 +54,9 @@ HOOKS: List[HookSite] = [
              "ReleaseAnimalIntoWild entry (conservation gate)", script_name="ReleaseAnimalIntoWild"),
     HookSite("release_species", 0x5D8478F, "488b4d484889f2",
              "ReleaseAnimalIntoWild call-prep (released-species capture; entry+0xFF)",
+             # the capture trampoline weaves the scratch-write between the two relocated instructions
+             # (mov rcx,[rbp+0x48] ... capture ... mov rdx,rsi), so leak recovery matches these in order
+             frags=("488b4d48", "4889f2"),
              # The call-prep + epilogue alone repeats across 3 sibling release fns; the trailing bytes
              # (past the ret/CC pad, into the next fn) disambiguate. Verified unique in-module 2026-06-29.
              aob="48 8B 4D 48 48 89 F2 E8 ?? ?? ?? ?? 48 8B 5C 24 38 31 C0 48 8B 6C 24 40 "
@@ -140,9 +148,10 @@ def module_aob_scan(scanner, sig: str, max_hits: int = 4) -> List[int]:
 
 
 # ── self-check ───────────────────────────────────────────────────────────────────────────────────────
-def _is_leaked_detour(scanner, site: int, original: bytes) -> bool:
+def _is_leaked_detour(scanner, site: int, original: bytes, frags: "Optional[Tuple[str, ...]]" = None) -> bool:
     """True iff ``site`` holds one of OUR OWN leaked detours: a rel32 jmp (0xE9) whose target
-    trampoline still contains the site's original bytes. This distinguishes a hook leaked by a prior
+    trampoline still contains the site's original bytes (contiguous, or - for woven capture
+    trampolines - as the ``frags`` instruction fragments in order). This distinguishes a hook leaked by a prior
     unclean exit (the console X button, a kill, a crash) - which we may safely restore in place - from
     a genuine code change or a foreign patch, which we must NOT touch."""
     target = _detour_target(scanner, site)
@@ -152,7 +161,21 @@ def _is_leaked_detour(scanner, site: int, original: bytes) -> bool:
         tramp = scanner.read_bytes(target, 0x200)
     except Exception:
         return False
-    return original in tramp  # our trampoline embeds the relocated original instruction
+    if original in tramp:  # our trampoline embeds the relocated original instruction
+        return True
+    # Woven trampolines (e.g. the release_species capture) interleave instrumentation BETWEEN the
+    # relocated original instructions, so the contiguous check misses them - match the per-site
+    # instruction fragments in order instead. No weaker than the contiguous check: any detour lib
+    # relocates the stolen instructions into its trampoline, which is what both checks key on.
+    if frags:
+        pos = 0
+        for frag in frags:
+            pos = tramp.find(bytes.fromhex(frag), pos)
+            if pos < 0:
+                return False
+            pos += len(frag) // 2
+        return True
+    return False
 
 
 def _detour_target(scanner, site: int) -> "Optional[int]":
@@ -199,7 +222,7 @@ def recover_leaked_hook(scanner, name: str) -> bool:
     if h is None or base is None:
         return False
     site = base + h.rva
-    if _is_leaked_detour(scanner, site, h.orig):
+    if _is_leaked_detour(scanner, site, h.orig, h.frags):
         why = "a leaked detour (prior unclean exit, e.g. the console X button)"
     elif _is_dead_detour(scanner, site):
         why = "a dead detour (its trampoline was freed by a prior client process)"
@@ -305,7 +328,7 @@ def _classify_hook(scanner, h: HookSite, installed_hooks=None) -> CheckResult:
     # console-X close)? That's a 5-byte read + verify. The AOB fallback below scans the WHOLE module, so
     # doing it first cost ~module-size PER leaked hook and dominated the first-tick preflight after an
     # unclean exit (measured ~40s for 3 leaked sites). Order: intact, leak, AOB-relocate.
-    if _is_leaked_detour(scanner, site, h.orig):
+    if _is_leaked_detour(scanner, site, h.orig, h.frags):
         return CheckResult("hook", h.name, "leaked",
                            "our detour still installed @0x%X (prior unclean exit) - auto-recovers on next --memory attach" % site)
     if _is_dead_detour(scanner, site):

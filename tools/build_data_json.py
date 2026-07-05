@@ -68,10 +68,17 @@ def convert_readable(name: str) -> str:
     return name.strip()
 
 
-# Static effect args the APWorld doesn't carry (client-side economy tuning; preserved from the
-# original slice data.json so amounts don't silently change).
-CASH = {"Cash Injection (Small)": 10000, "Cash Injection (Medium)": 25000, "Cash Injection (Large)": 50000}
-CC = {"Conservation Credits (Small)": 1000, "Conservation Credits (Medium)": 2000, "Conservation Credits (Large)": 5000}
+# Money items: the ROOM decides the actual amounts via the APWorld options (slot_data
+# `filler_amounts_cash` / `filler_amounts_conservation` = the MEDIUM amount; Small = half,
+# Large = double - see Options.FillerAmountsCash/-Conservation). data.json carries each item's
+# SIZE (what the client scales by) plus a fallback `amount` = the option DEFAULT resolved per
+# size, used only when slot_data lacks the option (e.g. console/dev rooms).
+CASH = {"Cash Injection (Small)": ("small", 250),
+        "Cash Injection (Medium)": ("medium", 500),      # FillerAmountsCash default
+        "Cash Injection (Large)": ("large", 1000)}
+CC = {"Conservation Credits (Small)": ("small", 100),
+      "Conservation Credits (Medium)": ("medium", 200),  # FillerAmountsConservation default
+      "Conservation Credits (Large)": ("large", 400)}
 PROGRESSIVE = {
     "Progressive Supplement Level": "supplement",
     "Progressive Education Level": "education",
@@ -146,9 +153,11 @@ def map_item(name: str, lab2sid: dict, token_index: dict) -> dict:
         et, args = FIXED[name]
         return {"effect_type": et, "effect_args": args}
     if name in CASH:
-        return {"effect_type": "cash", "effect_args": {"amount": CASH[name]}}
+        size, amount = CASH[name]
+        return {"effect_type": "cash", "effect_args": {"size": size, "amount": amount}}
     if name in CC:
-        return {"effect_type": "cc", "effect_args": {"amount": CC[name]}}
+        size, amount = CC[name]
+        return {"effect_type": "cc", "effect_args": {"size": size, "amount": amount}}
     if name.strip() in PROGRESSIVE:
         return {"effect_type": "progressive_research_reward", "effect_args": {"family": PROGRESSIVE[name.strip()]}}
     token = token_index.get(name)

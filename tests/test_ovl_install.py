@@ -375,6 +375,12 @@ def test_apply_content0_fdb_edits(tmp_path):
     bp.executemany("INSERT INTO PrebuiltBlueprints VALUES (?,?,?,?)", [
         (1, "Africa Set", "africa.bp", "9002"), (2, "Small Research_Centre", "rc.bp", ""), (3, "Other", "o.bp", "777")])
     bp.commit(); bp.close()
+    nt = sqlite3.connect(d / ovl.NOTIFICATIONS_FDB)
+    nt.execute("CREATE TABLE Alerts (Name TEXT, SelectionContextType TEXT)")
+    nt.executemany("INSERT INTO Alerts VALUES (?,?)", [
+        ("NoResearchCentre", "SceneryPlacement"), ("NoWorkshop", "SceneryPlacement"),
+        ("NoStaffCentre", "SceneryPlacement"), ("LowOnCash", "FinanceManagement")])
+    nt.commit(); nt.close()
 
     ovl._apply_content0_fdb_edits(d, log=lambda m: None)
 
@@ -405,6 +411,11 @@ def test_apply_content0_fdb_edits(tmp_path):
     assert ids[1] == str(gate_id["AfricaThemeSetsBlueprintsL1"])   # blueprint content 9002 re-pointed
     assert ids[2] == "50000"   # RC blueprint: facility gate appended
     assert ids[3] == "777"     # unrelated untouched
+    nt = sqlite3.connect(d / ovl.NOTIFICATIONS_FDB)
+    ctx = dict(nt.execute("SELECT Name, SelectionContextType FROM Alerts").fetchall()); nt.close()
+    # gated facilities' alerts lose their click-to-place action (the build-menu bypass); others keep theirs
+    assert ctx == {"NoResearchCentre": "None", "NoWorkshop": "None",
+                   "NoStaffCentre": "SceneryPlacement", "LowOnCash": "FinanceManagement"}
 
 
 def test_add_noneresearchable_gates():
@@ -453,6 +464,10 @@ def test_child_inject_content0_stages_one_dir_and_uses_input(tmp_path):
         tr = sqlite3.connect(out / ovl.TRACKEDRIDES_FDB)
         tr.execute("CREATE TABLE Simulation (RideType TEXT, ResearchPack INTEGER)")
         tr.commit(); tr.close()
+        nt = sqlite3.connect(out / ovl.NOTIFICATIONS_FDB)
+        nt.execute("CREATE TABLE Alerts (Name TEXT, SelectionContextType TEXT)")
+        nt.execute("INSERT INTO Alerts VALUES ('NoResearchCentre', 'SceneryPlacement')")
+        nt.commit(); nt.close()
 
     class FakeCmd:
         @staticmethod
@@ -471,7 +486,8 @@ def test_child_inject_content0_stages_one_dir_and_uses_input(tmp_path):
     ovl._child_inject_content0(FakeCmd, [luaf], str(tmp_path / "base.ovl"), str(tmp_path / "out.ovl"))
     assert "-i" in captured["args"] and "-f" not in captured["args"]   # --input, never -f (cross-drive safe)
     assert set(captured["staged"]) == {luaf.name, ovl.HABITAT_BOUNDARY_FDB, ovl.MODULAR_SCENERY_FDB,
-                                       ovl.BLUEPRINTS_FDB, ovl.RESEARCH_FDB, ovl.TRACKEDRIDES_FDB}
+                                       ovl.BLUEPRINTS_FDB, ovl.RESEARCH_FDB, ovl.TRACKEDRIDES_FDB,
+                                       ovl.NOTIFICATIONS_FDB}
     assert captured["hedge"] == 50002   # barrier re-point applied to the staged fdb before inject
 
 

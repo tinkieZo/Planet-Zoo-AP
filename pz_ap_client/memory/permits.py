@@ -62,6 +62,8 @@ class PermitGate:
     def ensure_installed(self) -> bool:
         if self.installed:
             return True
+        if not getattr(self.scanner, "attached", False):
+            return False   # not attached yet (e.g. Connected-handler reconcile before the game is up) - quiet
         from .signatures import resolve_hook
         resolved = resolve_hook(self.scanner, "permit")
         if resolved is None:
@@ -132,16 +134,23 @@ class PermitGate:
             return []
         snap = self.research._snapshot()  # read the research map once for all gated species
         out = []
+        unresolved = []
         for key in keys:
             h = None if snap is None else self.research.current_handle(key, snap)
             if h is None:
-                if key not in self._warned_unmapped:
-                    self._warned_unmapped.add(key)
-                    logger.warning("permit: can't resolve a current handle for gated species %r "
-                                   "- add its welfare item id to research.SPECIES_WELFARE_ITEM "
-                                   "(capture via tools/capture_species.py)", key)
+                unresolved.append(key)
                 continue
             out.append(h)
+        # One SUMMARY line when the unresolved set changes, not 70 per-species warnings per connect:
+        # a species absent from this zoo's research map is NORMAL for a fresh/empty AP zoo (it appears
+        # once the species is in the zoo), and the market gate already keeps un-received species out of
+        # the market, so the purchase hook not covering them is defense-in-depth, not a hole.
+        if unresolved and set(unresolved) != self._warned_unmapped:
+            self._warned_unmapped = set(unresolved)
+            logger.info("permit: %d/%d gated species have no research-map handle in this zoo yet - "
+                        "purchase-hook blocking covers the other %d; the market gate covers offering "
+                        "for all. (Normal for a fresh zoo; resolves as species enter the zoo.)",
+                        len(unresolved), len(keys), len(out))
         return out
 
     def _sync(self) -> None:

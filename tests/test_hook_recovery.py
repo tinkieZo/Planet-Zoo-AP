@@ -162,6 +162,44 @@ def test_shared_arena_new_block_when_out_of_reach():
         hookmod._arenas.clear(); hookmod._arena_live = 0
 
 
+SPECIES = next(h for h in sig.HOOKS if h.name == "release_species")
+
+# A REAL leaked release_species capture trampoline captured live (2026-06-30): the two original
+# instructions (mov rcx,[rbp+0x48] / mov rdx,rsi) are WOVEN around the scratch-write instrumentation,
+# so the contiguous `orig in tramp` check can never match it.
+WOVEN_TRAMP = bytes.fromhex(
+    "488b4d485048b8001067da00000000ff004889700848894810584889f2e93437716b")
+
+
+def test_recovers_woven_species_capture_trampoline():
+    """The release_species crash-recovery gap: its capture trampoline interleaves instrumentation
+    between the relocated original instructions, defeating the contiguous-orig leak check - after a
+    real crash the hook reported 'broken' (unrecoverable) and habitat per-species cr_ stayed dead
+    until a game restart. The per-site instruction FRAGMENTS (h.frags), matched in order, recover it."""
+    m = FakeMem()
+    site = m.module_base + SPECIES.rva
+    tramp = site + 0x1000
+    m.write_bytes(site, b"\xE9" + struct.pack("<i", tramp - (site + 5)) + b"\x90\x90")
+    m.write_bytes(tramp, WOVEN_TRAMP)
+    assert SPECIES.orig not in WOVEN_TRAMP                       # contiguous check indeed can't match
+    assert sig._is_leaked_detour(m, site, SPECIES.orig) is False  # ...so without frags it's invisible
+    assert sig._is_leaked_detour(m, site, SPECIES.orig, SPECIES.frags) is True
+    assert sig.recover_leaked_hook(m, "release_species") is True
+    assert m.read_bytes(site, len(SPECIES.orig)) == SPECIES.orig  # restored in place
+
+
+def test_woven_frags_do_not_match_foreign_trampoline():
+    """A foreign trampoline that doesn't relocate BOTH original instructions in order is not ours."""
+    m = FakeMem()
+    site = m.module_base + SPECIES.rva
+    tramp = site + 0x1000
+    m.write_bytes(site, b"\xE9" + struct.pack("<i", tramp - (site + 5)) + b"\x90\x90")
+    m.write_bytes(tramp, bytes.fromhex("4889f2") + b"\xCC" * 16 + bytes.fromhex("488b4d48"))  # wrong order
+    assert sig._is_leaked_detour(m, site, SPECIES.orig, SPECIES.frags) is False
+    m.write_bytes(tramp, b"\xCC" * 32)                                                        # neither
+    assert sig._is_leaked_detour(m, site, SPECIES.orig, SPECIES.frags) is False
+
+
 def test_installed_hook_is_ok_not_leaked():
     """A site holding OUR detour installed THIS session must classify OK, not 'leaked' - it's byte-identical
     to a leaked prior-crash detour, so the preflight needs the installed-hooks hint to tell them apart (the

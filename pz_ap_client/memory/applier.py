@@ -44,43 +44,24 @@ class MemoryEffectApplier(EffectApplier):
         self.facility_gate = facility_gate  # FacilityGate; enforces facility_unlock placement
         self.research_gate = research_gate  # ResearchGate; enforces research_centre/workshop
         self.reward_granter = reward_granter  # RewardGranter; flips decoupled research rewards
-        # Anchors we've already warned are unresolved. A cumulative item that can't apply stays at the
-        # head of the retry queue and is re-attempted every poll tick; without this it would re-log the
-        # same warning ~1x/sec. Warn ONCE per unresolved episode; cleared on a successful apply so a
-        # later episode (anchor re-lost) warns again.
-        self._anchor_warned: set = set()
-
     def _ensure_attached(self) -> bool:
         if self.scanner.attached:
             return True
         return self.scanner.attach()
 
-    # -- cumulative scalars (read-modify-write) --------------------------------
-
-    def _add_scalar(self, anchor_name: str, amount, item: "Item") -> bool:
-        if not self._ensure_attached():
-            return False
-        current = self.anchors.read(self.scanner, anchor_name)
-        if current is None:
-            # Warn once per unresolved episode (not every retry tick). The item stays queued and applies
-            # automatically once the anchor resolves (the finance manager is located on a later tick).
-            if anchor_name not in self._anchor_warned:
-                self._anchor_warned.add(anchor_name)
-                logger.warning("[%s] %s not applied yet - the %r anchor isn't resolved (finance data "
-                               "not located yet); it'll apply automatically once it is. Retrying quietly.",
-                               item.effect_type, item.name, anchor_name)
-            return False
-        ok = self.anchors.write(self.scanner, anchor_name, current + amount)
-        if ok:
-            self._anchor_warned.discard(anchor_name)  # episode over; a future loss warns again
-            logger.info("[apply] %s: %s %s -> %s", item.name, anchor_name, current, current + amount)
-        return ok
+    # -- cumulative scalars ------------------------------------------------------
 
     def on_cash(self, item: "Item") -> bool:
-        return self._add_scalar("cash", item.effect_args.get("amount", 0), item)
+        """Acknowledge only. Money is applied by the client's GRANTED LEDGER reconcile
+        (client._reconcile_cumulative): game cash += (sum of received cash items) - (ledger total), once
+        per change, persisted per save. Per-item read-modify-write through the retry queue was fragile -
+        a stalled item blocked everything after it, and a fresh-save mark reset replayed additions on top
+        of whatever the interleaved baseline write left behind."""
+        return True
 
     def on_cc(self, item: "Item") -> bool:
-        return self._add_scalar("conservation_credits", item.effect_args.get("amount", 0), item)
+        """Acknowledge only - see on_cash (the ledger reconciles conservation_credits identically)."""
+        return True
 
     # -- unlocks (flip a flag) -------------------------------------------------
 

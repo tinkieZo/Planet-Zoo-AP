@@ -391,8 +391,10 @@ class ResearchReader:
             return derived
         if species_key not in self._warned_unmapped:
             self._warned_unmapped.add(species_key)
-            logger.info("research: no welfare item id for %r (registry couldn't resolve its handle - "
-                        "not in this zoo's research map, or no engine_token)", species_key)
+            # DEBUG: normal for any species not (yet) in this zoo's research map; ~70 of these per
+            # connect on a fresh zoo flooded the console (the permit gate logs the one-line summary).
+            logger.debug("research: no welfare item id for %r (registry couldn't resolve its handle - "
+                         "not in this zoo's research map, or no engine_token)", species_key)
         return None
 
     def _derive_welfare_item(self, species_key: str, snap: Optional[Tuple[dict, dict]]) -> Optional[int]:

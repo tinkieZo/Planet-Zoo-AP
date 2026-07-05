@@ -24,7 +24,7 @@ import os
 import sys
 import time
 from pathlib import Path
-from typing import TYPE_CHECKING, List, Optional
+from typing import TYPE_CHECKING, Dict, List, Optional
 
 if TYPE_CHECKING:
     from .memory.triggers import MemoryTriggerSource
@@ -236,13 +236,14 @@ class PZContext(CommonContext):
         self._session = None  # ApSessionDetector (memory mode); is the LOADED park the AP scenario?
         self._session_was_active = False  # was the AP park loaded last tick? (detect unload -> clean up market gates)
         self._scanner = None  # the shared MemoryScanner (memory mode)
-        self._fresh_reset_done = False  # re-awarded all items for a fresh zoo once this session
+        self._fresh_reset_done = False  # fresh handling ran for the CURRENT fingerprint episode (re-arms
+        # when the baked-balance fingerprint disappears; stops a no-op handling refiring every tick)
         self._ovl_job_running = False  # one ovl install/restore at a time (see run_ovl_job)
         self._initial_applied: "Optional[int]" = None  # high-water mark at session start (drives re-award)
         self._fresh_wait_ticks = 0  # ticks spent holding item apply for the park-age (fresh) signal to land
         self._paused_at_idx: "Optional[int]" = None  # item idx we last logged a pause for; throttles the
         # "Pausing item application" line (a stuck cumulative item retries every tick - log once per episode)
-        self._fresh_latch_logged = False  # throttle the "fresh_pending already latched" notice (once/episode)
+        self._cum_warned: set = set()  # ledger kinds warned unresolved (once per episode; cleared on success)
         self._preflight_done = False  # run the signatures self-check once on first attach (fail-loud)
         self._pending_checks: List[int] = []  # location ids queued by the poll thread, sent on the loop
         self.poll_interval: float = 1.0
@@ -568,44 +569,59 @@ class PZContext(CommonContext):
         except Exception:
             return None
 
+    # Our scenario park-bin's baked starting cash (dollars; save metadata nCash=15000000 cents,
+    # live-confirmed twice: injections started from cash 150000.0). A Year-1 park holding EXACTLY this
+    # untouched balance is a park the client has never handled - the fresh-save fingerprint. Changes
+    # only if we rebuild the shell with a different baked balance.
+    BAKED_STARTING_CASH = 150000.0
+
+    def _current_cash(self) -> "Optional[float]":
+        """The park's current cash (dollars) via the anchor layer, or None (console mode / unresolved)."""
+        anchors = getattr(self.applier, "anchors", None)
+        scanner = getattr(self.applier, "scanner", None)
+        if anchors is None or scanner is None:
+            return None
+        try:
+            return anchors.read(scanner, "cash")
+        except Exception:
+            return None
+
     def _maybe_fresh_reset(self, seed: str, applied: int, years: "Optional[int]") -> int:
-        """If attached to a FRESH zoo (``years`` open below the threshold) that we've previously awarded
-        items to, zero the high-water mark so all cumulative items re-apply. Latched via
-        state.fresh_pending so it fires once per fresh save - not on every reconnect to the same young
-        zoo - and re-arms only once the zoo matures past the threshold. Returns the (possibly reset)
-        applied count. Unknown age (None) => do nothing (fail safe: never a spurious re-award)."""
+        """Detect a NEVER-HANDLED fresh save and run the fresh handling (starting money -> ledger reset ->
+        the item re-award). FINGERPRINT detection: a park below the age threshold whose cash is EXACTLY the
+        scenario's baked starting balance ($150k) - only a park the client never touched reads that, because
+        the handling itself (starting-money write + ledger grant) immediately changes the balance. So this
+        fires once per new save and never on a reconnect to an already-handled young zoo - INCLUDING the
+        repeated-Year-1-restart case that permanently jammed the old fresh_pending maturity latch.
+        Unknown age or unreadable cash => do nothing (fail safe: never a spurious re-award).
+        LIMITATION: a brand-new scenario PLAYED (money spent/earned) before the client ever connects no
+        longer reads the baked balance and is NOT detected - connect the client before playing a new
+        scenario. (Fix-for-good: a script-planted per-park save id; needs an ovl rebuild.)"""
         from .memory.zoodate import FRESH_YEARS
-        if years is None:
+        if years is None or years >= FRESH_YEARS:
             return applied
-        pending = self.state.get_fresh_pending(seed, self.slot)
-        if years >= FRESH_YEARS:
-            if pending:
-                self.state.set_fresh_pending(seed, self.slot, False)  # matured -> arm for the next new save
-                self._fresh_latch_logged = False
-                logger.info("fresh-reset: zoo matured (%d >= %d years) - re-armed for the next new save", years, FRESH_YEARS)
+        cash = self._current_cash()
+        if cash is None or abs(cash - self.BAKED_STARTING_CASH) > 0.005:
+            self._fresh_reset_done = False   # fingerprint gone -> arm for the next new save
+            return applied            # not the untouched baked balance -> already handled (or played)
+        if self._fresh_reset_done:
+            # Handling already ran this episode but was a visible no-op (e.g. the room's starting_money
+            # equals the baked balance and no money items are received yet) - don't refire every tick.
             return applied
-        if pending:
-            # KNOWN LIMITATION: the latch only re-arms when a zoo MATURES past FRESH_YEARS. Restarting the
-            # scenario (a new Year-1 save) without ever maturing leaves it latched, so this genuinely-new
-            # fresh save is mistaken for the already-handled one -> no starting money, no re-award. The real
-            # fix is per-save state scoping (a save-unique id); until then, clear the client state file to
-            # force a re-award. Logged ONCE per episode (this runs every poll tick).
-            if not self._fresh_latch_logged:
-                self._fresh_latch_logged = True
-                logger.info("fresh-reset: fresh zoo (%d < %d years) but fresh_pending already latched for "
-                            "seed:%s slot:%s - treating as already-handled (NO starting money / re-award). "
-                            "If this is a genuinely new save, clear the client state to force a re-award.",
-                            years, FRESH_YEARS, seed, self.slot)
-            return applied                                            # this fresh save already handled
-        # First handling of this fresh park: set the room's starting cash baseline, then arm the
-        # re-award (which re-applies all received items, incl. cash, on top of that baseline).
+        # FRESH: set the room's starting cash baseline, zero the money ledger (so the cumulative
+        # reconcile re-grants the FULL received sum on top of that baseline, as one delta), then re-run
+        # the item list (unlocks are idempotent; cash/cc items are acknowledge-only - the ledger is the
+        # money authority). Self-clearing: this handling changes the cash, so the fingerprint is gone
+        # next tick. The legacy fresh_pending latch is kept up to date for state-file compatibility.
+        logger.info("Fresh zoo detected (Year 1, %d years open, untouched baked $%s) - applying starting "
+                    "money and re-awarding all received items", years, self.BAKED_STARTING_CASH)
+        self._fresh_reset_done = True
         self._apply_starting_money()
-        if applied > 0 and not self._fresh_reset_done:
-            self._fresh_reset_done = True
+        self.state.reset_granted(seed, self.slot)
+        if applied > 0:
             self.state.set(seed, self.slot, 0)
             applied = 0
-            logger.info("Fresh zoo detected (Year 1, %d years open) - re-awarding all received items", years)
-        self.state.set_fresh_pending(seed, self.slot, True)           # mark this fresh save handled
+        self.state.set_fresh_pending(seed, self.slot, True)
         return applied
 
     def _apply_starting_money(self) -> None:
@@ -691,10 +707,74 @@ class PZContext(CommonContext):
                 break
             self.state.set(seed, self.slot, idx + 1)
             self._paused_at_idx = None  # progress made; a later pause (new stuck item) logs again
+        # Money is applied HERE, by ledger delta, not per-item above (cash/cc handlers acknowledge only).
+        # Runs after the loop + fresh-reset so a fresh save's starting-money baseline landed first.
+        self._reconcile_cumulative(seed)
         # Re-derive the purchase gate authoritatively right after applying, so a tool/permit
         # just received takes effect immediately (not only on the next poll tick), and any
         # transient over-unblock from a per-item unlock() is corrected within this call.
         self._reconcile_permits()
+
+    # kind -> the anchor it reconciles through (data.json amounts are dollars; anchors handle the scale)
+    _CUM_ANCHOR = {"cash": "cash", "cc": "conservation_credits"}
+    # Room-driven money amounts: the APWorld options (slot_data) carry the MEDIUM amount per kind;
+    # the item's size scales it - Small = half, Large = double (Options.FillerAmountsCash/-Conservation).
+    _FILLER_OPTION = {"cash": "filler_amounts_cash", "cc": "filler_amounts_conservation"}
+    _FILLER_MULT = {"small": 0.5, "medium": 1.0, "large": 2.0}
+
+    def _money_amount(self, it) -> float:
+        """One money item's value: the room's Medium base (slot_data option) scaled by the item's
+        size, falling back to data.json's per-size default ``amount`` when the room doesn't carry
+        the option (older room / console dev)."""
+        size = (it.effect_args.get("size") or "").lower()
+        base = (self.slot_data or {}).get(self._FILLER_OPTION[it.effect_type])
+        if base is not None and size in self._FILLER_MULT:
+            return round(base * self._FILLER_MULT[size], 2)
+        return it.effect_args.get("amount", 0) or 0
+
+    def _cumulative_targets(self) -> "Dict[str, float]":
+        """{kind -> sum of amounts} over every received cash/cc item. The authoritative money target:
+        game total granted must equal this, regardless of when/how items arrived."""
+        totals = dict.fromkeys(self._CUM_ANCHOR, 0.0)
+        for net_item in self.items_received:
+            it = self.game_data.item_by_id.get(net_item.item)
+            if it is not None and it.effect_type in totals:
+                totals[it.effect_type] += self._money_amount(it)
+        return totals
+
+    def _reconcile_cumulative(self, seed: str) -> None:
+        """Apply cash/cc by LEDGER DELTA: game value += (received sum) - (granted so far), then persist
+        the new granted total. One addition per change instead of a per-item replay - a reconnect is a
+        no-op (delta 0), a fresh save re-grants everything in one write (ledger was reset), a transient
+        anchor failure just retries next tick, and the player's spending is never overwritten (we only
+        ever ADD the missing delta to the current value)."""
+        anchors = getattr(self.applier, "anchors", None)
+        scanner = getattr(self.applier, "scanner", None)
+        if anchors is None or scanner is None or self.state is None:
+            return  # console mode (no game) - the acknowledge-only handlers already logged intent
+        for kind, target in self._cumulative_targets().items():
+            granted = self.state.get_granted(seed, self.slot, kind)
+            delta = target - granted
+            if delta <= 0:
+                if delta < 0:
+                    # State carries more than this room ever sent (e.g. a reused seed name with a smaller
+                    # pool). Adopt the target; never subtract money from the player.
+                    self.state.set_granted(seed, self.slot, kind, target)
+                continue
+            anchor = self._CUM_ANCHOR[kind]
+            current = anchors.read(scanner, anchor)
+            if current is None:
+                if kind not in self._cum_warned:
+                    self._cum_warned.add(kind)
+                    logger.info("ledger: %s +%s pending - the %r anchor isn't resolved yet (no zoo "
+                                "loaded / finance data not located); applies automatically once it is.",
+                                kind, delta, anchor)
+                continue
+            if anchors.write(scanner, anchor, current + delta):
+                self.state.set_granted(seed, self.slot, kind, target)
+                self._cum_warned.discard(kind)
+                logger.info("[apply] %s +%s (%s -> %s; ledger now %s granted of %s received)",
+                            kind, delta, current, current + delta, target, target)
 
     def _reconcile_permits(self) -> None:
         """Drive the purchase gate from the COMPLETE set of received items, evaluating each
@@ -1012,20 +1092,32 @@ class PZContext(CommonContext):
 
     # -- goal detection --------------------------------------------------------
 
+    def _goal_ids_for(self, trigger: str, arg_key: str, wanted_keys) -> List[int]:
+        """Location ids whose ``trigger_args[arg_key]`` matches one of ``wanted_keys``."""
+        wanted = set(wanted_keys)
+        if not wanted:
+            return []
+        return [loc.id for loc in self.game_data.locations_by_trigger(trigger)
+                if loc.trigger_args.get(arg_key) in wanted]
+
     def _resolve_goal_locations(self) -> None:
         """Map slot_data.goal (research/species keys) onto our own location IDs."""
         goal = self.slot_data.get("goal") or {}
         gargs = goal.get("args", {})
-        ids: List[int] = []
-        for rkey in gargs.get("required_research", []):
-            for loc in self.game_data.locations_by_trigger("research_complete"):
-                if loc.trigger_args.get("research_key") == rkey:
-                    ids.append(loc.id)
-        for skey in gargs.get("required_breed", []):
-            for loc in self.game_data.locations_by_trigger("first_breed"):
-                if loc.trigger_args.get("species_key") == skey:
-                    ids.append(loc.id)
+        ids = (self._goal_ids_for("research_complete", "research_key", gargs.get("required_research", []))
+               + self._goal_ids_for("first_breed", "species_key", gargs.get("required_breed", [])))
         self._goal_location_ids = sorted(set(ids))
+        if not goal:
+            return
+        if self._goal_location_ids:
+            logger.info("goal resolved: %d location(s) %s", len(self._goal_location_ids),
+                        self._goal_location_ids)
+        else:
+            # Fail-loud: a goal that maps to no locations can never complete (_check_goal would just
+            # silently never fire) - a species/research key mismatch between the apworld's slot_data
+            # and our data.json.
+            logger.error("goal %r resolved to NO locations - the goal can never complete! "
+                         "slot_data keys don't match data.json (apworld/data.json out of sync?)", goal)
 
     def goal_progress(self) -> tuple[List[int], set]:
         need = self._goal_location_ids

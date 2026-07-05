@@ -162,12 +162,23 @@ MODULAR_SCENERY_FDB = "c0modularscenery.fdb"
 BLUEPRINTS_FDB = "c0blueprints.fdb"
 RESEARCH_FDB = "c0research.fdb"
 TRACKEDRIDES_FDB = "c0trackedrides.fdb"
-CONTENT0_FDBS = (HABITAT_BOUNDARY_FDB, MODULAR_SCENERY_FDB, BLUEPRINTS_FDB, RESEARCH_FDB, TRACKEDRIDES_FDB)
+NOTIFICATIONS_FDB = "c0notifications.fdb"
+CONTENT0_FDBS = (HABITAT_BOUNDARY_FDB, MODULAR_SCENERY_FDB, BLUEPRINTS_FDB, RESEARCH_FDB, TRACKEDRIDES_FDB,
+                 NOTIFICATIONS_FDB)
+# The "you need a research centre / workshop" HUD alerts carry SelectionContextType='SceneryPlacement':
+# clicking one puts the player STRAIGHT into placement mode for that facility, skipping the build menu -
+# a bypass of the AP facility gating. Re-point their click action to the vanilla 'None' context ("takes no
+# data and does nothing when selected") so the alert still shows (matching the presence gate's "you need X"
+# UX) but can't place. Other SceneryPlacement alerts (NoStaffCentre/NoKeeperHut/...) stay clickable - their
+# facilities aren't AP-gated; add them here if they ever are.
+_PLACEMENT_ALERT_NEUTER = ("NoResearchCentre", "NoWorkshop")
 # Bump when the DERIVED install edits change so existing installs read 'stale'. v1 = scriptutils+pack;
 # v2 = + barrier/facility fdb gating + rename; v3 = full research decouple (mint gates + re-point all content).
 # v4 = stop re-pointing the pack-id columns with the item-keyed dict (was unlocking 4 enrichments globally
 #      via an id-namespace collision; enrichment now stays vet-gated). See _apply_content0_fdb_edits.
-SHELL_LOGIC_VERSION = "4-packid-namespace-fix"
+# v5 = neuter the NoResearchCentre/NoWorkshop alerts' click-to-place action (c0notifications) - it entered
+#      placement mode directly, bypassing the gated build menu.
+SHELL_LOGIC_VERSION = "5-alert-placement-neuter"
 
 
 def _mechanic_content_names() -> "List[str]":
@@ -287,11 +298,22 @@ def _repoint_facility_rooms(fdb_dir: Path) -> None:
     con.commit(); con.close()
 
 
+def _neuter_placement_alerts(fdb_dir: Path) -> None:
+    """Re-point the gated facilities' HUD alerts (c0notifications Alerts) from click-to-place onto the
+    do-nothing 'None' selection context, closing the placement bypass around the gated build menu."""
+    import sqlite3
+    con = sqlite3.connect(fdb_dir / NOTIFICATIONS_FDB)
+    con.execute("UPDATE Alerts SET SelectionContextType='None' WHERE Name IN (%s)"
+                % ",".join("?" * len(_PLACEMENT_ALERT_NEUTER)), _PLACEMENT_ALERT_NEUTER)
+    con.commit(); con.close()
+
+
 def _apply_content0_fdb_edits(fdb_dir: Path, log: LogFn = logger.info) -> None:
     """Apply the FULL-DECOUPLE gating to the EXTRACTED vanilla Content0 fdbs (sqlite, in place): mint the gate
     rows in c0research and re-point every mechanic content (12 barriers + the 51 shops/themes/blueprints/
-    transport/staff/power) onto its gate, plus the basic RC/Workshop facility gating. Copyright-clean (id
-    remaps + new NoneResearchable rows derived from the user's vanilla)."""
+    transport/staff/power) onto its gate, plus the basic RC/Workshop facility gating and the neutering of
+    their click-to-place HUD alerts. Copyright-clean (id remaps + new NoneResearchable rows derived from
+    the user's vanilla)."""
     repoint = _content_repoint(fdb_dir)
     minted = _mint_gate_rows(fdb_dir)
     _repoint_boundary(fdb_dir)
@@ -308,8 +330,9 @@ def _apply_content0_fdb_edits(fdb_dir: Path, log: LogFn = logger.info) -> None:
     # is deferred to the scenario-scoping rework (item-gates can't gate pack content anyway). 2026-06-25.
     _repoint_blueprints(fdb_dir, repoint)
     _repoint_facility_rooms(fdb_dir)
-    log("Applied AP full-decouple gating: minted %d gates, re-pointed %d content + 12 barriers."
-        % (minted, len(repoint)))
+    _neuter_placement_alerts(fdb_dir)
+    log("Applied AP full-decouple gating: minted %d gates, re-pointed %d content + 12 barriers, "
+        "neutered %d click-to-place alerts." % (minted, len(repoint), len(_PLACEMENT_ALERT_NEUTER)))
 
 
 # ---------------------------------------------------------------------------

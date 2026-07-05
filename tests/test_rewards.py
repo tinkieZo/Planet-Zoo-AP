@@ -143,20 +143,27 @@ def test_grant_idempotent_when_already_unlocked():
     assert g.grant("EN_Herbs") is True  # already unlocked -> success, no-op
 
 
-def test_grant_unknown_content_fails():
+def test_grant_unknown_content_acknowledged_as_noop():
+    """A content that isn't a real token (registry loaded, lookup misses) can NEVER become grantable:
+    returning False stalled the apply queue at that item forever (everything after it never applied)
+    and re-warned every retry tick. Acknowledge (True) + warn once instead; the per-tick reward
+    reconcile re-syncs every genuinely gated content anyway."""
     s = FakeScanner()
     _build(s, names={0x10: "en_grazing_ball"}, unlock_records=[(0x10, 1, 0)])
     g = _granter(s)
-    assert g.grant("EN_Does_Not_Exist") is False  # not in the registry
+    assert g.grant("EN_Does_Not_Exist") is True   # not in the registry -> acknowledged no-op
+    assert "EN_Does_Not_Exist" in g._not_gated_warned  # warned once; won't re-log on retries
 
 
-def test_grant_content_not_in_unlock_map_fails():
+def test_grant_content_not_in_unlock_map_acknowledged_as_noop():
+    """The ParkGate case: the token resolves but the content isn't research-reward-gated in this zoo
+    (absent from the unlock map) - permanent, so acknowledge instead of stalling the queue."""
     s = FakeScanner()
-    # name resolves but it's not a research-reward-gated content (absent from the unlock map).
     _build(s, names={0x10: "en_grazing_ball", 0x12: "some_other"},
            unlock_records=[(0x10, 1, 0)])
     g = _granter(s)
-    assert g.grant("some_other") is False
+    assert g.grant("some_other") is True
+    assert "some_other" in g._not_gated_warned
 
 
 def test_progressive_grants_lowest_locked_of_family():

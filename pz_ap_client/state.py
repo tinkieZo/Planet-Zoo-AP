@@ -2,16 +2,18 @@
 
 Why this exists
 ---------------
-Several effects are *cumulative* and non-idempotent: ``cash`` and ``cc`` add money,
-``staff_training`` bumps a level. Archipelago re-sends the player's **entire**
-received-items list on every (re)connect and after any ``Sync``. If we naively
-applied ``items_received`` each time, a reconnect would re-grant every cash item
-and the player would end up rich.
+Archipelago re-sends the player's **entire** received-items list on every (re)connect
+and after any ``Sync``, so application must be idempotent. Two mechanisms:
 
-AP guarantees ``items_received`` is an ordered, append-only list for a given
-(seed, slot): index *i* always refers to the same received item forever. So the
-fix is a **high-water mark**: persist how many list positions we've already
-applied. On reconnect we replay only ``items_received[applied_count:]``.
+* the **high-water mark** (``applied_count``): AP guarantees ``items_received`` is an
+  ordered, append-only list for a given (seed, slot), so persisting how many positions
+  were applied lets a reconnect replay only ``items_received[applied_count:]`` (unlock
+  items are also reconciled each tick, so this is mostly an ordering/first-apply aid);
+* the **granted ledger** (``granted``): the money authority. Cash/cc items are
+  acknowledge-only in the applier; the client reconciles game money by the DELTA
+  between the sum of received cash/cc amounts and this ledger. A reconnect is a no-op
+  (delta 0), a fresh save re-grants the full sum as one addition (``reset_granted``),
+  and a player's spending is never overwritten (only the missing delta is ADDED).
 
 The mark is keyed by (seed_name, slot[, **save_id**]). ``save_id`` is an OPTIONAL
 per-save scope: if a caller passes one, the mark is scoped to that game save; the
@@ -50,7 +52,8 @@ def _slot_key(seed_name: str, slot: int, save_id: "str | None" = None) -> str:
 
 @dataclass
 class ClientState:
-    """Per-(seed, slot) applied high-water mark + fresh-save latch, backed by a JSON file."""
+    """Per-(seed, slot) applied high-water mark + fresh-save latch + cumulative GRANTED ledger,
+    backed by a JSON file."""
 
     path: Path
     # slot_key -> number of received-item list positions already applied
@@ -59,6 +62,13 @@ class ClientState:
     # zoo matures past the fresh sim-time threshold, so a LATER brand-new save re-awards but a reconnect to
     # the same young zoo does not. Survives client restarts (that's the whole point - it's persisted).
     fresh_pending: Dict[str, bool] = field(default_factory=dict)
+    # slot_key -> {"cash": total, "cc": total} GRANTED so far on this save. The money authority: the client
+    # reconciles game money by the DELTA between the sum of received cash/cc items and this ledger, so a
+    # reconnect never double-grants (delta 0) and a fresh save re-grants everything as ONE addition
+    # (reset_granted -> delta = full sum). Replaces per-item read-modify-write through the high-water mark,
+    # whose replay arithmetic broke whenever application stalled mid-list or the mark was zeroed at the
+    # wrong moment.
+    granted: Dict[str, Dict[str, float]] = field(default_factory=dict)
 
     @classmethod
     def load(cls, seed_name: str, slot: int, state_dir: "str | Path | None" = None) -> "ClientState":
@@ -69,16 +79,18 @@ class ClientState:
         path = state_dir / f"{safe_seed or 'seed'}.json"
         applied: Dict[str, int] = {}
         pending: Dict[str, bool] = {}
+        granted: Dict[str, Dict[str, float]] = {}
         if path.exists():
             try:
                 blob = json.loads(path.read_text(encoding="utf-8"))
                 applied = blob.get("applied_count", {})
                 pending = blob.get("fresh_pending", {})
+                granted = blob.get("granted", {})
             except (json.JSONDecodeError, OSError):
                 # Corrupt state: start fresh rather than crash. Worst case is a
                 # re-grant, which the high-water mark will then re-establish.
-                applied, pending = {}, {}
-        return cls(path=path, applied_count=applied, fresh_pending=pending)
+                applied, pending, granted = {}, {}, {}
+        return cls(path=path, applied_count=applied, fresh_pending=pending, granted=granted)
 
     def get(self, seed_name: str, slot: int, save_id: "str | None" = None) -> int:
         return self.applied_count.get(_slot_key(seed_name, slot, save_id), 0)
@@ -94,10 +106,26 @@ class ClientState:
         self.fresh_pending[_slot_key(seed_name, slot)] = value
         self._flush()
 
+    # -- cumulative granted ledger (cash / cc) ------------------------------------------------------
+
+    def get_granted(self, seed_name: str, slot: int, kind: str, save_id: "str | None" = None) -> float:
+        return float(self.granted.get(_slot_key(seed_name, slot, save_id), {}).get(kind, 0.0))
+
+    def set_granted(self, seed_name: str, slot: int, kind: str, total: float,
+                    save_id: "str | None" = None) -> None:
+        self.granted.setdefault(_slot_key(seed_name, slot, save_id), {})[kind] = float(total)
+        self._flush()
+
+    def reset_granted(self, seed_name: str, slot: int, save_id: "str | None" = None) -> None:
+        """Zero the granted ledger (a FRESH save: everything received re-grants as one delta)."""
+        self.granted.pop(_slot_key(seed_name, slot, save_id), None)
+        self._flush()
+
     def _flush(self) -> None:
         tmp = self.path.with_suffix(self.path.suffix + ".tmp")
         tmp.write_text(
-            json.dumps({"applied_count": self.applied_count, "fresh_pending": self.fresh_pending}, indent=2),
+            json.dumps({"applied_count": self.applied_count, "fresh_pending": self.fresh_pending,
+                        "granted": self.granted}, indent=2),
             encoding="utf-8",
         )
         os.replace(tmp, self.path)  # atomic on Windows + POSIX

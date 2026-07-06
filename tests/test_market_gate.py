@@ -293,10 +293,11 @@ def test_autofill_gates() -> None:
         m.write_i32(pool + g._POOL_STRIDE + g._POOL_SP, 0x3025)
         _check(g.pool_species() == [0x3042, 0x3025], f"{label}: pool_species reads gate pool offset")
 
-        # ensure_min_fill: raise the autofill target to max(min, pool) when below; sanity-guard insane.
+        # ensure_min_fill: raise the autofill target when below the floor, where the ask is capped at
+        # ~2 listings per unlocked species (reachable for the engine); sanity-guard insane.
         m.write_i32(mgr + g._TARGET, 2)                  # below floor (pool=2 species set above)
-        _check(g.ensure_min_fill(8) == 8, f"{label}: fill target raised to max(8, pool)")
-        _check(m.read_i32(mgr + g._TARGET) == 8, f"{label}: target written")
+        _check(g.ensure_min_fill(8) == 4, f"{label}: fill target raised, capped at 2*pool")
+        _check(m.read_i32(mgr + g._TARGET) == 4, f"{label}: target written")
         _check(m.read_bytes(mgr + g._FORCE_SPAWN, 1) == b"\x01", f"{label}: force-spawn nudged")
         m.write_i32(mgr + g._TARGET, 20)                 # already above floor -> no-op
         _check(g.ensure_min_fill(8) == 20, f"{label}: no-op when target already meets floor")

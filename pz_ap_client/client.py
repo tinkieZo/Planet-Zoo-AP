@@ -1023,10 +1023,11 @@ class PZContext(CommonContext):
     def _reconcile_market_fill(self) -> None:
         """Bootstrap fill: each tick, keep both autofill markets stocked with a minimum selection so an
         early-game tiny unlocked pool isn't a near-empty market (the autofill target scales with pool
-        size, so a 2-3 species start barely fills). Raises the target to max(MARKET_MIN_LISTINGS,
-        pool_size) - which, with the engine's per-species spawn backoff, also tends toward ~one of each
-        unlocked species. Soft + sanity-guarded (see ensure_min_fill); only ever spawns from the gated
-        pool, so it can't offer anything locked. No-op outside scenario mode."""
+        size, so a 2-3 species start barely fills). Raises the target toward MARKET_MIN_LISTINGS, capped
+        at ~2 listings per unlocked species so the ask stays reachable - which, with the engine's
+        per-species spawn backoff, also tends toward ~one of each unlocked species. Soft + sanity-guarded
+        + wake-throttled (see ensure_min_fill); only ever spawns from the gated pool, so it can't offer
+        anything locked. No-op outside scenario mode."""
         for gate in (self.market_gate, self.exhibit_gate):
             if gate is not None and gate.scenario_mode():
                 gate.ensure_min_fill(self.MARKET_MIN_LISTINGS)

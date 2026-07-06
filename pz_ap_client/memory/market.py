@@ -41,6 +41,7 @@ from __future__ import annotations
 import ctypes
 import logging
 import struct
+import time
 from ctypes import wintypes
 from typing import List, Optional, Sequence
 
@@ -254,6 +255,11 @@ class _AutofillMarketGate:
     _TARGET: int            # i32 target live-listing count (the bootstrap-fill lever)
     _FORCE_SPAWN: int       # u8 force-spawn flag (spawn now, don't wait for the pacing timer)
 
+    # The engine recomputes TARGET from pool size every frame and repaces spawns itself, so waking the
+    # autofill (POOL_DIRTY clear + re-route + force-spawn) every poll tick makes it rebuild the gated pool
+    # per tick = visible game stutter. One wake per cooldown is plenty; listings persist for in-game months.
+    _FILL_WAKE_COOLDOWN_S = 10.0
+
     def __init__(self, scanner, research=None, registry=None):
         self.scanner = scanner
         from .research import ResearchReader
@@ -268,6 +274,8 @@ class _AutofillMarketGate:
         # (a foreign pointer -> heap corruption -> crash on Exit-to-Menu/Exit-Game). See restore()/shutdown().
         self._orig: Optional[dict] = None
         self._orphan_checked = False   # one-shot: neutralise a prior process's orphan before first capture
+        self._fill_wake_last = 0.0     # monotonic time of the last autofill wake (see _FILL_WAKE_COOLDOWN_S)
+        self._fill_raise_logged: Optional[tuple] = None  # last (cur, floor, pool) logged for a target raise
 
     # -- manager location ------------------------------------------------------
 
@@ -477,9 +485,12 @@ class _AutofillMarketGate:
         return True
 
     def ensure_min_fill(self, min_listings: int = 8) -> "Optional[int]":
-        """Bootstrap fill: raise the autofill TARGET live-listing count to at least max(min_listings,
-        pool_size) and nudge a spawn, so an early-game market with a tiny unlocked pool still offers a
-        usable selection AND (with the engine's per-species spawn backoff) ~one of each unlocked species.
+        """Bootstrap fill: raise the autofill TARGET live-listing count toward min_listings so an
+        early-game market with a tiny unlocked pool still offers a usable selection AND (with the
+        engine's per-species spawn backoff) ~one of each unlocked species. The ask is CAPPED at
+        ~2 listings per unlocked species (the engine's own observed target ratio) so a tiny pool is
+        never asked for an unreachable count - once live listings meet a reachable target the wake
+        below stops firing entirely, instead of rebuilding the pool every cooldown forever.
         SOFT: the engine still paces spawns + only spawns from the GATED pool, so it can't offer anything
         locked and won't strictly guarantee one-of-each. No-op once the target already meets the floor.
         SANITY-GUARDED: only writes if the current target reads as a sane count (0..1024) - protects
@@ -495,19 +506,26 @@ class _AutofillMarketGate:
         if not 0 <= cur <= 1024:           # not a sane listing count -> wrong offset / manager not ready
             return None
         pool = len(self.pool_species())
-        floor = max(int(min_listings), pool)
+        floor = max(pool, min(int(min_listings), 2 * pool))
         target = max(cur, floor)
         try:
-            if cur < floor:                 # raise the target (logged once, only when it actually changes)
+            if cur < floor:                 # keep the target raised (the engine recomputes it every frame)
                 self.scanner.write_i32(mgr + self._TARGET, floor)
-                logger.info("market: raised fill target %d -> %d (pool=%d) @mgr 0x%X", cur, floor, pool, mgr)
+                if self._fill_raise_logged != (cur, floor, pool):   # log per state change, not per tick
+                    self._fill_raise_logged = (cur, floor, pool)
+                    logger.info("market: raised fill target %d -> %d (pool=%d) @mgr 0x%X", cur, floor, pool, mgr)
             live = self.scanner.read_i64(mgr + self._LIVE_COUNT)
-            if 0 <= live < target:          # under-filled -> WAKE the autofill, don't just bump the target.
+            now = time.monotonic()
+            if 0 <= live < target and now - self._fill_wake_last >= self._FILL_WAKE_COOLDOWN_S:
+                # under-filled -> WAKE the autofill, don't just bump the target.
                 # Raising the target + force-spawn alone does NOT trigger a rebuild: after the initial
                 # listings expire the engine leaves the market dormant (observed: empty for in-game
                 # months until a new permit). The permit path refills precisely because apply_unlocked
                 # clears POOL_DIRTY -> Advance rebuilds the gated pool + spawns. Do the same here: re-route
                 # to our default whitelist (in case the engine reset the active-id) + mark the pool dirty.
+                # THROTTLED to one wake per cooldown - a per-tick pool rebuild stutters the game, and with
+                # a tiny pool the engine may never reach the target, so this would otherwise fire forever.
+                self._fill_wake_last = now
                 self.scanner.write_i32(mgr + self._WL_ID_SCEN, 0)
                 self.scanner.write_i32(mgr + self._WL_ID_SANDBOX, 0)
                 self.scanner.write_bytes(mgr + self._POOL_DIRTY, b"\x00")

@@ -99,6 +99,12 @@ OFF_MGR_TARGET = 0x26C            # i32 target live-listing count (Advance spawn
                                   # FUN_14A07D670 recomputes it from pool size * economy factor -> tiny
                                   # early-game pool => tiny target => near-empty market)
 OFF_MGR_FORCE_SPAWN = 0x238       # u8 force-spawn flag (Advance spawns this tick regardless of the timer)
+OFF_MGR_BATCH_MIN = 0x264         # i32 spawn-batch min: a spawn tick spawns rand[min,max] listings
+OFF_MGR_BATCH_MAX = 0x268         # i32 spawn-batch max. BOTH recomputed only with TARGET after a rebuild
+                                  # (FUN_14a07d670) from a RANDOM interval roll that can floor to [0,0] -
+                                  # then the spawn loop exits before spawning anything and FORCE_SPAWN
+                                  # never self-clears = permanently dead market (live-diagnosed 2026-07-06,
+                                  # probe read batch=[0,0] with force=1, live=0 < target=5, weights fine).
 
 # -- EXHIBIT (ExhibitAnimalExchange) manager offsets ----------------------------
 # NOT layout-parallel to the local exchange. RE'd from fn_140EAE9B0 (rebuild) + fn_140EAF260 (Advance);
@@ -122,6 +128,8 @@ EXH_ENT_SPECIES = 0x28            # i32 species symbol id within a live listing
 EXH_LIVE_ENT_EXPIRY = 0x164       # f32 listing time-left (fn_140EAF260 ln 179)
 OFF_EXH_TARGET = 0x1F4            # i32 target live-listing count (fn_140EAF260 ln 115: live < target -> spawn)
 OFF_EXH_FORCE_SPAWN = 0x1C2       # u8 force-spawn flag (fn_140EAF260 ln 106; engine self-clears at target ln 138)
+OFF_EXH_BATCH_MIN = 0x1EC         # i32 spawn-batch min (fn_140EAF260 ln 116; same [0,0] hazard as habitat)
+OFF_EXH_BATCH_MAX = 0x1F0         # i32 spawn-batch max (ln 117)
 
 # schedule/listing entry field offsets (relative to the entry base, HABITAT schedule)
 ENT_SPECIES = 0x10                # i32 species symbol id (== research-map handle)
@@ -260,6 +268,8 @@ class _AutofillMarketGate:
     _LIVE_EXPIRY: int
     _TARGET: int            # i32 target live-listing count (the bootstrap-fill lever)
     _FORCE_SPAWN: int       # u8 force-spawn flag (spawn now, don't wait for the pacing timer)
+    _BATCH_MIN: int         # i32 spawn-batch min (rand[min,max] listings per spawn tick)
+    _BATCH_MAX: int         # i32 spawn-batch max (a rebuild can re-roll these to the dead [0,0])
 
     # The engine recomputes TARGET from pool size every frame and repaces spawns itself, so waking the
     # autofill (POOL_DIRTY clear + re-route + force-spawn) every poll tick makes it rebuild the gated pool
@@ -537,6 +547,17 @@ class _AutofillMarketGate:
                 self._fill_wake_last = now
                 self.scanner.write_i32(mgr + self._WL_ID_SCEN, 0)
                 self.scanner.write_i32(mgr + self._WL_ID_SANDBOX, 0)
+                # Batch repair: a spawn tick spawns rand[batch_min,batch_max] listings, and the pair is
+                # recomputed only on a rebuild from a RANDOM roll that can floor to [0,0] (live-diagnosed)
+                # -> the spawn loop exits without spawning and force never self-clears = dead market.
+                # [1,2] is enough: force keeps the spawn tick firing until live >= target anyway.
+                bmin = self.scanner.read_i32(mgr + self._BATCH_MIN)
+                bmax = self.scanner.read_i32(mgr + self._BATCH_MAX)
+                if 0 <= bmin <= 1024 and 0 <= bmax <= 1024 and bmax < 1:
+                    self.scanner.write_i32(mgr + self._BATCH_MIN, 1)
+                    self.scanner.write_i32(mgr + self._BATCH_MAX, 2)
+                    logger.info("market: repaired degenerate spawn batch [%d,%d] -> [1,2] @mgr 0x%X",
+                                bmin, bmax, mgr)
                 self.scanner.write_bytes(mgr + self._FORCE_SPAWN, b"\x01")
         except Exception as e:
             logger.warning("market: ensure_min_fill write failed: %s", e)
@@ -677,6 +698,8 @@ class SpeciesMarketGate(_AutofillMarketGate):
     _LIVE_EXPIRY = LIVE_ENT_EXPIRY
     _TARGET = OFF_MGR_TARGET
     _FORCE_SPAWN = OFF_MGR_FORCE_SPAWN
+    _BATCH_MIN = OFF_MGR_BATCH_MIN
+    _BATCH_MAX = OFF_MGR_BATCH_MAX
 
 
 class ExhibitMarketGate(_AutofillMarketGate):
@@ -704,6 +727,8 @@ class ExhibitMarketGate(_AutofillMarketGate):
     _LIVE_EXPIRY = EXH_LIVE_ENT_EXPIRY
     _TARGET = OFF_EXH_TARGET
     _FORCE_SPAWN = OFF_EXH_FORCE_SPAWN
+    _BATCH_MIN = OFF_EXH_BATCH_MIN
+    _BATCH_MAX = OFF_EXH_BATCH_MAX
 
 
 class ScheduleSpawner:

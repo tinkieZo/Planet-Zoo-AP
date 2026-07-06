@@ -353,10 +353,23 @@ def test_market_restore_and_underfill() -> None:
     m.write_bytes(mgr + g2._POOL_DIRTY, b"\x01")     # pool valid (rebuild NOT pending)
     m.write_bytes(mgr + g2._LIVE_COUNT, struct.pack("<q", 0))   # empty market
     m.write_i32(mgr + g2._WL_ID_SCEN, 5)
+    m.write_i32(mgr + g2._BATCH_MIN, 0)              # dead batch roll [0,0] (the no-refill bug)
+    m.write_i32(mgr + g2._BATCH_MAX, 0)
     g2.ensure_min_fill(8)
     _check(m.read_bytes(mgr + g2._POOL_DIRTY, 1) == b"\x01", "under-filled -> POOL_DIRTY left alone (pool stays valid)")
     _check(m.read_i32(mgr + g2._WL_ID_SCEN) == 0, "under-filled -> re-routed to the default whitelist")
     _check(m.read_bytes(mgr + g2._FORCE_SPAWN, 1) == b"\x01", "under-filled -> force-spawn set")
+    _check((m.read_i32(mgr + g2._BATCH_MIN), m.read_i32(mgr + g2._BATCH_MAX)) == (1, 2),
+           "dead spawn batch [0,0] repaired to [1,2]")
+
+    # a sane batch is left untouched by the next wake
+    g3 = mk.SpeciesMarketGate(m, research=FakeResearch({}))
+    g3._mgr_cache = mgr
+    m.write_i32(mgr + g3._BATCH_MIN, 1)
+    m.write_i32(mgr + g3._BATCH_MAX, 3)
+    g3.ensure_min_fill(8)
+    _check((m.read_i32(mgr + g3._BATCH_MIN), m.read_i32(mgr + g3._BATCH_MAX)) == (1, 3),
+           "healthy spawn batch left untouched")
 
 
 def test_orphan_includeset_neutralized() -> None:

@@ -20,6 +20,7 @@ from __future__ import annotations
 import argparse
 import struct
 import sys
+import time
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
@@ -28,6 +29,17 @@ from pz_ap_client.memory.registry import RegistryResolver  # noqa: E402
 from pz_ap_client.memory import market as mk  # noqa: E402
 
 PROCESS_NAME = "PlanetZoo.exe"
+
+# Fill-cycle diagnostics (HABITAT manager; offsets from the Advance decomp fn_140ea1080.c +
+# target-recompute fn_14a07d670.c). Probe-only - the client itself never touches these.
+OFF_MGR_SPAWN_TIMER = 0x260   # f32 pacing countdown; the spawn path runs when <0 OR force-spawn set
+OFF_MGR_BATCH_MIN = 0x264     # i32 spawn-batch min (recomputed together with TARGET after a rebuild;
+OFF_MGR_BATCH_MAX = 0x268     # i32 spawn-batch max   batch rolls rand[min,max] - 0/0 = spawns nothing)
+OFF_MGR_POOL_WEIGHT = 0x2C0   # f32 TOTAL pool weight; the spawn pick is weighted-random against this -
+                              # 0 total = every pick falls through (no species selected)
+OFF_MGR_ADVANCE_OFF = 0x41D   # u8: the whole spawn/expiry half of Advance is skipped while != 0
+POOL_ENT_WEIGHT = 0x00        # f32 per-entry spawn weight (pool entry stride 0xC: weight,species,extra)
+POOL_ENT_EXTRA = 0x08
 
 
 def _dump_set(s: MemoryScanner, set_addr: int, label: str) -> None:
@@ -65,6 +77,9 @@ def main() -> None:
     ap.add_argument("--spawn", metavar=keys_meta, help="ARM schedule slots for these species keys (WRITES)")
     ap.add_argument("--expire", metavar=keys_meta, help="EXPIRE live listings NOT in these species keys (WRITES)")
     ap.add_argument("--disable", action="store_true", help="turn the gate OFF (unrestricted market) (WRITES)")
+    ap.add_argument("--fill", action="store_true", help="dump the autofill spawn-cycle state (read-only)")
+    ap.add_argument("--watch", type=int, default=0, metavar="SECS",
+                    help="with --fill: re-sample every second for SECS seconds (unpause the game)")
     args = ap.parse_args()
 
     s = MemoryScanner(PROCESS_NAME)
@@ -137,6 +152,69 @@ def _run_market_cmds(s: MemoryScanner, reg: RegistryResolver, gate, mgr: int, ar
               "then check the market UI / --live")
     if args.disable:
         print(f"\nDISABLING gate (unrestricted market) -> {gate.disable()}; unpause to rebuild the full pool")
+    if args.fill:
+        _dump_fill_state(s, reg, mgr, verbose=True)
+        for _ in range(max(0, args.watch)):
+            time.sleep(1)
+            _dump_fill_state(s, reg, mgr, verbose=False)
+
+
+def _read_f32(s: MemoryScanner, addr: int) -> float:
+    return struct.unpack("<f", s.read_bytes(addr, 4))[0]
+
+
+def _dump_fill_state(s: MemoryScanner, reg: RegistryResolver, mgr: int, verbose: bool) -> None:
+    """One sample of everything the Advance spawn path consults. Interpretation guide:
+    - dirty==0        -> next tick REBUILDS (no spawn that tick); should read 1 almost always
+    - adv_off!=0      -> spawn/expiry half of Advance disabled entirely
+    - force==1 stuck + live<target + nothing spawning -> look at batch/total_weight
+    - batch 0/0       -> spawn loop exits before spawning anything
+    - total_weight 0  -> weighted pick selects no species
+    - timer           -> pacing countdown; force bypasses it"""
+    try:
+        dirty = s.read_bytes(mgr + mk.OFF_MGR_POOL_DIRTY, 1)[0]
+        act = s.read_bytes(mgr + mk.OFF_MGR_ACTIVATION, 1)[0]
+        mode = s.read_bytes(mgr + mk.OFF_MGR_MODE, 1)[0]
+        adv_off = s.read_bytes(mgr + OFF_MGR_ADVANCE_OFF, 1)[0]
+        force = s.read_bytes(mgr + mk.OFF_MGR_FORCE_SPAWN, 1)[0]
+        timer = _read_f32(s, mgr + OFF_MGR_SPAWN_TIMER)
+        target = s.read_i32(mgr + mk.OFF_MGR_TARGET)
+        bmin = s.read_i32(mgr + OFF_MGR_BATCH_MIN)
+        bmax = s.read_i32(mgr + OFF_MGR_BATCH_MAX)
+        live = s.read_i64(mgr + mk.OFF_MGR_LIVE_COUNT)
+        pool_n = s.read_i64(mgr + mk.OFF_MGR_POOL_COUNT)
+        total_w = _read_f32(s, mgr + OFF_MGR_POOL_WEIGHT)
+    except Exception as e:
+        print(f"fill-state unreadable ({e})")
+        return
+    print(f"[{time.strftime('%H:%M:%S')}] dirty={dirty} act={act} mode={mode} adv_off={adv_off} "
+          f"force={force} timer={timer:.2f} target={target} batch=[{bmin},{bmax}] "
+          f"live={live} pool={pool_n} total_weight={total_w:.4f}")
+    if not verbose:
+        return
+    try:
+        data = s.read_qword(mgr + mk.OFF_MGR_POOL_DATA)
+        if data and 0 <= pool_n <= 4096:
+            print("  pool entries (weight / species / extra):")
+            for i in range(pool_n):
+                ent = data + i * mk.POOL_STRIDE
+                w = _read_f32(s, ent + POOL_ENT_WEIGHT)
+                sid = s.read_i32(ent + mk.POOL_ENT_SPECIES)
+                extra = s.read_i32(ent + POOL_ENT_EXTRA)
+                print(f"    [{i}] w={w:.4f}  species=0x{sid:X} ({reg.id_to_name(sid) or '?'})  extra=0x{extra:X}")
+    except Exception as e:
+        print(f"  pool dump failed ({e})")
+    try:
+        ldata = s.read_qword(mgr + mk.OFF_MGR_LIVE_DATA)
+        if ldata and 0 <= live <= 1024:
+            print("  live listings (species / expiry):")
+            for i in range(live):
+                ent = ldata + i * mk.LIVE_STRIDE
+                sid = s.read_i32(ent + mk.ENT_SPECIES)
+                exp = _read_f32(s, ent + mk.LIVE_ENT_EXPIRY)
+                print(f"    [{i}] species=0x{sid:X} ({reg.id_to_name(sid) or '?'})  expiry={exp:.1f}")
+    except Exception as e:
+        print(f"  live dump failed ({e})")
 
 
 def _dump_mgr_fields(s: MemoryScanner, mgr: int) -> None:

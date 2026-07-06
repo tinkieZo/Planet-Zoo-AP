@@ -310,8 +310,9 @@ def test_market_restore_and_underfill() -> None:
     """Crash-fix + refill-fix guards. (1) apply captures the engine's ORIGINAL include-set; restore()
     re-points it to the engine's own buffer (so the game frees its OWN allocation on park teardown, not our
     VirtualAllocEx buffer = the Exit crash) and SKIPS if the manager no longer resolves (no foreign write).
-    (2) ensure_min_fill, when under-filled, WAKES the autofill (clears POOL_DIRTY + re-routes), not just
-    raising the target - the missing piece that left the market empty between permits."""
+    (2) ensure_min_fill, when under-filled, arms FORCE_SPAWN + re-routes the whitelist ids but MUST NOT
+    clear POOL_DIRTY: in Advance, rebuild and spawn are mutually exclusive branches of one tick, so a
+    fill-path dirty-clear starves spawning = permanently empty market (live-observed regression)."""
     m = FakeMem()
     mgr = 0x500000000
     g = mk.SpeciesMarketGate(m, research=FakeResearch({}))
@@ -344,15 +345,16 @@ def test_market_restore_and_underfill() -> None:
     g.exchange_mgr = lambda: None
     _check(g.restore() is False, "restore skips when the manager no longer resolves")
 
-    # under-filled -> wake the autofill (POOL_DIRTY clear + re-route), not just raise the target
+    # under-filled -> arm FORCE_SPAWN + re-route, but LEAVE the pool valid (no dirty-clear: a rebuild
+    # tick skips spawning entirely, so clearing here would starve the spawn branch)
     g2 = mk.SpeciesMarketGate(m, research=FakeResearch({}))
     g2._mgr_cache = mgr
     m.write_i32(mgr + g2._TARGET, 2)
-    m.write_bytes(mgr + g2._POOL_DIRTY, b"\x01")     # dormant (dirty bit set, autofill idle)
+    m.write_bytes(mgr + g2._POOL_DIRTY, b"\x01")     # pool valid (rebuild NOT pending)
     m.write_bytes(mgr + g2._LIVE_COUNT, struct.pack("<q", 0))   # empty market
     m.write_i32(mgr + g2._WL_ID_SCEN, 5)
     g2.ensure_min_fill(8)
-    _check(m.read_bytes(mgr + g2._POOL_DIRTY, 1) == b"\x00", "under-filled -> POOL_DIRTY cleared (autofill woken)")
+    _check(m.read_bytes(mgr + g2._POOL_DIRTY, 1) == b"\x01", "under-filled -> POOL_DIRTY left alone (pool stays valid)")
     _check(m.read_i32(mgr + g2._WL_ID_SCEN) == 0, "under-filled -> re-routed to the default whitelist")
     _check(m.read_bytes(mgr + g2._FORCE_SPAWN, 1) == b"\x01", "under-filled -> force-spawn set")
 

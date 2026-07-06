@@ -54,7 +54,11 @@ PARK_CHAIN = (0x20, 0x658)        # *(root) -> +0x20 deref -> +0x658 added = PAR
 # -- HABITAT (LocalAnimalExchange) manager / whitelist offsets ------------------
 OFF_PARK_EXCHANGE_MGR = 0x168     # *(PARK + 0x168) = LocalAnimalExchange manager
 OFF_MGR_ACTIVATION = 0x210        # u8: pool-rebuild runs only when set
-OFF_MGR_POOL_DIRTY = 0x211        # u8: write 0 -> Advance rebuilds the candidate pool next tick
+OFF_MGR_POOL_DIRTY = 0x211        # u8: write 0 -> Advance rebuilds the candidate pool next tick.
+                                  # CAUTION: rebuild and spawn are MUTUALLY EXCLUSIVE branches of one
+                                  # Advance tick (FUN_140ea1080) + the rebuild re-clobbers TARGET, so
+                                  # clear this ONLY when the allow-list changed (apply path), never per
+                                  # tick / in the fill path - that starves spawning = permanently empty.
 OFF_MGR_MODE = 0x41C             # u8: 0=scenario 1=sandbox 2=challenge/franchise 3=off
 OFF_MGR_DEFAULT_WHITELIST = 0x3C0  # the default whitelist OBJECT (used when active id misses)
 # Active-whitelist SELECTION (FUN_14a098760): the rebuild uses the ACTIVE whitelist, chosen by an id
@@ -103,7 +107,9 @@ OFF_MGR_FORCE_SPAWN = 0x238       # u8 force-spawn flag (Advance spawns this tic
 OFF_PARK_EXHIBIT_MGR = 0x1C0      # *(PARK + 0x1C0) = ExhibitAnimalExchange manager
 OFF_EXH_MODE = 0x304              # u8 mode byte (0 = scenario)
 OFF_EXH_ACTIVATION = 0x1C0        # u8 ready flag (rebuild gates on it != 0)
-OFF_EXH_POOL_DIRTY = 0x1C1        # u8: write 0 -> Advance (fn_140EAF260 ln 34) rebuilds the pool
+OFF_EXH_POOL_DIRTY = 0x1C1        # u8: write 0 -> Advance (fn_140EAF260 ln 34) rebuilds the pool.
+                                  # Same CAUTION as OFF_MGR_POOL_DIRTY: the rebuild tick RETURNS without
+                                  # spawning (ln 39) - never clear per tick / in the fill path.
 OFF_EXH_DEFAULT_WHITELIST = 0x2A8  # default whitelist OBJECT (on active-id miss; fn_140EAE9B0 ln 71)
 OFF_EXH_WL_ID_SCEN = 0x2A0        # i32 active whitelist id (mode != 1)
 OFF_EXH_WL_ID_SANDBOX = 0x300     # i32 active whitelist id (mode == 1)
@@ -517,18 +523,20 @@ class _AutofillMarketGate:
             live = self.scanner.read_i64(mgr + self._LIVE_COUNT)
             now = time.monotonic()
             if 0 <= live < target and now - self._fill_wake_last >= self._FILL_WAKE_COOLDOWN_S:
-                # under-filled -> WAKE the autofill, don't just bump the target.
-                # Raising the target + force-spawn alone does NOT trigger a rebuild: after the initial
-                # listings expire the engine leaves the market dormant (observed: empty for in-game
-                # months until a new permit). The permit path refills precisely because apply_unlocked
-                # clears POOL_DIRTY -> Advance rebuilds the gated pool + spawns. Do the same here: re-route
-                # to our default whitelist (in case the engine reset the active-id) + mark the pool dirty.
-                # THROTTLED to one wake per cooldown - a per-tick pool rebuild stutters the game, and with
-                # a tiny pool the engine may never reach the target, so this would otherwise fire forever.
+                # under-filled -> FORCE a spawn. NEVER clear POOL_DIRTY here: in Advance
+                # (FUN_140ea1080 / fn_140EAF260) "rebuild the pool" and "spawn listings" are MUTUALLY
+                # EXCLUSIVE branches of the same tick - a tick that rebuilds does not spawn. Clearing the
+                # flag per tick therefore starved the spawn branch completely (live-observed: market stayed
+                # EMPTY under the old per-tick wake) and each rebuild also re-clobbered our raised TARGET
+                # (the recompute runs right after a rebuild). Rebuilds belong to apply_unlocked only (the
+                # allow-list changed). FORCE_SPAWN alone is the dormancy cure: it bypasses the pacing timer
+                # (mgr+0x260) and the engine self-clears it once live >= target. Re-routing the whitelist
+                # ids stays as a cheap guard so any FUTURE rebuild keeps using our gated default whitelist.
+                # Still throttled: force-spawn persists engine-side until satisfied, so re-arming it more
+                # often than the cooldown buys nothing.
                 self._fill_wake_last = now
                 self.scanner.write_i32(mgr + self._WL_ID_SCEN, 0)
                 self.scanner.write_i32(mgr + self._WL_ID_SANDBOX, 0)
-                self.scanner.write_bytes(mgr + self._POOL_DIRTY, b"\x00")
                 self.scanner.write_bytes(mgr + self._FORCE_SPAWN, b"\x01")
         except Exception as e:
             logger.warning("market: ensure_min_fill write failed: %s", e)

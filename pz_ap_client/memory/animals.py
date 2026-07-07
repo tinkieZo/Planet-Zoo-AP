@@ -64,6 +64,25 @@ OFF_PARK_ANIMAL_MGR = 0x188
 OFF_PARK_EXHIBIT_MGR = 0x1D0
 OFF_EXHIBIT_CENSUS = 0x318   # {species_handle -> count} map header (obj @+0, count @+8, cap @+0x10, buckets @+0x18)
 
+# The exhibit manager ALSO carries per-ANIMAL structures (decomp of the exhibit release executor
+# FUN_146048940, tools/_decomp + scratchpad fn_146048940.c, 2026-07-06) - these are what enable
+# STORAGE release attribution (the +0x318 census covers only PLACED animals; these cover every owned
+# exhibit animal - the release action checks id-set membership before proceeding, and storage releases
+# succeed, so stored animals are in it; the id is removed from the set SYNCHRONOUSLY at release):
+#   +0x2A0: int hash-SET of all owned exhibit ANIMAL IDS - {count @+0x08, cap @+0x10 pow2,
+#           buffer @+0x18 -> occupancy bitvector then u32 keys[cap]} (the market include-set family).
+#   +0x358 -> obj; obj+0x108: open-addressing MAP {animal_id -> def entry}: {count @+0x08, cap @+0x10
+#           pow2, buckets @+0x18} -> bitmap then entries stride 0x160 = {u32 animal_id @+0, animal-def
+#           object inline @+0x8} whose leading fields are refcounted native strings ({len i64 @+0,
+#           chars @+0x14}); one of them is the SPECIES NAME token (e.g. 'GoliathBeetle' - the engine
+#           resolves the released species from this object when posting ExhibitAnimalReleasedMessage).
+OFF_EXHIBIT_ID_SET = 0x2A0
+OFF_EXHIBIT_DEF_SUB = 0x358
+OFF_DEF_SUB_MAP = 0x108
+DEF_ENTRY_STRIDE = 0x160
+DEF_ENTRY_OBJ = 0x8
+DEF_OBJ_STRING_OFFS = (0x0, 0x8, 0x10, 0x20)   # candidate name-string ptr fields of the def object
+
 
 class AnimalResolver:
     def __init__(self, scanner):
@@ -216,6 +235,90 @@ class AnimalResolver:
         if not mgr:
             return None
         return self._decode_count_map(mgr + OFF_EXHIBIT_CENSUS)
+
+    def read_exhibit_ids(self, mgr: int) -> "Optional[set]":
+        """Ids of ALL owned exhibit animals - placed AND stored - from the manager's +0x2A0 id set.
+        None if mgr is wrong/unreadable (pow2-cap guard). The release action removes the released id
+        from this set SYNCHRONOUSLY, so diffing it across a detected release names the animal - the
+        storage-release attribution the placed-only census can't provide."""
+        if not mgr:
+            return None
+        base = mgr + OFF_EXHIBIT_ID_SET
+        try:
+            cap = self.scanner.read_qword(base + 0x10)
+            buf = self.scanner.read_qword(base + 0x18)
+        except Exception:
+            return None
+        if not buf or not cap or cap > (1 << 20) or (cap & (cap - 1)) != 0:
+            return None
+        bitvec = ((cap >> 3) + 7) & ~7
+        try:
+            data = self.scanner.read_bytes(buf, bitvec + cap * 4)
+        except Exception:
+            return None
+        out = set()
+        for i in range(cap):
+            if (data[i >> 3] >> (i & 7)) & 1:
+                out.add(struct.unpack_from("<I", data, bitvec + i * 4)[0])
+        return out
+
+    def _native_string(self, ptr: int, max_len: int = 64) -> Optional[str]:
+        """Engine refcounted string {len i64 @+0, chars @+0x14}, or None if implausible."""
+        if not ptr:
+            return None
+        try:
+            n = struct.unpack("<q", self.scanner.read_bytes(ptr, 8))[0]
+            if not 0 < n <= max_len:
+                return None
+            txt = self.scanner.read_bytes(ptr + 0x14, n).decode("ascii")
+        except Exception:
+            return None
+        return txt if txt.isprintable() else None
+
+    def read_exhibit_def_names(self, mgr: int) -> "Optional[dict]":
+        """{animal_id -> [candidate name strings]} from the exhibit def map (*(mgr+0x358)+0x108).
+        One of the candidates is the species token (the caller matches them against the species
+        token map - self-validating, so it doesn't matter which def field holds the species). None
+        if the structures don't validate; {} if the map is just empty."""
+        if not mgr:
+            return None
+        try:
+            sub = self.scanner.read_qword(mgr + OFF_EXHIBIT_DEF_SUB)
+            if not sub:
+                return None
+            hdr = sub + OFF_DEF_SUB_MAP
+            count = self.scanner.read_qword(hdr + 0x08)
+            cap = self.scanner.read_qword(hdr + 0x10)
+            buckets = self.scanner.read_qword(hdr + 0x18)
+        except Exception:
+            return None
+        if not buckets or not cap or cap > (1 << 16) or (cap & (cap - 1)) != 0 or not 0 <= count <= cap:
+            return None
+        bitmap_sz = ((cap >> 3) + 7) & ~7
+        try:
+            bitmap = self.scanner.read_bytes(buckets, bitmap_sz)
+        except Exception:
+            return None
+        out: dict = {}
+        for i in range(cap):
+            if (bitmap[i >> 3] >> (i & 7)) & 1:
+                parsed = self._parse_def_entry(buckets + bitmap_sz + i * DEF_ENTRY_STRIDE)
+                if parsed is not None:
+                    out[parsed[0]] = parsed[1]
+        return out
+
+    def _parse_def_entry(self, entry: int) -> "Optional[tuple]":
+        """(animal_id, [candidate name strings]) for one def-map entry, or None if unreadable."""
+        try:
+            aid = struct.unpack("<I", self.scanner.read_bytes(entry, 4))[0]
+            names = []
+            for off in DEF_OBJ_STRING_OFFS:
+                nm = self._native_string(self.scanner.read_qword(entry + DEF_ENTRY_OBJ + off))
+                if nm:
+                    names.append(nm)
+        except Exception:
+            return None
+        return aid, names
 
     def iter_roster(self, mgr: int):
         """Yield (handle, entity) for every animal in the manager's roster (habitat + storage). Reads the

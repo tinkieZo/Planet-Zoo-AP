@@ -187,20 +187,34 @@ def test_attribute_release_returns_none_when_all_sources_fail():
     assert MemoryTriggerSource._attribute_release(src2) is None
 
 
-def _exhibit_src(census_handles, exhibit_count):
+_EXHIBIT_TOKEN_KEYS = {"GoliathBeetle": "gbeetle", "GiantDesertHairyScorpion": "gdscorpion"}
+
+
+def _exhibit_src(census_handles, exhibit_count, ids=None, def_names=None):
     """Build a src for _poll_exhibit_release: census_handles is the live {species_handle->count} the fake
-    exhibit manager returns; exhibit_count is a callable -> current release-hook count."""
+    exhibit manager returns; exhibit_count is a callable -> current release-hook count. ids (a MUTABLE set
+    the test edits, or None = id set unresolvable) + def_names ({animal_id: [name candidates]}) drive the
+    id-roster-diff PRIMARY path; the default None exercises the census-only fallback."""
     resolver = types.SimpleNamespace(
         resolve_exhibit_manager=lambda: 0xE0,
-        read_exhibit_census=lambda mgr: dict(census_handles))
+        read_exhibit_census=lambda mgr: dict(census_handles),
+        read_exhibit_ids=lambda mgr: (set(ids) if ids is not None else None),
+        read_exhibit_def_names=lambda mgr: dict(def_names or {}))
     src = types.SimpleNamespace(
         births=types.SimpleNamespace(resolver=resolver),
-        research=types.SimpleNamespace(handle_key_map=lambda: {0x3033: "mtarantula", 0x3084: "gorilla"}),
+        research=types.SimpleNamespace(handle_key_map=lambda: {0x3033: "mtarantula", 0x3084: "gorilla"},
+                                       species_key_for_name=lambda nm: _EXHIBIT_TOKEN_KEYS.get(nm)),
         releases=types.SimpleNamespace(exhibit_count=exhibit_count),
         _released_species=set(), _last_exhibit_count=0, _exhibit_storage_hint_logged=False,
-        _exhibit_baseline=None, _pending_exhibit=0, _pending_exhibit_ticks=0)
+        _exhibit_baseline=None, _pending_exhibit=0, _pending_exhibit_ticks=0,
+        _exhibit_prev_ids=None, _exhibit_id_species={})
     src._read_exhibit_census = lambda: MemoryTriggerSource._read_exhibit_census(src)
     src._attribute_exhibit_drops = lambda raw: MemoryTriggerSource._attribute_exhibit_drops(src, raw)
+    src._poll_exhibit_roster_diff = lambda: MemoryTriggerSource._poll_exhibit_roster_diff(src)
+    src._cache_exhibit_species = (
+        lambda resolver, mgr, fresh: MemoryTriggerSource._cache_exhibit_species(src, resolver, mgr, fresh))
+    src._attribute_exhibit_removals = (
+        lambda removed: MemoryTriggerSource._attribute_exhibit_removals(src, removed))
     return src
 
 
@@ -260,16 +274,19 @@ def test_exhibit_release_detected_without_placed_census():
     Regression for the bug where reading the census first suppressed detection entirely."""
     resolver = types.SimpleNamespace(
         resolve_exhibit_manager=lambda: 0,           # no placed manager
-        read_exhibit_census=lambda mgr: None)
+        read_exhibit_census=lambda mgr: None,
+        read_exhibit_ids=lambda mgr: None)
     ec = [0]
     src = types.SimpleNamespace(
         births=types.SimpleNamespace(resolver=resolver),
         research=types.SimpleNamespace(handle_key_map=lambda: {}),
         releases=types.SimpleNamespace(exhibit_count=lambda: ec[0]),
         _released_species=set(), _last_exhibit_count=0, _exhibit_storage_hint_logged=False,
-        _exhibit_baseline=None, _pending_exhibit=0, _pending_exhibit_ticks=0)
+        _exhibit_baseline=None, _pending_exhibit=0, _pending_exhibit_ticks=0,
+        _exhibit_prev_ids=None, _exhibit_id_species={})
     src._read_exhibit_census = lambda: MemoryTriggerSource._read_exhibit_census(src)
     src._attribute_exhibit_drops = lambda raw: MemoryTriggerSource._attribute_exhibit_drops(src, raw)
+    src._poll_exhibit_roster_diff = lambda: MemoryTriggerSource._poll_exhibit_roster_diff(src)
     poll = lambda: MemoryTriggerSource._poll_exhibit_release(src)
     poll()                       # census None; no release yet
     assert src._pending_exhibit == 0
@@ -297,6 +314,38 @@ def test_exhibit_release_unmapped_handle_drop_consumes_pending_without_firing():
     poll()
     assert src._pending_exhibit == 0             # consumed (not stuck -> no spurious give-up later)
     assert src._released_species == set()        # unmapped -> no cr_, but the drop was accounted
+
+
+def test_exhibit_storage_release_attributed_by_id_roster_diff():
+    """A release straight from STORAGE never drops the placed census - the id-roster diff attributes it:
+    the owned-id set loses the id synchronously and the def-map species cache names it. The def object's
+    string fields are matched against the token map, so a non-species string ('Fluffy') is skipped."""
+    ids = {0x501, 0x502}
+    def_names = {0x501: ["Fluffy", "GoliathBeetle"], 0x502: ["GiantDesertHairyScorpion"]}
+    ec = [0]
+    src = _exhibit_src({}, lambda: ec[0], ids=ids, def_names=def_names)   # EMPTY placed census (storage-only)
+    poll = lambda: MemoryTriggerSource._poll_exhibit_release(src)
+    poll()                       # prime: both ids cached with their species
+    assert src._exhibit_id_species == {0x501: "gbeetle", 0x502: "gdscorpion"}
+    ec[0] = 1                    # release detected by the hook...
+    ids.discard(0x501)           # ...and the id left the owned set synchronously
+    poll()
+    assert src._released_species == {"gbeetle"}, "storage release attributed via the id-roster diff"
+    assert src._pending_exhibit == 0
+    assert 0x501 not in src._exhibit_id_species, "released id evicted from the cache"
+
+
+def test_exhibit_id_removal_without_release_not_attributed():
+    """A death/sale removes the id with NO release event - must not fire cr_ (pairing with the hook
+    count is what makes a removal a release), but the cache entry is still evicted."""
+    ids = {0x501}
+    src = _exhibit_src({}, lambda: 0, ids=ids, def_names={0x501: ["GoliathBeetle"]})
+    poll = lambda: MemoryTriggerSource._poll_exhibit_release(src)
+    poll()                       # prime the id cache
+    ids.clear()                  # animal gone, but not released
+    poll()
+    assert src._released_species == set()
+    assert src._exhibit_id_species == {}, "non-release removal still evicts the cache entry"
 
 
 def test_trigger_fires_cr_for_resolved_release():

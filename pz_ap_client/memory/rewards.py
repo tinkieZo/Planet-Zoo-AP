@@ -260,6 +260,7 @@ class RewardGranter:
         # no-ops - returning False forever would stall the item-apply queue at that item (everything
         # received after it would never apply) and re-log the warning every retry tick.
         self._not_gated_warned: set = set()
+        self._last_unlock_count = -1     # unlock-map record count last tick (growth -> refresh snapshots)
 
     def _registry_index(self) -> Optional[InternRegistry]:
         if self._registry is None:
@@ -279,6 +280,23 @@ class RewardGranter:
         except Exception as e:
             logger.warning("reward: unlockables map unreadable (%s)", e)
             return None
+
+    def _maybe_refresh_names(self, m: UnlockMap) -> None:
+        """Names intern LAZILY: a species' reward tokens (<Species>EnrichmentL<k>, ...) enter the
+        intern registry only when its research tree first loads - which is AFTER our first-tick
+        registry snapshot. The engine's grant find-or-inserts the content's record into the unlock
+        map, so map GROWTH is the exact signal that content we may never have indexed just appeared.
+        Rebuild the registry index + family level maps then, so the per-tick gate covers it (live
+        bug 2026-07-06: freshly-researched exhibit animals' enrichment levels stayed unlocked - their
+        tokens post-dated the cached snapshot, so the reconcile never matched their records)."""
+        if m.count != self._last_unlock_count:
+            if self._last_unlock_count >= 0:
+                logger.info("reward: unlock map grew (%d -> %d records) - refreshing name snapshots",
+                            self._last_unlock_count, m.count)
+            self._last_unlock_count = m.count
+            if self._registry is not None:
+                self._registry._index = None
+            self._level_maps.clear()
 
     def _flip(self, rs: int, rec: int, cid: int, typ: int, flag: int) -> bool:
         if flag:
@@ -354,6 +372,10 @@ class RewardGranter:
         if reg is None:
             return False
         cid = reg.lookup(content)
+        if cid is None:
+            # names intern lazily - the token may have appeared after our snapshot; rebuild once
+            reg._index = None
+            cid = reg.lookup(content)
         if cid is None:
             if content not in self._not_gated_warned:
                 self._not_gated_warned.add(content)
@@ -520,6 +542,7 @@ class RewardGranter:
         m = self._unlock_map()
         if m is None:
             return False
+        self._maybe_refresh_names(m)
         gated = self._resolve_animal_cids(reg, universe_contents)
         if not gated:
             return True
@@ -592,6 +615,7 @@ class RewardGranter:
         m = self._unlock_map()
         if m is None:
             return False
+        self._maybe_refresh_names(m)
         levels = self._family_level_map(reg, family)
         if not levels:
             return True

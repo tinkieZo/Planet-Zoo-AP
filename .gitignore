@@ -38,6 +38,8 @@ tools/_attic/
 build/
 build_stage/
 dist/
+# Packaged release/debug bundles (pz-ap-client-*-win64.zip etc.) - regenerable, never commit.
+*.zip
 tools/_decomp/
 tools/_research_extract/
 

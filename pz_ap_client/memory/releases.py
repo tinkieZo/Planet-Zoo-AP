@@ -32,13 +32,13 @@ it resolves the released exhibit animal and posts ``ExhibitAnimalReleasedMessage
 hook never sees them - which is why exhibit releases previously did nothing. ``_install_exhibit_gate``
 adds the SAME gate+counter (``make_release_gate``) on that entry; its count folds into ``count()`` and
 its lock tracks the Conservation Program, so exhibit releases register toward conservation_release and
-are gated identically. Per-species ``cr_`` for exhibit is attributed WITHOUT a handle capture, by diffing
-the exhibit manager's {species_handle -> count} CENSUS map (park+0x1D0, +0x318) across a detected release:
-whichever species' count drops was released (``triggers._poll_exhibit_release``; ``habitat_count`` /
-``exhibit_count`` split the two paths so each uses its own attribution). LIMITATION: that census covers only
-PLACED exhibit animals - stored/trade-center animals aren't aggregated per-species anywhere reachable, so a
-release straight from storage can't be attributed (count + milestone still credit; the player places the
-animal first to register its cr_). Found via Ghidra (FindStrRefs on ExhibitAnimalReleasedMessage); see [[exhibit-release-RE]].
+are gated identically. Per-species ``cr_`` for exhibit is attributed WITHOUT a handle capture, PRIMARILY by
+diffing the exhibit manager's +0x2A0 owned-animal ID SET across a detected release (the release action
+removes the id synchronously; the def map *(mgr+0x358)+0x108 names each id's species - covers PLACED and
+STORED animals alike, see animals.py), with the placed-only {species_handle -> count} census (+0x318) diff
+as the fallback (``triggers._poll_exhibit_release``; ``habitat_count`` / ``exhibit_count`` split the two
+paths so each uses its own attribution). Found via Ghidra (FindStrRefs on ExhibitAnimalReleasedMessage +
+the FUN_146048940 decomp); see [[exhibit-release-RE]].
 
 The gate defaults LOCKED on install; the client calls ``set_locked(False)`` once the
 Conservation Program item is received (reconciled from the full received set each tick).

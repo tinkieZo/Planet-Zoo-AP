@@ -83,9 +83,16 @@ class MemoryTriggerSource:
         # still fire) to avoid a stuck baseline if the released species' handle isn't in the research map.
         self._last_exhibit_count = 0
         self._exhibit_baseline: "dict | None" = None   # {species_handle -> count} accounted-for PLACED census
-        self._pending_exhibit = 0                      # detected exhibit releases awaiting a census drop
+        self._pending_exhibit = 0                      # detected exhibit releases awaiting attribution
         self._pending_exhibit_ticks = 0                # ticks a pending release has waited (give-up guard)
-        self._exhibit_storage_hint_logged = False      # once-only "place-then-release" hint (storage releases)
+        self._exhibit_storage_hint_logged = False      # once-only unattributed-release notice
+        # PRIMARY exhibit attribution = ID-ROSTER DIFF (covers STORAGE releases, which the placed-only
+        # census can't): the manager's +0x2A0 id set holds every owned exhibit animal and the release
+        # removes the id SYNCHRONOUSLY (FUN_146048940 decomp); the def map (*(mgr+0x358)+0x108) names
+        # each id's species. We cache {animal_id -> species_key} as ids appear, then a removed id under
+        # a pending release names the released species. The census diff stays as the fallback.
+        self._exhibit_prev_ids: "set | None" = None    # last tick's owned exhibit animal ids
+        self._exhibit_id_species: dict = {}            # animal_id -> species_key (from the def map)
         # A3 conservation_release: software-detour on the release-to-wild executor that
         # counts releases (no stable game counter exists - see releases.py / the A2 spike).
         self.releases = ReleaseDetector(scanner)
@@ -219,48 +226,88 @@ class MemoryTriggerSource:
         return resolver.read_exhibit_census(mgr)
 
     def _poll_exhibit_release(self) -> None:
-        """Attribute exhibit conservation_release by diffing the {species_handle->count} census across a
-        detected exhibit release. The release hook count rises synchronously but the census decrement is
-        deferred, so a detected release is held 'pending' until a handle's count drops below the held
-        baseline (mapped to a species_key then). Pairing the census drop with the hook count is what
-        distinguishes a RELEASE from a death/transfer (those drop the census with no release event)."""
-        # DETECT the release FIRST, independent of the census. The exhibit hook count (exhibit_count) is
-        # session-scoped (starts at 0), so counting from 0 captures every release since attach. Doing this
-        # before reading the census is critical: if exhibit animals are ONLY in storage (no PLACED ones),
-        # the placed census at +0x1D0 is empty/unresolvable (raw is None) - the old code returned there and
-        # never even saw the release, suppressing both detection AND the give-up diagnostic.
+        """Attribute exhibit conservation_release across a detected release (the hook count rises
+        synchronously). PRIMARY: diff the manager's +0x2A0 owned-animal ID SET - the release removes the
+        id synchronously and the id-species cache (def map) names it; covers PLACED and STORED animals
+        alike. FALLBACK: the placed-only census diff (deferred decrement, so pending releases wait for
+        it). Pairing either diff with the hook count distinguishes a RELEASE from a death/transfer."""
+        # DETECT the release FIRST, independent of any roster read. The exhibit hook count is session-
+        # scoped (starts at 0), so counting from 0 captures every release since attach - even when both
+        # roster structures are unreadable this tick.
         ecount = self.releases.exhibit_count()
         new = ecount - self._last_exhibit_count
         if new > 0:
             self._pending_exhibit += new
             logger.info("conservation_release: exhibit release detected (hook count %d, +%d) - resolving "
-                        "species via census diff", ecount, new)
+                        "species via id-roster diff (census fallback)", ecount, new)
         self._last_exhibit_count = ecount
+        try:
+            self._poll_exhibit_roster_diff()   # PRIMARY: id-set diff (handles storage releases)
+        except Exception:
+            logger.exception("conservation_release: exhibit id-roster diff failed (census fallback only)")
         raw = self._read_exhibit_census()   # PLACED census (may be None: no placed animals / mid-load)
         if raw is not None:
             if self._exhibit_baseline is None:
                 self._exhibit_baseline = raw            # prime the placed-census baseline (no fire)
             elif self._pending_exhibit > 0:
                 self._attribute_exhibit_drops(raw)      # a PLACED release drops a baseline count
-        # Retire pending releases after the budget even if no census drop explained them. A PLACED release
-        # attributes via the census diff above; a release that never drops the census was released straight
-        # from STORAGE/trade-center, which has no per-species census to diff (confirmed: no such map exists
-        # under the park). We can't attribute those per-species - the workaround is place-then-release.
+        # Retire pending releases after the budget even if neither diff explained them (e.g. the released
+        # animal's species token wasn't mappable). The count + milestone already fired regardless.
         if self._pending_exhibit > 0:
             self._pending_exhibit_ticks += 1
             if self._pending_exhibit_ticks >= EXHIBIT_GIVEUP_TICKS:
                 if not self._exhibit_storage_hint_logged:
                     self._exhibit_storage_hint_logged = True
                     logger.info("conservation_release: an exhibit release wasn't attributed to a species "
-                                "(no placed-exhibit census drop - likely released straight from storage/"
-                                "trade-center, which isn't tracked per-species). To register a species' cr_ "
-                                "check, place the exhibit animal in an exhibit before releasing it. (The "
-                                "release count + milestone are still credited.)")
+                                "(no id-roster removal or census drop matched a known species). cr_ won't "
+                                "fire for it; the release count + milestone are still credited.")
                 self._pending_exhibit = 0
         if self._pending_exhibit == 0:
             self._pending_exhibit_ticks = 0
             if raw is not None:
                 self._exhibit_baseline = raw   # advance baseline (accounts buys/births + resolved drops)
+
+    def _poll_exhibit_roster_diff(self) -> None:
+        """Maintain the {animal_id -> species_key} cache from the exhibit manager's id set + def map, and
+        attribute pending releases to the species of ids that VANISHED from the set. Ids also vanish on
+        death/sale, so removals only attribute while a release is pending (same pairing as the census
+        path); every removal evicts its cache entry either way."""
+        resolver = self.births.resolver
+        mgr = resolver.resolve_exhibit_manager()
+        ids = resolver.read_exhibit_ids(mgr) if mgr else None
+        if ids is None:
+            return   # not resolvable this tick - keep the previous snapshot (don't fake an empty set)
+        fresh = ids - self._exhibit_id_species.keys()
+        if fresh:
+            self._cache_exhibit_species(resolver, mgr, fresh)
+        if self._exhibit_prev_ids is not None:
+            self._attribute_exhibit_removals(self._exhibit_prev_ids - ids)
+        self._exhibit_prev_ids = ids
+
+    def _cache_exhibit_species(self, resolver, mgr: int, fresh: set) -> None:
+        """Resolve + cache species_keys for newly-seen exhibit animal ids via the def map. The def
+        object's string fields aren't positionally guaranteed - match ANY against the species token map
+        (self-validating: a non-species string simply doesn't map)."""
+        names = resolver.read_exhibit_def_names(mgr) or {}
+        for aid in fresh:
+            key = next((k for nm in names.get(aid, ())
+                        if (k := self.research.species_key_for_name(nm))), None)
+            if key:
+                self._exhibit_id_species[aid] = key
+            else:
+                logger.info("conservation_release: exhibit animal id 0x%X cached WITHOUT a species "
+                            "(def names %s unmapped) - its release would fall back to the census",
+                            aid, names.get(aid))
+
+    def _attribute_exhibit_removals(self, removed: set) -> None:
+        """Consume pending releases for ids that left the owned-id set; evict their cache entries."""
+        for aid in removed:
+            key = self._exhibit_id_species.pop(aid, None)
+            if self._pending_exhibit > 0 and key:
+                self._released_species.add(key)
+                self._pending_exhibit -= 1
+                logger.info("conservation_release: exhibit release attributed -> %s (animal id 0x%X "
+                            "left the owned-id set; works for storage releases)", key, aid)
 
     def _attribute_exhibit_drops(self, raw: dict) -> None:
         """For each baseline handle whose census count dropped, consume one pending release and (if the

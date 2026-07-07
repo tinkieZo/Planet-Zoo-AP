@@ -248,6 +248,43 @@ def test_reconcile_progressive_levels_exhibit_enrichment_by_count():
     assert flags()[0x10] == 1
 
 
+def test_lazy_interned_reward_relocked_after_map_growth():
+    """The lazy-intern bug (live 2026-07-06): an exhibit species' EnrichmentL tokens intern only when
+    its research tree first loads - AFTER the granter cached its registry snapshot. The engine's grant
+    then find-or-inserts the record UNLOCKED; without a snapshot refresh the reconcile never matches
+    the new cid, so the level stays unlocked with 0 progressive copies received. Unlock-map GROWTH
+    must trigger a snapshot refresh so the very next reconcile re-locks it."""
+    s = FakeScanner()
+    _build(s, names={0x20: "amazongiantcentipedeenrichmentl1"},
+           unlock_records=[(0x20, 1, 0)])
+    g = _granter(s)
+    assert g.reconcile_progressive_levels("exhibit_enrichment", 0) is True   # snapshot cached now
+    # LATE INTERN: a new species' token appears in the registry pool (id 0x40)...
+    rec = 0x28800000
+    s.put(rec, struct.pack("<I", 1))
+    s.put(rec + 8, b"goliathbeetleenrichmentl1" + b"\x00" * 97)
+    s.put(POOL_TOP - 0x40 * STRIDE, struct.pack("<Q", rec))
+    # ...and the ENGINE grants it: find-or-insert into the unlock map with unlocked=1.
+    cap = 8
+    bm_len = ((cap >> 3) + 7) & ~7
+    buckets = 0x21000000
+    recs = buckets + bm_len
+    s.put(RS + rewards.UNLOCK_MAP_OFF + 0x08, struct.pack("<q", 2))          # count grew 1 -> 2
+    bitmap = bytearray(s.read_bytes(buckets, bm_len))
+    bitmap[0] |= 1 << 1
+    s.put(buckets, bytes(bitmap))
+    blob = bytearray(rewards.REC_STRIDE)
+    struct.pack_into("<I", blob, rewards.REC_TYPE, 1)
+    struct.pack_into("<I", blob, rewards.REC_KEY, 0x40)
+    blob[rewards.REC_UNLOCKED] = 1
+    s.put(recs + 1 * rewards.REC_STRIDE, bytes(blob))
+    # Without the refresh this stayed unlocked forever; growth-triggered refresh re-locks next tick.
+    assert g.reconcile_progressive_levels("exhibit_enrichment", 0) is True
+    flags = {cid: f for _, cid, _, f in rewards.UnlockMap(s, RS).iter_records()}
+    assert flags[0x40] == 0, "late-interned exhibit enrichment re-locked (the lazy-intern fix)"
+    assert flags[0x20] == 0, "original record still locked"
+
+
 def test_reconcile_progressive_levels_generalizes_per_family():
     # The same count gate serves every level family by name pattern <Species><Family>L<k>, with the family's
     # OWN record type for bookkeeping (supplement = type 0). Levels run 1..2 here. Each family is isolated:

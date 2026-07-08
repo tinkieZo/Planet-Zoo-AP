@@ -18,12 +18,18 @@ from pz_ap_client import ovl  # noqa: E402
 
 VANILLA = b"VANILLA-OVL-CONTENT" * 16
 PATCHED = b"PATCHED-OVL-CONTENT" * 16
-PACK = b"PACK-OVL"
 GM_VANILLA = b"GAMEMAIN-VANILLA-OVL" * 16
 GM_PATCHED = b"GAMEMAIN-PATCHED-OVL" * 16
 
 
-LOC = b"LOC-OVL"
+def _stems(src_names):
+    """install() verifies built ovls contain every expected entry name (plaintext stems), so the
+    fake artifacts must carry them - like the real ovl header does."""
+    return b" ".join(Path(n).stem.lower().encode("ascii") for n in src_names)
+
+
+PACK = b"PACK-OVL " + _stems(ovl.PACK_SRC_FILES)
+LOC = b"LOC-OVL " + _stems(ovl.PACK_LOC_SRC_FILES)
 LOC_LEAFS = (Path("English") / "UnitedKingdom", Path("German") / "Germany")
 
 
@@ -499,3 +505,45 @@ def test_child_argv_dev_and_frozen(monkeypatch):
     argv = ovl._child_argv("new", Path("C:/cobra"), Path("C:/src"), Path("C:/out.ovl"), None)
     assert argv[:2] == [sys.executable, "--run-ovl-inject"]
     assert argv[2:] == ["new", "C:\\cobra", "C:\\src", "C:\\out.ovl"]
+
+
+# --- build-pipeline hardening (Proton/Wine silent-drop regression, 2026-07-08) --------------------
+# A Linux user's install produced a 408-byte pack: cobra's luacheck lint raised under Wine, add_files
+# swallowed the per-file error, and every .lua was silently missing while cobra exited 0 + SUCCESS.
+
+def test_verify_ovl_contents_passes_and_fails(tmp_path):
+    names = ("database.foo.lua", "bar_settings.animalresearchstartunlockedsettings")
+    good = tmp_path / "good.ovl"
+    good.write_bytes(b"FRES...database.foo...bar_settings junk...")
+    ovl._verify_ovl_contents(good, names, "content pack")  # all stems present - no raise
+    bad = tmp_path / "bad.ovl"
+    bad.write_bytes(b"FRES...bar_settings only...")
+    with pytest.raises(ovl.OvlInstallError) as ei:
+        ovl._verify_ovl_contents(bad, names, "content pack")
+    assert "database.foo.lua" in str(ei.value)
+    assert "missing 1 of its 2" in str(ei.value)
+
+
+def test_run_cobra_child_fails_on_dropped_files(tmp_path, monkeypatch):
+    """cobra exits 0 even when per-file loaders failed; the 'Could not create' log line must be
+    treated as fatal, while benign start-up ERROR noise (Could not load DDS) must not."""
+    monkeypatch.setattr(ovl, "find_cobra_dir", lambda: tmp_path)
+    monkeypatch.setattr(ovl, "_ensure_oodle", lambda *a, **k: None)
+    monkeypatch.setattr(ovl, "check_src_complete", lambda: None)
+
+    def fake_child(lines):
+        script = tmp_path / "fake_child.py"
+        script.write_text("\n".join(f"print({line!r})" for line in lines), encoding="utf-8")
+        monkeypatch.setattr(ovl, "_child_argv",
+                            lambda op, cobra, src, out, base: [sys.executable, str(script)])
+
+    # benign start-up noise + success -> no raise
+    fake_child(["ERROR | Could not load DDS", "INFO | Creating OVL from x", "SUCCESS | Created OVL: y"])
+    ovl._run_cobra_child("new", tmp_path, tmp_path / "out.ovl", None, lambda m: None)
+
+    # a dropped file -> OvlInstallError naming it, despite exit 0 + SUCCESS
+    fake_child(["ERROR | Could not load DDS", "ERROR | Could not create: database.foo.lua",
+                "SUCCESS | Created OVL: y"])
+    with pytest.raises(ovl.OvlInstallError) as ei:
+        ovl._run_cobra_child("new", tmp_path, tmp_path / "out.ovl", None, lambda m: None)
+    assert "Could not create: database.foo.lua" in str(ei.value)

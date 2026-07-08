@@ -5,7 +5,8 @@
 #   .\build-exe.ps1                      # bundle .\vendor\Archipelago (default)
 #   .\build-exe.ps1 -ApSource D:\Archipelago   # bundle an Archipelago install from elsewhere
 #   $env:PZ_AP_SOURCE = 'D:\Archipelago'; .\build-exe.ps1   # same, via env var
-param([string]$ApSource, [string]$CobraSource, [switch]$SkipSelfTest, [string]$VenvPath)
+#   .\build-exe.ps1 -Version 0.1.4       # ...and produce pz-ap-client-v0.1.4-win64.zip
+param([string]$ApSource, [string]$CobraSource, [switch]$SkipSelfTest, [string]$VenvPath, [string]$Version)
 $ErrorActionPreference = 'Stop'
 $root = $PSScriptRoot
 # Which venv to freeze. -VenvPath overrides; otherwise prefer the staged Python 3.13 venv (.venv313)
@@ -234,6 +235,35 @@ if ($SkipSelfTest) {
         Write-Host $bar -ForegroundColor Red
         exit 1
     }
+}
+
+# Release zip (only with -Version). Built with Python's zipfile so entry names use FORWARD slashes,
+# as the zip spec requires. Do NOT use Windows PowerShell 5.1's Compress-Archive for this: it writes
+# BACKSLASH separators (a .NET Framework defect), which Windows tools tolerate but Linux/mac unpackers
+# take literally - users get a flat pile of files named "pz-ap-client\_internal\..." instead of folders.
+# CAUTION when verifying: Python's zipfile NORMALIZES \ to / on read, so namelist() shows a bad zip as
+# clean - check the raw central-directory bytes instead (see docs/PACKAGING.md).
+if ($Version) {
+    $zipName = "pz-ap-client-v$Version-win64.zip"
+    $zipPath = Join-Path $root $zipName
+    if (Test-Path $zipPath) { Remove-Item $zipPath -Force }
+    $zipCode = @'
+import os, sys, zipfile
+src, out = sys.argv[1], sys.argv[2]
+base = os.path.dirname(os.path.abspath(src))
+with zipfile.ZipFile(out, "w", zipfile.ZIP_DEFLATED) as zf:
+    for dirpath, dirs, files in os.walk(src):
+        if not dirs and not files:
+            # empty dir (e.g. custom_worlds): explicit entry so unpackers create it
+            zf.writestr(os.path.relpath(dirpath, base).replace(os.sep, "/") + "/", "")
+        for f in files:
+            p = os.path.join(dirpath, f)
+            zf.write(p, os.path.relpath(p, base).replace(os.sep, "/"))
+print("wrote %s (%d entries)" % (out, len(zf.namelist())))
+'@
+    & $venvPy -c $zipCode (Join-Path $root 'dist\pz-ap-client') $zipPath
+    if ($LASTEXITCODE -ne 0) { Write-Error "release zip failed"; exit 1 }
+    Write-Host "Release zip: $zipName (spec-compliant entry paths - safe for Linux/mac unpackers)" -ForegroundColor Green
 }
 
 Write-Host "`nRun:   .\dist\pz-ap-client\pz-ap-client.exe <host:port> --name <slot> [--memory]"

@@ -90,6 +90,23 @@ Output: **`dist\pz-ap-client\`** (~85 MB) containing `pz-ap-client.exe` + `_inte
   the fix printed, instead of silently closing on a user's PC. Bypass with `.\build-exe.ps1 -SkipSelfTest`
   (e.g. a headless CI agent with no display, where window creation can't succeed).
 
+### Release zip (Linux/mac-safe entry paths)
+
+```powershell
+.\build-exe.ps1 -Version 0.1.4    # emits pz-ap-client-v0.1.4-win64.zip after the build
+```
+**Never zip `dist\` with `Compress-Archive`** - it writes **backslash** entry names (`pz-ap-client\_internal\...`).
+Windows unpackers tolerate that, but Linux/mac take the `\` literally and unpack a flat pile of
+weirdly-named files instead of folders. The build script zips via Python's `zipfile` with forced `/`
+separators and an explicit entry for empty dirs (`custom_worlds`), which `os.walk`-over-files misses.
+
+**Verifying a zip is trickier than it looks:** Python's `zipfile` *normalizes* `\` to `/` when reading,
+so `namelist()` reports a broken zip as clean. Check the raw central-directory bytes instead:
+```powershell
+py -c "d=open('pz-ap-client-v0.1.4-win64.zip','rb').read(); import sys; sys.exit(1 if d.count(b'client\x5c_internal') else print('clean'))"
+```
+(`\x5c` is a literal backslash; any hit means the zip is broken for non-Windows unpackers.)
+
 ### Bundling Archipelago from a different location
 
 By default the build reads AP from `.\vendor\Archipelago`. To bundle an Archipelago install from

@@ -42,8 +42,22 @@ os.environ.setdefault("SKIP_REQUIREMENTS_UPDATE", "1")
 # kivy / SDL2, which then fail to load when frozen); see docs/PACKAGING.md and the build-time GUI
 # self-test (build-exe.ps1 runs `--selftest` -> _gui_selftest). Kept this ANGLE default as cheap
 # insurance since it's verified harmless.
+# EXCEPT under Wine/Proton (Linux user, 2026-07-07): ANGLE's D3D translation fails there with
+# "Could not initialize OpenGL / GLES library" -> no window. Wine maps opengl32 straight to the host
+# GL driver, so plain desktop GL (glew) is the reliable path; verified bundled (glew32.dll + cgl_glew).
+
+
+def _under_wine() -> bool:
+    """True when running inside Wine/Proton (its ntdll exports wine_get_version)."""
+    try:
+        import ctypes
+        return hasattr(ctypes.windll.ntdll, "wine_get_version")
+    except Exception:
+        return False
+
+
 if sys.platform == "win32":
-    os.environ.setdefault("KIVY_GL_BACKEND", "angle_sdl2")
+    os.environ.setdefault("KIVY_GL_BACKEND", "glew" if _under_wine() else "angle_sdl2")
 
 # Diagnostics: PZAP_DEBUG=1 turns on full DEBUG logging (incl. Kivy's, which routes through Python
 # logging) so a packaged GUI failure on another machine logs every init step. Must set KIVY_LOG_LEVEL

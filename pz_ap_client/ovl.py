@@ -48,7 +48,7 @@ import sys
 import time
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Callable, List, Optional
+from typing import Callable, Iterable, List, Optional
 
 logger = logging.getLogger(__name__)
 
@@ -178,7 +178,10 @@ _PLACEMENT_ALERT_NEUTER = ("NoResearchCentre", "NoWorkshop")
 #      via an id-namespace collision; enrichment now stays vet-gated). See _apply_content0_fdb_edits.
 # v5 = neuter the NoResearchCentre/NoWorkshop alerts' click-to-place action (c0notifications) - it entered
 #      placement mode directly, bypassing the gated build menu.
-SHELL_LOGIC_VERSION = "5-alert-placement-neuter"
+# v6 = build-pipeline hardening after a Proton/Wine user got a 6-of-7-files-missing pack (2026-07-08):
+#      the sources are unchanged, but installs made by older clients may be silently incomplete (cobra
+#      dropped .lua files whose luacheck lint couldn't run), so force a reinstall with the hardened path.
+SHELL_LOGIC_VERSION = "6-wine-lua-lint-hardening"
 
 
 def _mechanic_content_names() -> "List[str]":
@@ -600,6 +603,23 @@ def _loc_leafs(game: Path) -> "List[Path]":
     return sorted(p.parent.relative_to(root) for p in root.rglob("Loc.ovl"))
 
 
+def _verify_ovl_contents(ovl_path: Path, src_names: "Iterable[str]", label: str) -> None:
+    """Fail loudly if a freshly built ovl is missing any expected entry. Entry names (lowercased
+    basenames minus the final suffix) sit PLAINTEXT in the ovl header, so bytes-presence is a cheap,
+    reliable completeness check. Needed because cobra's create exits 0 + SUCCESS even when per-file
+    loaders failed and files were dropped (a Proton/Wine user got a pack with 6 of 7 files missing -
+    the career entry silently never registered, 2026-07-08). Only valid for `new`-built ovls: an
+    INJECT replaces same-named vanilla entries, so name presence proves nothing there."""
+    src_names = list(src_names)
+    data = ovl_path.read_bytes()
+    missing = [n for n in src_names if Path(n).stem.lower().encode("ascii") not in data]
+    if missing:
+        raise OvlInstallError(
+            "The built %s ovl is missing %d of its %d files: %s - aborting (game files untouched). "
+            "This usually means cobra's per-file lint/loader failed on this machine; the client log "
+            "has the cobra error lines." % (label, len(missing), len(src_names), ", ".join(missing)))
+
+
 def _build_and_deploy(game: Path, ovl: Path, backup: Path, log: LogFn,
                       build: Callable[[Path, Path, LogFn], None],
                       build_pack: Callable[[Path, LogFn], None],
@@ -616,10 +636,12 @@ def _build_and_deploy(game: Path, ovl: Path, backup: Path, log: LogFn,
         build_pack(pack_tmp, log)
         if not pack_tmp.is_file() or pack_tmp.stat().st_size == 0:
             raise OvlInstallError("Content-pack build produced no output - aborting (game files untouched).")
+        _verify_ovl_contents(pack_tmp, PACK_SRC_FILES, "content pack")
         log("Building the pack localisation (menu name/description)...")
         build_loc(loc_tmp, log)
         if not loc_tmp.is_file() or loc_tmp.stat().st_size == 0:
             raise OvlInstallError("Localisation build produced no output - aborting (game files untouched).")
+        _verify_ovl_contents(loc_tmp, PACK_LOC_SRC_FILES, "localisation")
         log("Building the patched Content0 ovl from your install (takes a few minutes)...")
         build(backup, out, log)
         if not out.is_file() or out.stat().st_size < ovl.stat().st_size // 2:
@@ -770,17 +792,33 @@ def _run_cobra_child(op: str, src: Path, out: Path, base: Optional[Path], log: L
                             cwd=str(Path(__file__).resolve().parent.parent))
     assert proc.stdout is not None
     tail: List[str] = []
+    dropped: List[str] = []
     for line in proc.stdout:
         line = line.rstrip()
         tail = (tail + [line])[-25:]
         logger.debug("cobra: %s", line)
+        # cobra's add_files swallows per-file loader failures (bare except -> error_files), its CLI
+        # reporter is silent about them, and it still exits 0 + "SUCCESS" - so create_file's log lines
+        # are the ONLY signal that files were dropped from the ovl (PROVEN under Proton/Wine: all 6
+        # .lua silently missing from the pack, 2026-07-08). NB other ERROR lines can be benign
+        # (start-up plugin registration noise like "Could not load DDS") - only dropped-file
+        # signatures are fatal, but surface every ERROR for diagnosability.
+        if "Could not create" in line or "Did not create" in line:
+            dropped.append(line)
+            log(line)
+        elif line.startswith(("ERROR |", "CRITICAL |", "WARNING |")):
+            log(line)
         # Surface the slow archive passes so the user sees progress, not a hang.
-        if any(k in line for k in ("Loading archive", "Injecting", "Saving archive",
-                                   "Injected files", "Created OVL", "Creating OVL")):
+        elif any(k in line for k in ("Loading archive", "Injecting", "Saving archive",
+                                     "Injected files", "Created OVL", "Creating OVL")):
             log(line)
     rc = proc.wait(timeout=3600)
     if rc != 0:
         raise OvlInstallError("cobra-tools %s failed (exit %s). Last output:\n%s" % (op, rc, "\n".join(tail)))
+    if dropped:
+        raise OvlInstallError(
+            "cobra-tools %s dropped files from the ovl (it exits 0 anyway, so this is the only "
+            "signal - game files untouched):\n%s" % (op, "\n".join(dropped[:12])))
 
 
 def build_patched(base: Path, out: Path, log: LogFn = logger.info) -> None:
@@ -868,6 +906,27 @@ def _child_inject_content0(ovl_tool_cmd, lua: List[Path], base: str, out: str) -
         ovl_tool_cmd.main(["inject", "-g", COBRA_GAME_LABEL, "-i", str(stage), "-o", out, base])
 
 
+def _harden_lua_lint() -> None:
+    """Make cobra's .lua pre-inject lint advisory. LuaLoader.create runs check_lua_syntax, which
+    spawns luacheck.exe - environment-sensitive, and a failure there is FATAL per file because
+    cobra's add_files swallows loader exceptions and just drops the file (proven under Proton/Wine
+    2026-07-08: the spawn raised, all 6 .lua vanished from the pack, cobra still said SUCCESS).
+    Our shipped sources are lint-validated at dev time, so: keep the lint when it runs, re-raise
+    real SyntaxErrors, but never let an environmental failure (spawn/parse) veto a file."""
+    from modules.formats.utils import lua_conversion  # noqa: E402  (import after cobra bootstrap)
+    orig = lua_conversion.check_lua_syntax
+
+    def _safe_check(lua_path):
+        try:
+            return orig(lua_path)
+        except SyntaxError:
+            raise
+        except Exception as e:  # BinaryNotAvailableError, OSError from Popen, output-parse hiccups
+            logging.warning("lua syntax lint skipped for %s (%s: %s)", lua_path, type(e).__name__, e)
+
+    lua_conversion.check_lua_syntax = _safe_check
+
+
 def _inject_child_main(argv: List[str]) -> int:
     """Child-process entry: bootstrap the vendored cobra-tools and run one op (new / inject / gamemain).
     Isolated in its own process so a cobra crash can't take the client down. new/inject stage only the
@@ -880,6 +939,7 @@ def _inject_child_main(argv: List[str]) -> int:
     sys.path.insert(0, cobra)
     os.chdir(cobra)  # cobra resolves its hash tables / logs relative to its root
     import ovl_tool_cmd  # noqa: E402
+    _harden_lua_lint()
     if op == "gamemain":
         _child_gamemain(ovl_tool_cmd, base, out)
     elif op == "new":

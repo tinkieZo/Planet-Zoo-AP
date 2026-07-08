@@ -389,6 +389,25 @@ class MemoryTriggerSource:
 
     # -- milestones ------------------------------------------------------------
 
+    def _metric_value(self, metric: str) -> "float | int | None":
+        """Current value of a milestone metric (already display-adjusted), or None if unreadable."""
+        if metric == "conservation_release":
+            # No stable game counter exists (A2 spike); the release-detour counts releases observed
+            # this session. Threshold is 1 and AP checks are sticky, so one observed release suffices.
+            # (For a higher threshold, persist a cross-session running total in client state.)
+            return self.releases.count()
+        anchor_name = _MILESTONE_ANCHOR.get(metric)
+        if anchor_name is None:
+            return None
+        val = self.anchors.read(self.scanner, anchor_name)
+        if metric == "zoo_rating" and val is not None:
+            # zoo_rating is the clamp01 reputation float x5 (continuous stars). Its clamped max is 1.0,
+            # so a 5-star zoo reads ~4.98 stars, not exactly 5.0, and `>= 5` never fires (live 2026-07-08:
+            # raw 0.9962 -> 4.98). Compare the DISPLAYED star value - the UI rounds to half-stars - so
+            # threshold N fires when the player sees N stars.
+            val = round(val * 2) / 2
+        return val
+
     def _poll_milestones(self, already: set) -> List[int]:
         out = []
         for loc in self.game_data.locations_by_trigger("milestone"):
@@ -396,17 +415,7 @@ class MemoryTriggerSource:
                 continue
             metric = loc.trigger_args.get("metric")
             threshold = loc.trigger_args.get("threshold")
-            if metric == "conservation_release":
-                # No stable game counter exists (A2 spike); the release-detour counts
-                # releases observed this session. Threshold is 1, and AP checks are
-                # sticky, so a single observed release is sufficient. (For a higher
-                # threshold, persist a cross-session running total in client state.)
-                val = self.releases.count()
-            else:
-                anchor_name = _MILESTONE_ANCHOR.get(metric)
-                if anchor_name is None:
-                    continue
-                val = self.anchors.read(self.scanner, anchor_name)
+            val = self._metric_value(metric)
             if val is not None and val >= threshold:
                 logger.info("Detected milestone %s >= %s (=%s)", metric, threshold, val)
                 out.append(loc.id)

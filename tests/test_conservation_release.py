@@ -359,3 +359,33 @@ def test_trigger_fires_cr_for_resolved_release():
     fired = MemoryTriggerSource._poll_conservation_release(src, already=set())
     assert fired == [2500], "cr_aardvark fires once its release is attributed"
     assert MemoryTriggerSource._poll_conservation_release(src, already={2500}) == []
+
+
+# ── zoo_rating milestone: displayed-star rounding (live bug 2026-07-08: a 5-star zoo read 4.98) ──────
+def _milestone_src(rating_stars):
+    """src for _poll_milestones with the 5 'Zoo Rating - N' locations and a stubbed zoo_rating anchor
+    that returns `rating_stars` (the clamp01 float already scaled x5, as AnchorTable.read does)."""
+    locs = [types.SimpleNamespace(id=2686 + n, trigger_args={"metric": "zoo_rating", "threshold": n})
+            for n in range(1, 6)]
+    src = types.SimpleNamespace(
+        game_data=types.SimpleNamespace(
+            locations_by_trigger=lambda t: locs if t == "milestone" else []),
+        anchors=types.SimpleNamespace(read=lambda scanner, name: rating_stars),
+        scanner=None)
+    src._metric_value = lambda metric: MemoryTriggerSource._metric_value(src, metric)
+    return src
+
+
+def test_zoo_rating_5_fires_at_displayed_5_stars():
+    """raw clamp01 maxes at 1.0 -> stars ~4.98 for a 5-star zoo; comparing the DISPLAYED (half-star-
+    rounded) value fires 'Zoo Rating - 5' at 4.98, while 1..4 still fire."""
+    src = _milestone_src(4.9808)   # the live value that missed
+    fired = MemoryTriggerSource._poll_milestones(src, already=set())
+    assert fired == [2687, 2688, 2689, 2690, 2691], "all five fire once 4.98 rounds to 5.0 stars"
+
+
+def test_zoo_rating_below_half_star_does_not_overfire():
+    """The rounding must not fire a higher rung early: 4.70 stars displays as 4.5, so rung 5 stays unlit."""
+    src = _milestone_src(4.70)     # round(9.4)/2 = 4.5
+    fired = MemoryTriggerSource._poll_milestones(src, already=set())
+    assert fired == [2687, 2688, 2689, 2690], "1..4 fire; 5 does not (displays 4.5 stars)"

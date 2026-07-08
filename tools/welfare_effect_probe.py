@@ -38,6 +38,13 @@ from pz_ap_client.memory.rewards import (                        # noqa: E402
 WELFARE_TYPES = {0: "supplement", 2: "breeding", 3: "education"}
 
 
+def _q(s, addr):
+    try:
+        return int.from_bytes(s.read_bytes(addr, 8), "little")
+    except Exception:
+        return None
+
+
 def _f32(s, addr):
     try:
         return struct.unpack("<f", s.read_bytes(addr, 4))[0]

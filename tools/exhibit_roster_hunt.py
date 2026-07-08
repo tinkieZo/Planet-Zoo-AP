@@ -41,9 +41,19 @@ def _is_superset(cand, placed):
     return extra > 0
 
 
+def _annotate(cand, placed):
+    if _is_superset(cand, placed):
+        return "  <-- SUPERSET of placed (stored-inclusive candidate)"
+    if cand == placed:
+        return "  (identical to placed census - a mirror)"
+    if placed and (cand.keys() & placed.keys()):
+        return "  (shares species-handle keys with placed)"
+    return ""
+
+
 def _scan(res, mgr, placed, span):
-    """Scan mgr+0..+span for {species_handle->count} maps; print supersets/mirrors of the placed census.
-    Returns (superset_list, maps_scanned)."""
+    """Scan mgr+0..+span for ANY {u32 key -> u32 count} map (loose - report all, since the storage
+    census may use non-overlapping keys or a large total). Returns (superset_list, maps_scanned)."""
     supersets, scanned = [], 0
     for off in range(0, span, 8):
         if off == OFF_EXHIBIT_CENSUS:
@@ -51,17 +61,15 @@ def _scan(res, mgr, placed, span):
         cand = res._decode_count_map(mgr + off)
         if not cand:
             continue
-        # only consider maps sharing the placed census's key namespace (species handles)
-        if placed and not (cand.keys() & placed.keys()):
-            continue
         scanned += 1
         total = sum(cand.values())
+        note = _annotate(cand, placed)
         if _is_superset(cand, placed):
             supersets.append((off, total, cand))
-            print("   +0x%-4X : total=%d %s  <-- SUPERSET of placed (stored-inclusive candidate)"
-                  % (off, total, _fmt_map(cand)))
-        elif cand == placed:
-            print("   +0x%-4X : total=%d (identical to placed census - a mirror)" % (off, total))
+        # keep each line short: a huge map (e.g. 196 stored) prints its size, not every entry
+        body = _fmt_map(cand) if len(cand) <= 12 else "%d keys, sample %s" % (
+            len(cand), _fmt_map(dict(sorted(cand.items())[:6])))
+        print("   +0x%-4X : total=%d %s%s" % (off, total, body, note))
     return supersets, scanned
 
 
@@ -70,7 +78,7 @@ def main() -> int:
         sys.stdout.reconfigure(line_buffering=True)
     except Exception:
         pass
-    span = int(sys.argv[1], 0) if len(sys.argv) > 1 else 0x800
+    span = int(sys.argv[1], 0) if len(sys.argv) > 1 else 0x1000
     s = MemoryScanner("PlanetZoo.exe")
     if not s.attach():
         print("FAIL: not attached (is PlanetZoo.exe running?)")
@@ -87,13 +95,11 @@ def main() -> int:
     print("\n=== scanning mgr+0..+0x%X for {species_handle->count} maps ===" % span)
 
     supersets, scanned = _scan(res, mgr, placed, span)
-    print("\n%d map(s) scanned; %d superset candidate(s)." % (scanned, len(supersets)))
-    if supersets:
-        print("The stored-inclusive census is the SUPERSET whose total == your (placed + stored) animal")
-        print("count. Confirm by releasing the stored animal and re-running: its total drops by one.")
-    else:
-        print("No superset found. Either no animals are in storage right now (place+store one and retry),")
-        print("or stored animals aren't tracked in a sibling count-map (then we RE the storage list itself).")
+    print("\n%d count-map(s) found in span; %d superset candidate(s)." % (scanned, len(supersets)))
+    print("With ~196 in storage, look for a map whose total is your (placed + stored) count, or a")
+    print("storage-only total (~196). If NO map here matches, stored animals aren't in a sibling count-")
+    print("map - they're a list/collection of animal objects; re-run with a bigger span (e.g. 0x4000),")
+    print("else we RE the storage collection directly (count its size / hook its add-remove).")
     return 0
 
 

@@ -83,9 +83,13 @@ def _level_map_target(g, rs, cid):
     return _f32(g.scanner, lrec + 4) if lrec is not None else None
 
 
+HEAP_LO, HEAP_HI = 0x10000, (1 << 47)
+
+
 def _dump_raw_map(s, base, stride, label, want_keys=None, limit=48):
     """Dump an engine int-map {count@+8, cap@+0x10 pow2, buckets@+0x18} raw: header + records as
-    (key, f32@+4, i32@+8). Reveals a map whose layout _intmap_find rejects (why level-map read None)."""
+    (key, f32@+4, i32@+8). Prints keys in `want_keys` first; if NONE matched, prints a sample of the
+    map's actual keys so we can see the real key namespace (why the by-cid lookup missed)."""
     count = _q(s, base + 0x08)
     cap = _q(s, base + 0x10)
     buckets = _q(s, base + 0x18)
@@ -102,20 +106,24 @@ def _dump_raw_map(s, base, stride, label, want_keys=None, limit=48):
     except Exception as e:
         print("   (unreadable: %s)" % e)
         return
-    shown = 0
-    for i in range(cap):
-        if not ((bitmap[i >> 3] >> (i & 7)) & 1):
-            continue
+
+    def rec_at(i):
         key = struct.unpack_from("<I", blob, i * stride)[0]
-        if want_keys is not None and key not in want_keys:
-            continue
         f = struct.unpack_from("<f", blob, i * stride + 4)[0] if stride >= 8 else None
         iv = struct.unpack_from("<i", blob, i * stride + 8)[0] if stride >= 0xC else None
+        return key, f, iv
+
+    live = [i for i in range(cap) if (bitmap[i >> 3] >> (i & 7)) & 1]
+    matched = [i for i in live if want_keys is None or rec_at(i)[0] in want_keys]
+    if want_keys is not None and not matched:
+        print("   (NONE of the %d wanted keys are in this map -> different key namespace. Sample of its "
+              "actual keys:)" % len(want_keys))
+        matched = live[:16]
+    for i in matched[:limit]:
+        key, f, iv = rec_at(i)
         print("   key=0x%-6X f32@+4=%s i32@+8=%s" % (key, f, iv))
-        shown += 1
-        if shown >= limit:
-            print("   ...")
-            break
+    if len(matched) > limit:
+        print("   ... (%d more)" % (len(matched) - limit))
 
 
 def _dump_record(g, rs, reg, rec, cid, typ, flag):

@@ -76,7 +76,42 @@ def _level_map_target(g, rs, cid):
     return _f32(g.scanner, lrec + 4) if lrec is not None else None
 
 
-def _dump_record(s, g, rs, reg, rec, cid, typ, flag):
+def _dump_raw_map(s, base, stride, label, want_keys=None, limit=48):
+    """Dump an engine int-map {count@+8, cap@+0x10 pow2, buckets@+0x18} raw: header + records as
+    (key, f32@+4, i32@+8). Reveals a map whose layout _intmap_find rejects (why level-map read None)."""
+    count = _q(s, base + 0x08)
+    cap = _q(s, base + 0x10)
+    buckets = _q(s, base + 0x18)
+    print("\n-- %s @0x%X: count=%s cap=%s buckets=%s" % (label, base, count, cap, buckets))
+    if cap is None or buckets is None or not cap or cap > (1 << 20) or (cap & (cap - 1)) != 0 \
+            or not (HEAP_LO < buckets < HEAP_HI):
+        print("   (header not a valid int-map here - layout differs / wrong offset)")
+        return
+    bitmap_sz = ((cap >> 3) + 7) & ~7
+    try:
+        bitmap = s.read_bytes(buckets, bitmap_sz)
+        records = buckets + bitmap_sz
+        blob = s.read_bytes(records, cap * stride)
+    except Exception as e:
+        print("   (unreadable: %s)" % e)
+        return
+    shown = 0
+    for i in range(cap):
+        if not ((bitmap[i >> 3] >> (i & 7)) & 1):
+            continue
+        key = struct.unpack_from("<I", blob, i * stride)[0]
+        if want_keys is not None and key not in want_keys:
+            continue
+        f = struct.unpack_from("<f", blob, i * stride + 4)[0] if stride >= 8 else None
+        iv = struct.unpack_from("<i", blob, i * stride + 8)[0] if stride >= 0xC else None
+        print("   key=0x%-6X f32@+4=%s i32@+8=%s" % (key, f, iv))
+        shown += 1
+        if shown >= limit:
+            print("   ...")
+            break
+
+
+def _dump_record(g, rs, reg, rec, cid, typ, flag):
     name = reg._name(cid) or "<unnamed>"
     parts = ["%-40s" % name, "cid=0x%X" % cid, "type=%d(%s)" % (typ, WELFARE_TYPES[typ]),
              "unlocked=%d" % flag]
@@ -123,15 +158,26 @@ def main() -> int:
 
     print("\n=== welfare records (type 0/2/3) matching %r ===" % needle)
     shown = 0
+    matched_cids, matched_bks = set(), set()
     for rec, cid, typ, flag in m.iter_records():
         if typ not in WELFARE_TYPES:
             continue
         name = (reg._name(cid) or "").lower()
         if needle and needle not in name:
             continue
-        _dump_record(s, g, rs, reg, rec, cid, typ, flag)
+        _dump_record(g, rs, reg, rec, cid, typ, flag)
+        matched_cids.add(cid)
+        bk = _u32(s, rec + REC_BOOKKEEP)
+        if bk is not None:
+            matched_bks.add(bk)
         shown += 1
     print("   (%d records shown)" % shown)
+
+    # Raw map dumps: the level-map (rs+0x1e8, keyed by content id) gives the per-LEVEL target the fix
+    # needs; the count-map (rs+0x210, keyed per-species bookkeep key) is the field we cap. Restricting
+    # to the matched keys keeps it readable.
+    _dump_raw_map(s, rs + LEVEL_MAP_OFF, 0x10, "level-map rs+0x1e8 (key=content id)", want_keys=matched_cids)
+    _dump_raw_map(s, rs + COUNT_MAP_OFF, 0xC, "count-map rs+0x210 (key=bookkeep)", want_keys=matched_bks)
     print("\nInterpretation:")
     print("  - breeding (type 2): countmap f32 is the fertility LEVEL - correlate with the UI %% for the")
     print("    fully-researched animal (e.g. 30%% -> confirm which f32 == level 2). That field is what a")

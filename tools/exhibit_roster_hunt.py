@@ -1,57 +1,68 @@
-"""exhibit_roster_hunt - DIAGNOSTIC (read-only): find the exhibit manager's STORAGE-inclusive owned-animal
-roster, since +0x2A0 is NOT the hash-set we assumed (read_exhibit_ids returns None live, 2026-07-08).
+"""exhibit_roster_hunt - DIAGNOSTIC (read-only): find an exhibit-manager census that INCLUDES stored
+animals, so storage releases can be attributed by census-diff (the +0x2A0 id-set is dead - returns None).
 
-The def-names map (*(mgr+0x358)+0x108) is keyed by ANIMAL ID, so its keys are a ground-truth set of owned
-exhibit animal ids. This scans the manager object mgr+0..+SPAN (qword stride) for any int hash-SET whose
-decoded members CONTAIN those ids - that structure is the owned-id roster; the offset it's found at is the
-correct OFF_EXHIBIT_ID_SET (replacing the wrong 0x2A0). Reports every candidate + how well its members
-match the known ids, so a placed-only vs placed+stored structure is distinguishable (do a storage release
-between runs and watch which candidate loses the id).
+The placed census (+0x318, {species_handle -> count}) works but excludes stored/trade-center animals, so a
+storage release doesn't drop it. This scans the manager object mgr+0..+SPAN (qword stride) for OTHER maps
+with the SAME {species_handle -> count} layout, and flags any whose contents are a SUPERSET of the placed
+census - that candidate also counts stored animals and is the structure to diff for storage releases.
+
+NO in-game action needed - the probe reads passively. For a useful result:
+  * have some exhibit animals PLACED, and at least ONE in STORAGE (buy one from the exhibit market and
+    leave it unplaced, or move a placed one to storage). A stored-inclusive map then visibly exceeds the
+    placed census.
+  * to CONFIRM the winner: run once, RELEASE the stored animal, run again - the right map's total drops
+    by one for that species while the placed census is unchanged.
 
     python -m tools.exhibit_roster_hunt [span_bytes=0x800]
-
-Run in the loaded zoo with exhibit animals present (ideally some placed AND some in storage).
 """
 from __future__ import annotations
 
-import struct
 import sys
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from pz_ap_client.memory.scanner import MemoryScanner        # noqa: E402
-from pz_ap_client.memory.animals import AnimalResolver        # noqa: E402
-
-HEAP_LO, HEAP_HI = 0x10000, (1 << 47)
+from pz_ap_client.memory.animals import AnimalResolver, OFF_EXHIBIT_CENSUS   # noqa: E402
 
 
-def _q(s, addr):
-    try:
-        return int.from_bytes(s.read_bytes(addr, 8), "little")
-    except Exception:
-        return None
+def _fmt_map(d):
+    return "{" + ", ".join("0x%X:%d" % (k, v) for k, v in sorted(d.items())) + "}"
 
 
-def _decode_int_set(s, base):
-    """Decode a candidate int hash-SET header {count@+8, cap@+0x10 pow2, buckets@+0x18}: bitmap then
-    cap * u32 entries. Returns the set of present u32 members, or None if it isn't a plausible set."""
-    count = _q(s, base + 0x08)
-    cap = _q(s, base + 0x10)
-    buckets = _q(s, base + 0x18)
-    if cap is None or buckets is None or not cap or cap > (1 << 20) or (cap & (cap - 1)) != 0:
-        return None
-    if count is None or not (0 <= count <= cap) or not (HEAP_LO < buckets < HEAP_HI):
-        return None
-    bitvec = ((cap >> 3) + 7) & ~7
-    try:
-        data = s.read_bytes(buckets, bitvec + cap * 4)
-    except Exception:
-        return None
-    out = set()
-    for i in range(cap):
-        if (data[i >> 3] >> (i & 7)) & 1:
-            out.add(struct.unpack_from("<I", data, bitvec + i * 4)[0])
-    return out if len(out) == count else None   # member count must match the header count
+def _is_superset(cand, placed):
+    """True if `cand` has every placed species-handle with count >= placed, and at least one extra
+    (more of a species, or a species the placed census lacks) - i.e. it also counts stored animals."""
+    if not placed:
+        return False
+    for h, c in placed.items():
+        if cand.get(h, 0) < c:
+            return False
+    extra = sum(cand.values()) - sum(placed.values())
+    return extra > 0
+
+
+def _scan(res, mgr, placed, span):
+    """Scan mgr+0..+span for {species_handle->count} maps; print supersets/mirrors of the placed census.
+    Returns (superset_list, maps_scanned)."""
+    supersets, scanned = [], 0
+    for off in range(0, span, 8):
+        if off == OFF_EXHIBIT_CENSUS:
+            continue  # skip the placed census itself
+        cand = res._decode_count_map(mgr + off)
+        if not cand:
+            continue
+        # only consider maps sharing the placed census's key namespace (species handles)
+        if placed and not (cand.keys() & placed.keys()):
+            continue
+        scanned += 1
+        total = sum(cand.values())
+        if _is_superset(cand, placed):
+            supersets.append((off, total, cand))
+            print("   +0x%-4X : total=%d %s  <-- SUPERSET of placed (stored-inclusive candidate)"
+                  % (off, total, _fmt_map(cand)))
+        elif cand == placed:
+            print("   +0x%-4X : total=%d (identical to placed census - a mirror)" % (off, total))
+    return supersets, scanned
 
 
 def main() -> int:
@@ -71,37 +82,18 @@ def main() -> int:
         return 1
     print("exhibit manager: 0x%X" % mgr)
 
-    def_names = res.read_exhibit_def_names(mgr) or {}
-    known = set(def_names)
-    census = res.read_exhibit_census(mgr) or {}
-    print("known animal ids (def-map keys): %d %s" % (len(known), sorted("0x%X" % i for i in known)))
-    print("placed census (+0x318): %d species-handles %s" % (len(census), {("0x%X" % h): c for h, c in census.items()}))
-    if not known:
-        print("no known ids - place/store an exhibit animal first.")
-        return 0
+    placed = res._decode_count_map(mgr + OFF_EXHIBIT_CENSUS) or {}
+    print("placed census (+0x%X): total=%d %s" % (OFF_EXHIBIT_CENSUS, sum(placed.values()), _fmt_map(placed)))
+    print("\n=== scanning mgr+0..+0x%X for {species_handle->count} maps ===" % span)
 
-    print("\n=== scanning mgr+0..+0x%X for an int hash-set containing the known ids ===" % span)
-    hits = []
-    for off in range(0, span, 8):
-        members = _decode_int_set(s, mgr + off)
-        if not members:
-            continue
-        overlap = members & known
-        if not overlap:
-            continue
-        extra = members - known
-        hits.append((off, len(members), len(overlap), len(extra)))
-        tag = "ALL known" if overlap == known else "%d/%d known" % (len(overlap), len(known))
-        supset = " +%d beyond-known (STORAGE candidate)" % len(extra) if extra else ""
-        print("   +0x%-4X : %d members, %s%s" % (off, len(members), tag, supset))
-    if not hits:
-        print("   no int-set candidate contained the known ids in this span "
-              "(try a larger span, or the roster isn't a flat id-set - may be a map/vector).")
+    supersets, scanned = _scan(res, mgr, placed, span)
+    print("\n%d map(s) scanned; %d superset candidate(s)." % (scanned, len(supersets)))
+    if supersets:
+        print("The stored-inclusive census is the SUPERSET whose total == your (placed + stored) animal")
+        print("count. Confirm by releasing the stored animal and re-running: its total drops by one.")
     else:
-        full = [h for h in hits if h[2] == len(known)]
-        print("\n%d candidate set(s); %d contain ALL known ids." % (len(hits), len(full)))
-        print("The correct OFF_EXHIBIT_ID_SET is the offset holding ALL owned ids (placed+stored). Re-run")
-        print("after a STORAGE release: the right candidate loses exactly the released id.")
+        print("No superset found. Either no animals are in storage right now (place+store one and retry),")
+        print("or stored animals aren't tracked in a sibling count-map (then we RE the storage list itself).")
     return 0
 
 

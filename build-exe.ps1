@@ -247,21 +247,9 @@ if ($Version) {
     $zipName = "pz-ap-client-v$Version-win64.zip"
     $zipPath = Join-Path $root $zipName
     if (Test-Path $zipPath) { Remove-Item $zipPath -Force }
-    $zipCode = @'
-import os, sys, zipfile
-src, out = sys.argv[1], sys.argv[2]
-base = os.path.dirname(os.path.abspath(src))
-with zipfile.ZipFile(out, "w", zipfile.ZIP_DEFLATED) as zf:
-    for dirpath, dirs, files in os.walk(src):
-        if not dirs and not files:
-            # empty dir (e.g. custom_worlds): explicit entry so unpackers create it
-            zf.writestr(os.path.relpath(dirpath, base).replace(os.sep, "/") + "/", "")
-        for f in files:
-            p = os.path.join(dirpath, f)
-            zf.write(p, os.path.relpath(p, base).replace(os.sep, "/"))
-print("wrote %s (%d entries)" % (out, len(zf.namelist())))
-'@
-    & $venvPy -c $zipCode (Join-Path $root 'dist\pz-ap-client') $zipPath
+    # Built by tools/make_release_zip.py (a real repo file, NOT `python -c`): PS 5.1 mangles embedded
+    # double-quotes when passing a multi-line script via -c, so the source would arrive corrupted.
+    & $venvPy (Join-Path $root 'tools\make_release_zip.py') (Join-Path $root 'dist\pz-ap-client') $zipPath
     if ($LASTEXITCODE -ne 0) { Write-Error "release zip failed"; exit 1 }
     Write-Host "Release zip: $zipName (spec-compliant entry paths - safe for Linux/mac unpackers)" -ForegroundColor Green
 }

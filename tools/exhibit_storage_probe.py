@@ -1,15 +1,17 @@
 """exhibit_storage_probe - DIAGNOSTIC (read-only): why a STORAGE exhibit release isn't attributed.
 
-The client's PRIMARY exhibit-release attribution diffs the exhibit manager's +0x2A0 owned-animal ID
-SET (claimed to cover placed AND stored animals); the FALLBACK diffs the placed-only +0x318 census.
-A storage release that logs "wasn't attributed" means NEITHER saw the released animal. This probe
-dumps all three live structures every second so we can tell which assumption is wrong:
+The client attributes a storage release via the def-map HOLDER's structures (holder = primary
+*(mgr+0xF8), fallback *(*(mgr+0x2F0)+0xD8)): the +0x2A0 owned-id set diff and the *(H+0x358)+0x108
+def map (species HANDLE @entry+0x30 through the research map, string-token match as fallback); the
+placed-only +0x318 census is the last resort. A storage release that logs "wasn't attributed" means
+none of them saw/named the released animal. This probe dumps all the live structures every second
+so we can tell which link broke:
 
-  * id-set (+0x2A0): does read_exhibit_ids() return a SET or None? If None, +0x2A0 isn't the id-set
-    layout we assume (it's a scalar on other managers) - the whole primary path is dead.
-  * census  (+0x318): placed-only; a stored animal should NOT be here (expected).
-  * def-names: does each id map to a species token -> data.json key? An id present but unmapped means
-    attribution can't name it even when the diff sees it leave.
+  * holder: None means BOTH chains are dead - the id-set/def-map paths can't run at all.
+  * id-set (holder+0x2A0): does read_exhibit_ids() return a SET or None? None = wrong layout/holder.
+  * census  (mgr+0x318): placed-only; a stored animal should NOT be here (expected).
+  * def map: does each id resolve to a species (handle first, name-token fallback)? An id present
+    but UNMAPPED means attribution can't name it even when the diff sees it leave.
 
 Run in the loaded AP zoo with ONE exhibit animal sitting IN STORAGE (not placed). Watch a few ticks,
 then RELEASE it from storage. The diff lines show whether its id was ever in +0x2A0 and whether it
@@ -53,13 +55,15 @@ def _handle_key_map(rr):
 
 
 def _roster_summary(res, mgr, h2k):
-    """Return (ids, one-line 'mgr | id_set | census' summary). ids is None if +0x2A0 didn't validate."""
-    ids = res.read_exhibit_ids(mgr)          # +0x2A0 (placed + stored, per assumption)
+    """Return (holder, ids, one-line summary). Structures live off the HOLDER (primary *(mgr+0xF8),
+    fallback *(*(mgr+0x2F0)+0xD8)) - the exact chain production resolve_exhibit_defmap_holder walks."""
+    holder = res.resolve_exhibit_defmap_holder(mgr)
+    ids = res.read_exhibit_ids(holder) if holder else None
     census = res.read_exhibit_census(mgr)    # +0x318 (placed only)
-    parts = ["mgr=0x%X" % mgr]
-    # id-set: the crux. None => structure/offset assumption is WRONG (primary path dead).
+    parts = ["mgr=0x%X" % mgr, ("holder=0x%X" % holder) if holder else
+             "holder=None  <-- BOTH holder chains dead (storage paths rely on the capture)"]
     if ids is None:
-        parts.append("id_set(+0x2A0)=None  <-- read_exhibit_ids REJECTED the structure (not a hash-set here)")
+        parts.append("id_set(+0x2A0)=None  <-- read_exhibit_ids REJECTED the structure")
     else:
         parts.append("id_set(+0x2A0)=%d %s" % (len(ids), _fmt_ids(ids)))
     # census (placed-only): expected NOT to contain a stored animal.
@@ -68,21 +72,23 @@ def _roster_summary(res, mgr, h2k):
     else:
         mapped = {("0x%X" % h): (h2k.get(h) or "UNMAPPED") for h in census}
         parts.append("census(+0x318)=%d %s" % (len(census), mapped))
-    return ids, " | ".join(parts)
+    return holder, ids, " | ".join(parts)
 
 
-def _print_species(res, rr, mgr, ids):
-    """Per-id species resolution via the def map (what _cache_exhibit_species does)."""
-    names = res.read_exhibit_def_names(mgr) or {}
+def _print_species(res, rr, holder, ids, h2k):
+    """Per-id species resolution via the def map (what _cache_exhibit_species does): species HANDLE
+    @entry+0x30 through the research map first, string-token match as fallback."""
+    defs = (res.read_exhibit_defs(holder) or {}) if holder else {}
     for aid in sorted(ids):
-        cand = names.get(aid, ())
-        key = next((k for nm in cand if (k := rr.species_key_for_name(nm))), None)
+        handle, cand = defs.get(aid, (0, ()))
+        key = (h2k.get(handle) if handle else None) or \
+            next((k for nm in cand if (k := rr.species_key_for_name(nm))), None)
         if key:
-            tag = key
-        elif cand:
-            tag = "UNMAPPED names=%s" % list(cand)
+            tag = "%s (handle 0x%X)" % (key, handle)
+        elif handle or cand:
+            tag = "UNMAPPED handle=0x%X names=%s" % (handle, list(cand))
         else:
-            tag = "NO def-name entry"
+            tag = "NO def entry"
         print("      id 0x%X -> %s" % (aid, tag))
 
 
@@ -101,10 +107,11 @@ def _tick(res, rr, prev_ids):
     if not mgr:
         print("  [no exhibit manager - zoo not loaded?]")
         return prev_ids
-    ids, summary = _roster_summary(res, mgr, _handle_key_map(rr))
+    h2k = _handle_key_map(rr)
+    holder, ids, summary = _roster_summary(res, mgr, h2k)
     print("  " + summary)
     if ids:
-        _print_species(res, rr, mgr, ids)
+        _print_species(res, rr, holder, ids, h2k)
     if prev_ids is not None and ids is not None:
         _print_diff(prev_ids, ids)
     return ids if ids is not None else prev_ids

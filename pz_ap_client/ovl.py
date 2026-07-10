@@ -778,6 +778,26 @@ def _child_argv(op: str, cobra: Path, src: Path, out: Path, base: Optional[Path]
     return [sys.executable, "-m", "pz_ap_client.ovl"] + tail
 
 
+# Known-benign cobra child output, verified against the vendored source 2026-07-10: startup
+# plugin-registration noise (optional imaging deps not bundled; we never inject textures/terrain)
+# plus vanilla round-trip warnings that appear on EVERY successful install and are preserved
+# byte-identical on save. Matched ERROR/WARNING lines are hidden from the client console (still in
+# the PZAP_DEBUG log) so the red that DOES reach users means something. Keep patterns TIGHT - e.g.
+# plugin registration is "Could not load <bare-module-token>" and must NOT swallow the real
+# failures "Could not load pointers for ..." / "Could not load Oodle DLL, ...".
+_BENIGN_COBRA = tuple(re.compile(p) for p in (
+    r"^ERROR \| Could not load \S+$",                     # format-plugin registration (DDS, VOXELSKIRT, ...)
+    r"^WARNING \| bitarray module is not installed",      # manis (animation) optional dep - format unused here
+    r" can't find the original name of ",                 # hash-dict misses (enumnamer/specdef); kept verbatim
+    r"^WARNING \| Won't update hash ",                    # ditto at save time - cobra preserving unknown hashes
+    r"^WARNING \| Could not map \d+ fragments in .*, storing them for saving$",
+    r"^WARNING \| Restoring \d+ uncaught fragments to ",  # the paired write-back of the stored fragments
+    r"^ERROR \| Collecting \S+\.frenderlodspec errored$", # known-unparsable render-LOD spec; stored as-is
+    r"^ERROR \| Could not read array of 'UIntPair'$",     # detail line of the frenderlodspec parse failure
+    r"^WARNING \| Missing sub-element 'next_research' on XML element 'research'$",  # optional in vanilla data
+))
+
+
 def _run_cobra_child(op: str, src: Path, out: Path, base: Optional[Path], log: LogFn) -> None:
     """Run one cobra-tools operation in a crash-isolated subprocess."""
     cobra = find_cobra_dir()
@@ -793,6 +813,7 @@ def _run_cobra_child(op: str, src: Path, out: Path, base: Optional[Path], log: L
     assert proc.stdout is not None
     tail: List[str] = []
     dropped: List[str] = []
+    benign = 0
     for line in proc.stdout:
         line = line.rstrip()
         tail = (tail + [line])[-25:]
@@ -800,18 +821,23 @@ def _run_cobra_child(op: str, src: Path, out: Path, base: Optional[Path], log: L
         # cobra's add_files swallows per-file loader failures (bare except -> error_files), its CLI
         # reporter is silent about them, and it still exits 0 + "SUCCESS" - so create_file's log lines
         # are the ONLY signal that files were dropped from the ovl (PROVEN under Proton/Wine: all 6
-        # .lua silently missing from the pack, 2026-07-08). NB other ERROR lines can be benign
-        # (start-up plugin registration noise like "Could not load DDS") - only dropped-file
-        # signatures are fatal, but surface every ERROR for diagnosability.
+        # .lua silently missing from the pack, 2026-07-08). Other ERROR/WARNING lines are surfaced
+        # unless they match _BENIGN_COBRA (round-trip noise on every install; hidden so real
+        # problems stand out).
         if "Could not create" in line or "Did not create" in line:
             dropped.append(line)
             log(line)
         elif line.startswith(("ERROR |", "CRITICAL |", "WARNING |")):
-            log(line)
+            if any(p.search(line) for p in _BENIGN_COBRA):
+                benign += 1
+            else:
+                log(line)
         # Surface the slow archive passes so the user sees progress, not a hang.
         elif any(k in line for k in ("Loading archive", "Injecting", "Saving archive",
                                      "Injected files", "Created OVL", "Creating OVL")):
             log(line)
+    if benign:
+        log("   (%d known-benign cobra warnings hidden; set PZAP_DEBUG=1 for the full output)" % benign)
     rc = proc.wait(timeout=3600)
     if rc != 0:
         raise OvlInstallError("cobra-tools %s failed (exit %s). Last output:\n%s" % (op, rc, "\n".join(tail)))

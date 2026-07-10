@@ -338,12 +338,22 @@ def test_market_restore_and_underfill() -> None:
     _check(m.read_i64(inc + mk.SET_CAP) == ORIG_CAP and m.read_i64(inc + mk.SET_COUNT) == ORIG_CNT,
            "cap/count restored")
     _check(m.read_i32(mgr + g._WL_ID_SCEN) == 7, "active whitelist id restored")
+    _check(g._mgr_cache is None, "restore drops the manager cache (success path)")
     _check(g._orig is None and g.restore() is False, "restore is idempotent (clears saved original)")
+
+    # restore must drop the cached manager pointer on EVERY path - restore runs at park unload, so a
+    # surviving cache dangles once the park frees; scenario_mode() reading it kept AP-session
+    # redetection dead after save+quit-to-menu+resume (live 2026-07-10)
+    g._mgr_cache = 0xDEAD0000
+    _check(g.restore() is False and g._mgr_cache is None,
+           "restore drops the manager cache even on the never-applied/already-restored path")
 
     # restore must SKIP (no write through a freed/foreign manager) if the park unloaded
     g.apply_unlocked([0x1])
     g.exchange_mgr = lambda: None
+    g._mgr_cache = 0xDEAD0000
     _check(g.restore() is False, "restore skips when the manager no longer resolves")
+    _check(g._mgr_cache is None, "restore drops the manager cache (park-gone path)")
 
     # under-filled -> arm FORCE_SPAWN + re-route, but LEAVE the pool valid (no dirty-clear: a rebuild
     # tick skips spawning entirely, so clearing here would starve the spawn branch)

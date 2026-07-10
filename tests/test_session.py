@@ -93,6 +93,22 @@ def test_nameless_cache_picks_up_late_instance(monkeypatch):
     assert r.read() == AP_PARK_NAME
 
 
+def test_invalidate_drops_ghost_cache_and_rescans():
+    """Park-unload hygiene (the save+quit+resume redetection fix, live 2026-07-10): invalidate() must
+    drop the cached instances AND the last value AND the scan throttle, so the next read() rescans
+    immediately instead of serving the unloaded park's ghost name or sitting out a cooldown."""
+    fake = FakeScanner({0xA00000: AP_PARK_NAME})
+    r = ParkNameReader(fake)
+    assert r.read() == AP_PARK_NAME               # warm cache on the loaded park
+    del fake._inst[0xA00000]                      # park unloads; instance gone
+    r.invalidate()
+    assert r._cached is None and r._last_val is None and r._last_scan is None
+    assert r.read() is None                       # fresh scan, no cooldown wait, no stale _last_val
+    fake.add_instance(0xB00000, AP_PARK_NAME)     # resume: new park-info at a NEW address
+    r._last_scan = None                           # collapse the rescan throttle for the test
+    assert r.read() == AP_PARK_NAME               # redetected
+
+
 def test_detector_requires_marker_and_mode():
     fake = FakeScanner({0xA00000: AP_PARK_NAME})
     assert ApSessionDetector(fake, mode_check=lambda: True).is_ap_session() is True

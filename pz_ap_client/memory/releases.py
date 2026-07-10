@@ -32,13 +32,23 @@ it resolves the released exhibit animal and posts ``ExhibitAnimalReleasedMessage
 hook never sees them - which is why exhibit releases previously did nothing. ``_install_exhibit_gate``
 adds the SAME gate+counter (``make_release_gate``) on that entry; its count folds into ``count()`` and
 its lock tracks the Conservation Program, so exhibit releases register toward conservation_release and
-are gated identically. Per-species ``cr_`` for exhibit is attributed WITHOUT a handle capture, PRIMARILY by
-diffing the exhibit manager's +0x2A0 owned-animal ID SET across a detected release (the release action
-removes the id synchronously; the def map *(mgr+0x358)+0x108 names each id's species - covers PLACED and
-STORED animals alike, see animals.py), with the placed-only {species_handle -> count} census (+0x318) diff
-as the fallback (``triggers._poll_exhibit_release``; ``habitat_count`` / ``exhibit_count`` split the two
-paths so each uses its own attribution). Found via Ghidra (FindStrRefs on ExhibitAnimalReleasedMessage +
-the FUN_146048940 decomp); see [[exhibit-release-RE]].
+are gated identically. Per-species ``cr_`` for exhibit splits by placement:
+
+  * PLACED releases decrement the manager's +0x318 {species_handle -> count} census (deferred
+    message) - the census diff attributes them (live-proven).
+  * STORAGE releases touch neither the census nor any structure directly on the manager - a THIRD
+    detour (``make_exhibit_release_capture`` @ FUN_146048940+0x152 = rva 0x6048A92, the storage
+    branch's ``mov r15,[r14+0xf8]``) captures the released ANIMAL ID (ebx = msg+0x18) plus the
+    manager (r14) and the def-map holder H = *(mgr+0xF8) (r15 after the relocated original). The
+    client resolves id -> species via the {animal_id -> def} map at *(H+0x358)+0x108, cached per
+    tick BEFORE the release (race-free, like the habitat roster sweep); the +0x2A0 owned-id-set
+    diff on H is the hookless secondary. (The 2026-07-06 id-roster path read +0x2A0/+0x358 off the
+    manager itself, missing the +0xF8 rebind the release fn performs - dead live 2026-07-08.)
+
+``habitat_count`` / ``exhibit_count`` split the two executors so each uses its own attribution
+(``triggers._poll_exhibit_release``). Found via Ghidra (FindStrRefs on ExhibitAnimalReleasedMessage +
+the FUN_146048940 decomp/disasm - tools/_decomp/exhibit_release_species_notes.md); see
+[[exhibit-release-RE]].
 
 The gate defaults LOCKED on install; the client calls ``set_locked(False)`` once the
 Conservation Program item is received (reconciled from the full received set each tick).
@@ -56,8 +66,9 @@ import logging
 import struct
 from typing import Optional
 
-from .hook import (HookManager, make_release_gate, make_release_species_capture,
-                   RELEASE_SP_HANDLE, RELEASE_SP_MGR)
+from .hook import (HookManager, make_exhibit_release_capture, make_release_gate,
+                   make_release_species_capture, read_exhibit_release_events,
+                   EXR_HOLDER, EXR_MGR, RELEASE_SP_HANDLE, RELEASE_SP_MGR)
 
 logger = logging.getLogger("PZClient")
 
@@ -74,6 +85,7 @@ class ReleaseDetector:
         self.scratch: Optional[int] = None        # entry-gate scratch (count @+0, lock @+4)
         self.sp_scratch: Optional[int] = None     # species-capture scratch (handle @+8, mgr @+0x10)
         self.exhibit_scratch: Optional[int] = None  # EXHIBIT release gate scratch (count @+0, lock @+4)
+        self.exr_scratch: Optional[int] = None    # EXHIBIT storage-release capture (id ring/mgr/holder)
         self._locked = True   # conservation gated until the program_unlock item arrives
 
     def ensure_installed(self) -> bool:
@@ -124,6 +136,29 @@ class ReleaseDetector:
                 logger.info("exhibit-release gate installed @0x%X", site)
         except Exception as e:
             logger.info("release: exhibit-release install failed (%s) - exhibit releases won't count", e)
+        self._install_exhibit_species_capture()   # storage-release id capture (best-effort)
+
+    def _install_exhibit_species_capture(self) -> None:
+        """Install the capture detour inside the exhibit release action's STORAGE branch
+        (FUN_146048940+0x152): records the released animal id + the def-map holder so a storage
+        release - which the placed census never reflects - attributes to a species. Best-effort:
+        a miss only degrades storage releases to unattributed (count + gate + placed census keep
+        working)."""
+        from .signatures import resolve_hook
+        resolved = resolve_hook(self.scanner, "exhibit_release_species")
+        if resolved is None:
+            logger.info("release: exhibit storage-release capture site unresolved - storage exhibit "
+                        "releases won't attribute a species (count + placed-census attribution unaffected)")
+            return
+        site, orig = resolved
+        try:
+            if self.hm.install("exhibit_release_species", site, orig,
+                               lambda r, sc, res: make_exhibit_release_capture(r, sc, res, orig)):
+                self.exr_scratch = self.hm.scratch("exhibit_release_species")
+                logger.info("exhibit storage-release capture installed @0x%X", site)
+        except Exception as e:
+            logger.info("release: exhibit storage-release capture install failed (%s) - storage "
+                        "exhibit releases won't attribute a species", e)
 
     def _install_species_capture(self) -> None:
         """Install the second detour that records the released animal's handle + manager candidate.
@@ -190,8 +225,40 @@ class ReleaseDetector:
 
     def exhibit_count(self) -> int:
         """Releases via the EXHIBIT action (FUN_146048940) this session. Attributed per-species by
-        diffing the exhibit census (no handle is captured here - the exhibit roster is id<->id only)."""
+        the storage-branch id capture (stored animals) / the census diff (placed animals)."""
         return self._scratch_count(self.exhibit_scratch) if self.ensure_installed() else 0
+
+    def exhibit_release_events(self, cursor: int) -> "tuple[int, list]":
+        """Drain released exhibit-animal IDS captured at the storage branch since ``cursor``.
+        Returns ``(new_cursor, ids)``; ``(cursor, [])`` if the capture isn't installed. Fires only
+        for STORAGE releases (the placed path branches off before the capture site) - resolve each
+        id to a species via the def-map cache (triggers)."""
+        if self.exr_scratch is None:
+            return cursor, []
+        try:
+            return read_exhibit_release_events(self.scanner, self.exr_scratch, cursor)
+        except Exception:
+            return cursor, []
+
+    def _exr_qword(self, off: int) -> "Optional[int]":
+        if self.exr_scratch is None:
+            return None
+        try:
+            v = struct.unpack("<Q", self.scanner.read_bytes(self.exr_scratch + off, 8))[0]
+            return v or None
+        except Exception:
+            return None
+
+    def exhibit_capture_mgr(self) -> "Optional[int]":
+        """r14 recorded at the last storage-release capture: the exhibit manager object (the
+        pre-rebind base the release fn resolves everything through). None until a capture fires."""
+        return self._exr_qword(EXR_MGR)
+
+    def exhibit_capture_holder(self) -> "Optional[int]":
+        """r15 recorded at the last storage-release capture: H = *(mgr+0xF8), the holder of the
+        +0x2A0 owned-id set and the {animal_id -> def} map. Ground truth for the def-map base -
+        preferred over the park-chain +0xF8 deref when available. None until a capture fires."""
+        return self._exr_qword(EXR_HOLDER)
 
     def last_released_handle(self) -> "Optional[int]":
         """The ENTITY HANDLE (nAnimalID) of the most recently released animal, captured at the
@@ -218,7 +285,7 @@ class ReleaseDetector:
             return None
 
     def shutdown(self) -> None:
-        for name in ("release", "release_species", "exhibit_release"):
+        for name in ("release", "release_species", "exhibit_release", "exhibit_release_species"):
             try:
                 self.hm.restore(name)
             except Exception:
@@ -226,3 +293,4 @@ class ReleaseDetector:
         self.installed = False
         self.sp_scratch = None
         self.exhibit_scratch = None
+        self.exr_scratch = None

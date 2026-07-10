@@ -62,7 +62,7 @@ class FakeScanner:
 
 
 def _build(scanner: FakeScanner, names: dict, unlock_records: list):
-    """names: {content_id: name}; unlock_records: list of (content_id, type, unlocked)."""
+    """names: {content_id: name}; unlock_records: list of (content_id, type, unlocked[, bookkeep])."""
     # --- intern registry header (rewards.InternRegistry reads +0x10 stride, +0x30 pool_top,
     #     +0x9C bucket_count for the plausibility gate) ---
     scanner.put(REG + 0x10, struct.pack("<q", STRIDE))
@@ -98,14 +98,35 @@ def _build(scanner: FakeScanner, names: dict, unlock_records: list):
     bitmap = bytearray(bm_len)
     recs = buckets + bm_len
     scanner.put(recs, bytes(cap * rewards.REC_STRIDE))  # zero-fill the whole record region first
-    for i, (cid, typ, unlocked) in enumerate(unlock_records):
+    for i, entry in enumerate(unlock_records):
+        cid, typ, unlocked = entry[:3]
+        bk = entry[3] if len(entry) > 3 else 0
         bitmap[i >> 3] |= (1 << (i & 7))
         rec = recs + i * rewards.REC_STRIDE
         blob = bytearray(rewards.REC_STRIDE)
         struct.pack_into("<I", blob, rewards.REC_TYPE, typ)
         struct.pack_into("<I", blob, rewards.REC_KEY, cid)
+        struct.pack_into("<I", blob, rewards.REC_BOOKKEEP, bk)
         blob[rewards.REC_UNLOCKED] = unlocked
         scanner.put(rec, bytes(blob))
+    scanner.put(buckets, bytes(bitmap))
+
+
+def _build_count_map(scanner: FakeScanner, entries: dict):
+    """entries: {bookkeep_key: (f32, i32)} -> the shared per-species effect map at RS+0x210
+    (stride 0xC: {u32 key, f32 breeding rate, i32 supplement count})."""
+    cap = 8
+    buckets = 0x22000000
+    scanner.put(RS + rewards.COUNT_MAP_OFF + 0x08, struct.pack("<q", len(entries)))
+    scanner.put(RS + rewards.COUNT_MAP_OFF + 0x10, struct.pack("<q", cap))
+    scanner.put(RS + rewards.COUNT_MAP_OFF + 0x18, struct.pack("<Q", buckets))
+    bm_len = ((cap >> 3) + 7) & ~7
+    bitmap = bytearray(bm_len)
+    recs = buckets + bm_len
+    scanner.put(recs, bytes(cap * 0xC))
+    for i, (bk, (f, n)) in enumerate(entries.items()):
+        bitmap[i >> 3] |= (1 << (i & 7))
+        scanner.put(recs + i * 0xC, struct.pack("<Ifi", bk, f, n))
     scanner.put(buckets, bytes(bitmap))
 
 
@@ -304,6 +325,172 @@ def test_reconcile_progressive_levels_generalizes_per_family():
     f = flags()
     assert f[0x50] == 1 and f[0x51] == 1, "breeding levels 1+2 unlocked"
     assert f[0x40] == 1 and f[0x41] == 0, "supplement state preserved"
+
+
+def _breeding_f32(s, g, bk):
+    crec = g._intmap_find(RS + rewards.COUNT_MAP_OFF, 0xC, bk)
+    return struct.unpack("<f", s.read_bytes(crec + 4, 4))[0]
+
+
+def _supplement_i32(s, g, bk):
+    crec = g._intmap_find(RS + rewards.COUNT_MAP_OFF, 0xC, bk)
+    return struct.unpack("<i", s.read_bytes(crec + 8, 4))[0]
+
+
+def test_breeding_effect_capped_and_recapped_after_reload():
+    """The REAL breeding gate (byte is cosmetic): the count-map f32 is capped to the received count's
+    flat rate. The game recomputes the researched value on every park load (persistence test
+    2026-07-10) - the next reconcile tick must re-cap it."""
+    s = FakeScanner()
+    _build(s, names={0x30: "GoldenPoisonFrogBreedingL1", 0x31: "GoldenPoisonFrogBreedingL2"},
+           unlock_records=[(0x30, 2, 1, 0x77), (0x31, 2, 1, 0x77)])
+    _build_count_map(s, {0x77: (0.30, 0)})     # research granted level 2
+    g = _granter(s)
+    assert g.reconcile_progressive_levels("breeding", 1) is True
+    assert abs(_breeding_f32(s, g, 0x77) - 0.15) < 1e-4, "granted L2 capped to received=1's rate"
+    # park reload: the engine rewrites the researched value; the per-tick cap must reassert
+    crec = g._intmap_find(RS + rewards.COUNT_MAP_OFF, 0xC, 0x77)
+    s.put(crec + 4, struct.pack("<f", 0.30))
+    assert g.reconcile_progressive_levels("breeding", 1) is True
+    assert abs(_breeding_f32(s, g, 0x77) - 0.15) < 1e-4, "re-capped after the load rewrite"
+    # the second progressive copy RESTORES the research-granted level-2 value
+    assert g.reconcile_progressive_levels("breeding", 2) is True
+    assert abs(_breeding_f32(s, g, 0x77) - 0.30) < 1e-4, "granted high-water restored at received=2"
+
+
+def test_breeding_effect_never_raised_beyond_granted():
+    """Items alone never raise the effect past what research granted (min semantics): a species at
+    researched level 1 stays at L1's rate no matter how many copies arrived."""
+    s = FakeScanner()
+    _build(s, names={0x30: "AardvarkBreedingL1", 0x31: "AardvarkBreedingL2"},
+           unlock_records=[(0x30, 2, 1, 0x55), (0x31, 2, 0, 0x55)])
+    _build_count_map(s, {0x55: (0.15, 0)})     # research granted only level 1
+    g = _granter(s)
+    assert g.reconcile_progressive_levels("breeding", 3) is True
+    assert abs(_breeding_f32(s, g, 0x55) - 0.15) < 1e-4
+
+
+def test_supplement_effect_capped_and_restored():
+    """The count @crec+8 is the number of available FOOD-QUALITY TIERS, floor 1 (the default
+    quality-1 food): research L1/L2 raise it to 2/3, so the gate is min(1+received, granted)."""
+    s = FakeScanner()
+    _build(s, names={0x40: "AardvarkSupplementL1", 0x41: "AardvarkSupplementL2"},
+           unlock_records=[(0x40, 0, 1, 0x66), (0x41, 0, 1, 0x66)])
+    _build_count_map(s, {0x66: (0.0, 3)})      # research granted both levels -> 3 tiers
+    g = _granter(s)
+    assert g.reconcile_progressive_levels("supplement", 0) is True
+    assert _supplement_i32(s, g, 0x66) == 1, "received=0 keeps the default quality-1 tier, never 0"
+    assert g.reconcile_progressive_levels("supplement", 1) is True
+    assert _supplement_i32(s, g, 0x66) == 2, "first copy unlocks quality 2 (of the granted 3)"
+    assert g.reconcile_progressive_levels("supplement", 2) is True
+    assert _supplement_i32(s, g, 0x66) == 3, "granted high-water restored at received=2"
+
+
+def test_supplement_default_tier_never_locked():
+    """Regression (live 2026-07-10, empty food-quality dropdown): a vanilla-unresearched species
+    (tier count 1) must NOT be written at received=0, and a record an older build zeroed must be
+    healed back to the quality-1 floor."""
+    s = FakeScanner()
+    _build(s, names={0x40: "PangolinSupplementL1", 0x41: "PangolinSupplementL2"},
+           unlock_records=[(0x40, 0, 0, 0x66), (0x41, 0, 0, 0x66)])
+    _build_count_map(s, {0x66: (0.0, 1)})      # vanilla: no research, 1 tier (default food)
+    g = _granter(s)
+    assert g.reconcile_progressive_levels("supplement", 0) is True
+    assert _supplement_i32(s, g, 0x66) == 1, "vanilla tier count untouched at received=0"
+    crec = g._intmap_find(RS + rewards.COUNT_MAP_OFF, 0xC, 0x66)
+    s.put(crec + 8, struct.pack("<i", 0))      # damage from the old min(received, granted) cap
+    assert g.reconcile_progressive_levels("supplement", 0) is True
+    assert _supplement_i32(s, g, 0x66) == 1, "zeroed record healed back to the quality-1 floor"
+
+
+def test_education_counter_synced_to_set_bytes():
+    """The zoo education rating = counter@rs+0x52C / total@rs+0x528 (fn_at_14049F49F); the game only
+    ever increments the counter at research completion, so the gate must keep it equal to the number
+    of SET type-3 bytes. Research granted the frog 2 levels (counter 2); received=0 locks both bytes
+    -> counter 0; received=1 sets each species' L1 byte -> counter 2."""
+    s = FakeScanner()
+    _build(s, names={0x40: "GoldenPoisonFrogEducationL1", 0x41: "GoldenPoisonFrogEducationL2",
+                     0x50: "EasternBrownSnakeEducationL1"},
+           unlock_records=[(0x40, 3, 1, 0x3041), (0x41, 3, 1, 0x3041), (0x50, 3, 0, 0x3029)])
+    s.put(RS + rewards.EDU_COUNTER_OFF, struct.pack("<i", 2))   # game counted the frog's 2 grants
+    g = _granter(s)
+    assert g.reconcile_progressive_levels("education", 0) is True
+    assert struct.unpack("<i", s.read_bytes(RS + rewards.EDU_COUNTER_OFF, 4))[0] == 0, \
+        "received=0 -> all education bytes locked -> counter 0"
+    assert g.reconcile_progressive_levels("education", 1) is True
+    assert struct.unpack("<i", s.read_bytes(RS + rewards.EDU_COUNTER_OFF, 4))[0] == 2, \
+        "received=1 -> both species' L1 bytes set -> counter 2"
+
+
+def _build_edu_store(scanner: FakeScanner, entries: dict, hdr=0x30000000, buckets=0x30001000):
+    """entries: {topic_id: level} -> the per-species education level map (stride 0x60,
+    u32 key @+0, u32 level @+8). Returns the header address for monkeypatching."""
+    cap = 8
+    scanner.put(hdr + 0x08, struct.pack("<q", len(entries)))
+    scanner.put(hdr + 0x10, struct.pack("<q", cap))
+    scanner.put(hdr + 0x18, struct.pack("<Q", buckets))
+    bm = ((cap >> 3) + 7) & ~7
+    bitmap = bytearray(bm)
+    scanner.put(buckets + bm, bytes(cap * rewards.EDU_REC_STRIDE))
+    for i, (key, lvl) in enumerate(entries.items()):
+        bitmap[i >> 3] |= 1 << (i & 7)
+        base = buckets + bm + i * rewards.EDU_REC_STRIDE
+        scanner.put(base, struct.pack("<I", key))
+        scanner.put(base + rewards.EDU_REC_LEVEL, struct.pack("<I", lvl))
+    scanner.put(buckets, bytes(bitmap))
+    return hdr
+
+
+def _edu_level(s, hdr, key):
+    cap = struct.unpack("<q", s.read_bytes(hdr + 0x10, 8))[0]
+    buckets = struct.unpack("<Q", s.read_bytes(hdr + 0x18, 8))[0]
+    bm = ((cap >> 3) + 7) & ~7
+    for i in range(cap):
+        base = buckets + bm + i * rewards.EDU_REC_STRIDE
+        if struct.unpack("<I", s.read_bytes(base, 4))[0] == key:
+            return struct.unpack("<I", s.read_bytes(base + rewards.EDU_REC_LEVEL, 4))[0]
+    return None
+
+
+def test_education_panel_levels_synced():
+    """The per-species education level store (the panel's caps / GetEducationUnlockLevel) is written
+    to min(received, 3) for EVERY species record - display agrees with the byte gate. Research had
+    granted the frog (topic 0x68) level 2; received=0 zeroes it, received=1 raises all to 1."""
+    s = FakeScanner()
+    _build(s, names={0x40: "GoldenPoisonFrogEducationL1"}, unlock_records=[(0x40, 3, 1, 0x3041)])
+    hdr = _build_edu_store(s, {0x68: 2, 0x69: 0, 0x6A: 0})
+    s.put(RS + rewards.EDU_COUNTER_OFF, struct.pack("<i", 2))
+    g = _granter(s)
+    g._edu_store_hdr = hdr                       # bypass the live park-chain resolution
+    assert g.reconcile_progressive_levels("education", 0) is True
+    assert _edu_level(s, hdr, 0x68) == 0, "research-granted level 2 capped to received=0"
+    assert g.reconcile_progressive_levels("education", 1) is True
+    assert (_edu_level(s, hdr, 0x68), _edu_level(s, hdr, 0x69), _edu_level(s, hdr, 0x6A)) == (1, 1, 1), \
+        "received=1 -> every species' panel level 1 (authoritative barrier model)"
+
+
+def test_education_level_sync_wrong_store_untouched():
+    """Sanity guard: a decoded record with an implausible key/level means the chain resolved to the
+    wrong object - nothing may be written."""
+    s = FakeScanner()
+    _build(s, names={0x40: "GoldenPoisonFrogEducationL1"}, unlock_records=[(0x40, 3, 1, 0x3041)])
+    hdr = _build_edu_store(s, {0xDEADBEEF: 2})   # key over the plausibility bound
+    s.put(RS + rewards.EDU_COUNTER_OFF, struct.pack("<i", 1))
+    g = _granter(s)
+    g._edu_store_hdr = hdr
+    assert g.reconcile_progressive_levels("education", 0) is True
+    assert _edu_level(s, hdr, 0xDEADBEEF) == 2, "implausible store left untouched"
+
+
+def test_effect_cap_tolerates_missing_count_record():
+    """A species whose count-map record hasn't been inserted yet (nothing granted) must not fail
+    the reconcile - there is nothing to cap."""
+    s = FakeScanner()
+    _build(s, names={0x30: "AardvarkBreedingL1"}, unlock_records=[(0x30, 2, 0, 0x99)])
+    _build_count_map(s, {0x11: (0.15, 1)})     # some OTHER species' record only
+    g = _granter(s)
+    assert g.reconcile_progressive_levels("breeding", 2) is True
+    assert abs(_breeding_f32(s, g, 0x11) - 0.15) < 1e-4, "unrelated species untouched"
 
 
 def test_reconcile_progressive_levels_unknown_family_is_false():

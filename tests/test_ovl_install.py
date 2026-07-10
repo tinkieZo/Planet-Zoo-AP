@@ -547,3 +547,42 @@ def test_run_cobra_child_fails_on_dropped_files(tmp_path, monkeypatch):
     with pytest.raises(ovl.OvlInstallError) as ei:
         ovl._run_cobra_child("new", tmp_path, tmp_path / "out.ovl", None, lambda m: None)
     assert "Could not create: database.foo.lua" in str(ei.value)
+
+
+def test_run_cobra_child_hides_benign_noise_only(tmp_path, monkeypatch):
+    """Console filter: every known-benign round-trip warning is hidden behind one summary line,
+    while unknown ERROR/WARNING lines - including the real 'Could not load pointers for ...' /
+    'Could not load Oodle DLL, ...' failures the plugin-noise pattern must not swallow - surface."""
+    monkeypatch.setattr(ovl, "find_cobra_dir", lambda: tmp_path)
+    monkeypatch.setattr(ovl, "_ensure_oodle", lambda *a, **k: None)
+    monkeypatch.setattr(ovl, "check_src_complete", lambda: None)
+
+    benign = [
+        "ERROR | Could not load DDS",
+        "ERROR | Could not load VOXELSKIRT",
+        "WARNING | bitarray module is not installed",
+        "WARNING | crowdgoal.prefab can't find the original name of UnknownHash_557031118.enumnamer",
+        "WARNING | Won't update hash unknownhash_2374363819",
+        "WARNING | Could not map 14 fragments in STATIC, storing them for saving",
+        "WARNING | Restoring 14 uncaught fragments to STATIC",
+        "ERROR | Collecting default.frenderlodspec errored",
+        "ERROR | Could not read array of 'UIntPair'",
+        "WARNING | Missing sub-element 'next_research' on XML element 'research'",
+    ]
+    real = [
+        "ERROR | Could not load pointers for STATIC - something went wrong before",
+        "ERROR | Could not load Oodle DLL, requires Windows and 64bit python to run.",
+        "WARNING | Missing sub-element 'name' on XML element 'research'",
+        "ERROR | Collecting database.c0research.fdb errored",
+    ]
+    script = tmp_path / "fake_child.py"
+    script.write_text("\n".join(f"print({line!r})" for line in benign + real), encoding="utf-8")
+    monkeypatch.setattr(ovl, "_child_argv",
+                        lambda op, cobra, src, out, base: [sys.executable, str(script)])
+    seen = []
+    ovl._run_cobra_child("new", tmp_path, tmp_path / "out.ovl", None, seen.append)
+    for line in benign:
+        assert line not in seen, "benign line leaked to the console: %s" % line
+    for line in real:
+        assert line in seen, "real problem was hidden: %s" % line
+    assert any("%d known-benign" % len(benign) in m for m in seen), "summary line missing/wrong count"

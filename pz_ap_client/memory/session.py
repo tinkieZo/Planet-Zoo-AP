@@ -71,6 +71,15 @@ class ParkNameReader:
         self._last_scan: Optional[float] = None
         self._last_val: Optional[str] = None
 
+    def invalidate(self) -> None:
+        """Forget cached instances, the last value, AND the scan throttle. Call on park unload: freed
+        park-info memory usually stays committed and intact, so the cached instances can ghost-read the
+        OLD park's name indefinitely - and read() never rescans while a cached name still 'works'. With
+        the throttle cleared, the tick after a reload rescans immediately and redetects the park."""
+        self._cached = None
+        self._last_val = None
+        self._last_scan = None
+
     def _target(self) -> Optional[int]:
         base = getattr(self.scanner, "module_base", None)
         return base + self.VTABLE_RVA if base else None

@@ -932,6 +932,73 @@ def exhibit_event_is_acquire(ivar8: int) -> bool:
     return (ivar8 & 0xFFFFFFFF) != EXHIBIT_BIRTH_SENTINEL
 
 
+# Scratch layout for the EXHIBIT release species capture (mid-function detour inside the exhibit
+# release action FUN_146048940, at rva 0x6048A92 = the STORAGE branch's `mov r15,[r14+0xf8]`):
+#   [scratch + 0x00]           u32  monotonic capture count (poll cursor)
+#   [scratch + 0x08]           u64  r14 = the exhibit manager object (pre-rebind; park+0x1D0 family)
+#   [scratch + 0x10]           u64  r15 = H = *(mgr+0xF8), the holder that owns the +0x2A0 owned-id
+#                                   SET and the *(H+0x358)+0x108 {animal_id -> def} map - captured so
+#                                   the client can read the def map WITHOUT trusting the park-offset
+#                                   chain (self-locating; the 2026-07-06 id-roster path died because
+#                                   it read those offsets off the manager, missing the +0xF8 deref)
+#   [scratch + EXR_RING_OFF]   u32[EXR_RING] ring of released exhibit-animal ids (ebx at the site)
+# The site is INSIDE the storage branch (the placed path diverges at 0x146048A84 before it), so it
+# fires exactly for STORAGE releases - the case the placed-only +0x318 census diff can't attribute.
+# At the site ebx = the released animal id (uVar3, written to ExhibitAnimalReleasedMessage+0x18) and
+# r14 = the manager; the relocated original itself loads r15 = H. See tools/_decomp/
+# exhibit_release_species_notes.md for the full disassembly.
+EXR_RING = 8               # power of two (mask below is RING-1)
+EXR_COUNT = 0x00
+EXR_MGR = 0x08
+EXR_HOLDER = 0x10
+EXR_RING_OFF = 0x18        # 0x18 + 8*4 = 0x38, fits before code at region+0x40
+
+
+def make_exhibit_release_capture(region: int, scratch: int, resume_addr: int, original: bytes) -> bytes:
+    """CAPTURE detour for the exhibit release action's STORAGE branch (FUN_146048940+0x152,
+    rva 0x6048A92). ``original`` is the 7-byte ``mov r15,[r14+0xf8]`` (no rip-relative operand ->
+    relocatable verbatim). Runs it FIRST so r15 = H is live, then records {released animal id (ebx),
+    manager (r14), holder H (r15)} into the ring + bumps the count. Only rax/r11 + flags are used
+    (push/pop framed), and the function's frame is already established at the site (sub rsp,0x1e0
+    done; no rsp-relative instruction is stolen), so the transient pushes are safe. The stores hit
+    only our own scratch - the detour cannot fault the resume path. The client resolves each captured
+    id -> species via the {animal_id -> def} map cache (triggers._poll_exhibit_release)."""
+    body = bytearray()
+    body += original                                    # mov r15,[r14+0xf8]  (loads H; flags untouched)
+    body += b"\x9C"                                     # pushfq
+    body += b"\x50"                                     # push rax
+    body += b"\x41\x53"                                 # push r11
+    body += b"\x48\xB8" + struct.pack("<Q", scratch)    # movabs rax, scratch
+    body += b"\x44\x8B\x18"                             # mov r11d, [rax]        ; count
+    body += b"\x41\xFF\xC3"                             # inc r11d
+    body += b"\x44\x89\x18"                             # mov [rax], r11d        ; count++
+    body += b"\x41\xFF\xCB"                             # dec r11d               ; old count = index
+    body += b"\x41\x83\xE3" + bytes([EXR_RING - 1])     # and r11d, RING-1
+    body += b"\x42\x89\x5C\x98" + bytes([EXR_RING_OFF])  # mov [rax+r11*4+RING_OFF], ebx  ; animal id
+    body += b"\x4C\x89\x70" + bytes([EXR_MGR])          # opcode: mov [rax+8], r14 (manager)
+    body += b"\x4C\x89\x78" + bytes([EXR_HOLDER])       # mov [rax+0x10], r15    ; holder H
+    body += b"\x41\x5B"                                 # pop r11
+    body += b"\x58"                                     # pop rax
+    body += b"\x9D"                                     # popfq
+    return _final_jmp(body, region, resume_addr)
+
+
+def read_exhibit_release_events(scanner, scratch: int, cursor: int) -> "tuple[int, List[int]]":
+    """Drain released exhibit-animal ids recorded by ``make_exhibit_release_capture``. Returns
+    ``(new_cursor, ids)``. Caps at EXR_RING (older entries overwritten -> reported lost; harmless -
+    a lost id just falls back to the id-roster/census diffs for attribution)."""
+    count = struct.unpack("<I", scanner.read_bytes(scratch, 4))[0]
+    if count <= cursor:
+        return count, []
+    ring = scanner.read_bytes(scratch + EXR_RING_OFF, EXR_RING * 4)
+    first = max(cursor + 1, count - EXR_RING + 1)
+    out = []
+    for n in range(first, count + 1):
+        idx = (n - 1) & (EXR_RING - 1)
+        out.append(struct.unpack_from("<I", ring, idx * 4)[0])
+    return count, out
+
+
 def read_birth_events(scanner, scratch: int, cursor: int) -> "tuple[int, List[int]]":
     """Drain new birth events recorded by ``make_birth_trampoline``.
 

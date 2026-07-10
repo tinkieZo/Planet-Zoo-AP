@@ -29,6 +29,8 @@ logger = logging.getLogger("PZClient")
 _MEM_COMMIT = 0x1000
 _PAGE_GUARD = 0x100
 _WRITABLE_PROT = {0x04, 0x08, 0x40, 0x80}  # READWRITE / WRITECOPY / EXEC_READWRITE / EXEC_WRITECOPY
+_SCAN_CHUNK = 0x1000000     # 16 MB read window for scan_heap_for_qword (bounds a single ReadProcessMemory)
+_SCAN_BUDGET = 0x100000000  # 4 GB whole-run cap: worst case (qword never found) can't sweep forever
 
 
 class _MBI(ctypes.Structure):
@@ -202,38 +204,56 @@ class MemoryScanner:
         """Addresses (8-aligned) in committed, writable, non-guard memory whose 8-byte qword == value.
 
         Used to locate a game object by its vtable pointer when the static pointer CHAINS to it are
-        unreliable (the research-system chains miss in some saves; the vtable rva is build-stable). Reads
-        each region whole and skips regions >= ``max_region`` (multi-hundred-MB texture/mesh buffers)."""
+        unreliable (the research-system chains miss in some saves; the vtable rva is build-stable).
+
+        Large regions (>= ``max_region``) are CHUNK-scanned rather than skipped. Skipping them silently
+        missed objects living in a single big heap region - which is exactly how Wine/Proton lays out the
+        game heap, so park-info (found only by this scan) went undetected there while every chain-resolved
+        site worked (live 2026-07-08). A whole-run byte budget bounds the worst case (value never found)."""
         pm = self._require()
         k32 = ctypes.WinDLL("kernel32", use_last_error=True)
         k32.VirtualQueryEx.restype = ctypes.c_size_t
         mbi = _MBI()
         needle = struct.pack("<Q", value)
-        addr, out = 0, []
-        while len(out) < max_hits:
+        addr, out, scanned, big = 0, [], 0, 0
+        while len(out) < max_hits and scanned < _SCAN_BUDGET:
             if not k32.VirtualQueryEx(pm.process_handle, ctypes.c_void_p(addr),
                                       ctypes.byref(mbi), ctypes.sizeof(mbi)):
                 break
             base, size = mbi.BaseAddress or 0, mbi.RegionSize
             if (mbi.State == _MEM_COMMIT and not (mbi.Protect & _PAGE_GUARD)
-                    and (mbi.Protect & 0xFF) in _WRITABLE_PROT and 0 < size < max_region):
+                    and (mbi.Protect & 0xFF) in _WRITABLE_PROT and size > 0):
+                if size >= max_region:
+                    big += 1
+                scanned += size
                 self._find_qword(base, size, needle, out, max_hits)
             nxt = base + size
             if nxt <= addr:
                 break
             addr = nxt
+        if big:
+            logger.debug("scan_heap_for_qword: chunk-scanned %d region(s) >= 0x%X (large/Wine heap path); "
+                         "%d hit(s), %.0f MB swept", big, max_region, len(out), scanned / (1 << 20))
         return out
 
     def _find_qword(self, base: int, size: int, needle: bytes, out: List[int], max_hits: int) -> None:
-        try:
-            blob = self._require().read_bytes(base, size)
-        except Exception:
-            return
-        i = blob.find(needle)
-        while i != -1 and len(out) < max_hits:
-            if i % 8 == 0:
-                out.append(base + i)
-            i = blob.find(needle, i + 1)
+        """Search a region for the 8-aligned qword, reading in bounded chunks so a large region (Wine's
+        big heap) is covered without a single multi-hundred-MB read. Chunks are 8-aligned (region base is
+        page-aligned, _SCAN_CHUNK is a multiple of 8), so an 8-aligned qword never straddles a boundary -
+        no overlap needed."""
+        off = 0
+        while off < size and len(out) < max_hits:
+            n = min(_SCAN_CHUNK, size - off)
+            try:
+                blob = self._require().read_bytes(base + off, n)
+            except Exception:
+                return
+            i = blob.find(needle)
+            while i != -1 and len(out) < max_hits:
+                if (base + off + i) % 8 == 0:
+                    out.append(base + off + i)
+                i = blob.find(needle, i + 1)
+            off += n
 
     # -- typed read/write ------------------------------------------------------
 

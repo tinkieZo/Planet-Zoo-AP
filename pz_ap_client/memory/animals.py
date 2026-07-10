@@ -64,24 +64,37 @@ OFF_PARK_ANIMAL_MGR = 0x188
 OFF_PARK_EXHIBIT_MGR = 0x1D0
 OFF_EXHIBIT_CENSUS = 0x318   # {species_handle -> count} map header (obj @+0, count @+8, cap @+0x10, buckets @+0x18)
 
-# The exhibit manager ALSO carries per-ANIMAL structures (decomp of the exhibit release executor
-# FUN_146048940, tools/_decomp + scratchpad fn_146048940.c, 2026-07-06) - these are what enable
-# STORAGE release attribution (the +0x318 census covers only PLACED animals; these cover every owned
-# exhibit animal - the release action checks id-set membership before proceeding, and storage releases
-# succeed, so stored animals are in it; the id is removed from the set SYNCHRONOUSLY at release):
-#   +0x2A0: int hash-SET of all owned exhibit ANIMAL IDS - {count @+0x08, cap @+0x10 pow2,
+# The per-ANIMAL exhibit structures (decomp + disasm of the exhibit release executor FUN_146048940,
+# tools/_decomp/exhibit_release_species_notes.md) - these are what enable STORAGE release attribution
+# (the +0x318 census covers only PLACED animals; these cover the STORED ones - the release action
+# checks id-set membership before proceeding and removes the id SYNCHRONOUSLY). They do NOT hang off
+# the exhibit manager itself but off its +0xF8 sub-object H = *(mgr + 0xF8) (the release fn rebinds
+# `lVar12 = *(lVar12+0xf8)` at 0x146048A92 BEFORE touching them - reading these offsets off the
+# manager directly was the 2026-07-06 bug that made both reads fail live on 2026-07-08):
+#   H+0x2A0: int hash-SET of owned exhibit ANIMAL IDS - {count @+0x08, cap @+0x10 pow2,
 #           buffer @+0x18 -> occupancy bitvector then u32 keys[cap]} (the market include-set family).
-#   +0x358 -> obj; obj+0x108: open-addressing MAP {animal_id -> def entry}: {count @+0x08, cap @+0x10
-#           pow2, buckets @+0x18} -> bitmap then entries stride 0x160 = {u32 animal_id @+0, animal-def
-#           object inline @+0x8} whose leading fields are refcounted native strings ({len i64 @+0,
-#           chars @+0x14}); one of them is the SPECIES NAME token (e.g. 'GoliathBeetle' - the engine
-#           resolves the released species from this object when posting ExhibitAnimalReleasedMessage).
+#   *(H+0x358)+0x108: open-addressing MAP {animal_id -> def entry}: {count @+0x08, cap @+0x10
+#           pow2, buckets @+0x18} -> bitmap then entries stride 0x160 (stride + iterator layout
+#           confirmed in the find helper FUN_1486034f0) = {u32 animal_id @+0, animal-def object
+#           inline @+0x8} whose leading fields are refcounted native strings ({len i64 @+0,
+#           chars @+0x14}); the engine itself builds the species token from entry+0x8+0x0 when
+#           posting ExhibitAnimalReleasedMessage (`mov rdx,[rax+8]; add rdx,8` on the find iterator).
+OFF_EXHIBIT_DEF_HOLDER = 0xF8
+# FALLBACK holder chain *(*(mgr+0x2F0)+0xD8): live 2026-07-10 a resumed save had *(mgr+0xF8) NULL the
+# entire session (both storage attribution paths silently dead) while this chain reached the same
+# def-map holder object. Candidates are validated against the def-map header before use.
+OFF_EXHIBIT_HOLDER_ALT = (0x2F0, 0xD8)
 OFF_EXHIBIT_ID_SET = 0x2A0
 OFF_EXHIBIT_DEF_SUB = 0x358
 OFF_DEF_SUB_MAP = 0x108
 DEF_ENTRY_STRIDE = 0x160
 DEF_ENTRY_OBJ = 0x8
 DEF_OBJ_STRING_OFFS = (0x0, 0x8, 0x10, 0x20)   # candidate name-string ptr fields of the def object
+# u32 SPECIES HANDLE @entry+0x30 (research-map namespace, same as the census keys). Live 2026-07-10:
+# 43/47 def entries carried a research-map handle here, and the string fields above held ONLY given
+# names + name-bank tokens ("Amidio", "AnimalNames_Spanish_Male_00010") - no species token - so the
+# handle is the PRIMARY species signal and the token match over the strings is the fallback.
+DEF_ENTRY_SPECIES = 0x30
 
 
 class AnimalResolver:
@@ -236,14 +249,59 @@ class AnimalResolver:
             return None
         return self._decode_count_map(mgr + OFF_EXHIBIT_CENSUS)
 
-    def read_exhibit_ids(self, mgr: int) -> "Optional[set]":
-        """Ids of ALL owned exhibit animals - placed AND stored - from the manager's +0x2A0 id set.
-        None if mgr is wrong/unreadable (pow2-cap guard). The release action removes the released id
-        from this set SYNCHRONOUSLY, so diffing it across a detected release names the animal - the
-        storage-release attribution the placed-only census can't provide."""
+    def resolve_exhibit_defmap_holder(self, mgr: int) -> Optional[int]:
+        """H: the sub-object of the exhibit manager that owns the +0x2A0 owned-id set and the
+        *(H+0x358)+0x108 {animal_id -> def} map. Primary chain *(mgr+0xF8) (the release fn's own
+        rebind at 0x146048A92); fallback *(*(mgr+0x2F0)+0xD8) (see OFF_EXHIBIT_HOLDER_ALT - the
+        primary read NULL for a whole live session). The first candidate whose def-map header
+        validates wins; else the first non-null candidate (callers' pow2 guards still protect every
+        read). The capture detour's recorded holder (releases.exhibit_capture_holder) remains the
+        ground-truth alternative."""
         if not mgr:
             return None
-        base = mgr + OFF_EXHIBIT_ID_SET
+        cands = []
+        try:
+            c = self.scanner.read_qword(mgr + OFF_EXHIBIT_DEF_HOLDER)
+            if c:
+                cands.append(c)
+        except Exception:
+            pass
+        try:
+            off1, off2 = OFF_EXHIBIT_HOLDER_ALT
+            p = self.scanner.read_qword(mgr + off1)
+            c = self.scanner.read_qword(p + off2) if p else 0
+            if c and c not in cands:
+                cands.append(c)
+        except Exception:
+            pass
+        for c in cands:
+            if self._defmap_header_valid(c):
+                return c
+        return cands[0] if cands else None
+
+    def _defmap_header_valid(self, holder: int) -> bool:
+        """Cheap (4-read) check that ``holder`` carries a plausible *(H+0x358)+0x108 def map."""
+        try:
+            sub = self.scanner.read_qword(holder + OFF_EXHIBIT_DEF_SUB)
+            if not sub:
+                return False
+            hdr = sub + OFF_DEF_SUB_MAP
+            count = self.scanner.read_qword(hdr + 0x08)
+            cap = self.scanner.read_qword(hdr + 0x10)
+            buckets = self.scanner.read_qword(hdr + 0x18)
+        except Exception:
+            return False
+        return bool(buckets) and 0 < cap <= (1 << 16) and (cap & (cap - 1)) == 0 and 0 <= count <= cap
+
+    def read_exhibit_ids(self, holder: int) -> "Optional[set]":
+        """Ids of the owned exhibit animals in ``holder``'s +0x2A0 id set (holder = H = *(mgr+0xF8),
+        see resolve_exhibit_defmap_holder). None if holder is wrong/unreadable (pow2-cap guard). The
+        release action removes the released id from this set SYNCHRONOUSLY, so diffing it across a
+        detected release names the animal - the storage-release attribution the placed-only census
+        can't provide."""
+        if not holder:
+            return None
+        base = holder + OFF_EXHIBIT_ID_SET
         try:
             cap = self.scanner.read_qword(base + 0x10)
             buf = self.scanner.read_qword(base + 0x18)
@@ -275,15 +333,18 @@ class AnimalResolver:
             return None
         return txt if txt.isprintable() else None
 
-    def read_exhibit_def_names(self, mgr: int) -> "Optional[dict]":
-        """{animal_id -> [candidate name strings]} from the exhibit def map (*(mgr+0x358)+0x108).
-        One of the candidates is the species token (the caller matches them against the species
-        token map - self-validating, so it doesn't matter which def field holds the species). None
-        if the structures don't validate; {} if the map is just empty."""
-        if not mgr:
+    def read_exhibit_defs(self, holder: int) -> "Optional[dict]":
+        """{animal_id -> (species_handle, [candidate name strings])} from the exhibit def map
+        (*(holder+0x358)+0x108; holder = H, see resolve_exhibit_defmap_holder). The u32 handle
+        @entry+0x30 is the PRIMARY species signal (research-map namespace; 0 if the field doesn't
+        hold a plausible handle); the strings are the fallback token match - live zoos exist where
+        they hold ONLY given names, never a species token (see DEF_ENTRY_SPECIES). None if the
+        structures don't validate; {} if the map is just empty. NOTE: entries SURVIVE the release
+        (live-observed), so a released id can be resolved from here on a LATER tick."""
+        if not holder:
             return None
         try:
-            sub = self.scanner.read_qword(mgr + OFF_EXHIBIT_DEF_SUB)
+            sub = self.scanner.read_qword(holder + OFF_EXHIBIT_DEF_SUB)
             if not sub:
                 return None
             hdr = sub + OFF_DEF_SUB_MAP
@@ -308,9 +369,15 @@ class AnimalResolver:
         return out
 
     def _parse_def_entry(self, entry: int) -> "Optional[tuple]":
-        """(animal_id, [candidate name strings]) for one def-map entry, or None if unreadable."""
+        """(animal_id, (species_handle, [candidate name strings])) for one def-map entry, or None if
+        unreadable. The handle is sanity-ranged (the field could hold anything on an unexpected
+        layout); an implausible value degrades to 0 = "no handle", never to a wrong species - the
+        research-map lookup at attribution time is the real validator."""
         try:
             aid = struct.unpack("<I", self.scanner.read_bytes(entry, 4))[0]
+            handle = struct.unpack("<I", self.scanner.read_bytes(entry + DEF_ENTRY_SPECIES, 4))[0]
+            if not 0 < handle < (1 << 24):
+                handle = 0
             names = []
             for off in DEF_OBJ_STRING_OFFS:
                 nm = self._native_string(self.scanner.read_qword(entry + DEF_ENTRY_OBJ + off))
@@ -318,7 +385,7 @@ class AnimalResolver:
                     names.append(nm)
         except Exception:
             return None
-        return aid, names
+        return aid, (handle, names)
 
     def iter_roster(self, mgr: int):
         """Yield (handle, entity) for every animal in the manager's roster (habitat + storage). Reads the

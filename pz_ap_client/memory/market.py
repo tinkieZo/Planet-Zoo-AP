@@ -617,30 +617,38 @@ class _AutofillMarketGate:
         engine's park teardown frees its OWN allocation instead of our VirtualAllocEx buffer (which would
         be a foreign-pointer free -> crash on Exit). Re-RESOLVES the manager (never writes through a stale/
         freed pointer) and only writes if it still resolves to the SAME manager we gated. No-op if we never
-        applied. Call on park unload / before freeing our buffer / on shutdown. Idempotent."""
+        applied. Call on park unload / before freeing our buffer / on shutdown. Idempotent.
+
+        Always leaves the manager cache DROPPED, on every path: restore runs at park unload, so any
+        cached pointer - the in-session one, or the resolve made here for the writes - dangles once the
+        park frees. A cache surviving this call made scenario_mode() read the freed manager forever,
+        which kept AP-session redetection dead after save + quit-to-menu + resume (live 2026-07-10)."""
+        self._mgr_cache = None        # the in-session pointer is stale the moment the park unloads
         if self._orig is None:
             return False
-        self._mgr_cache = None
-        mgr = self.exchange_mgr()                 # re-resolve; None if the park already unloaded
-        if mgr is None or mgr != self._orig.get("mgr"):
-            self._orig = None                     # park gone/changed - can't safely write; drop (buffer leak is benign)
-            return False
-        wl = mgr + self._DEFAULT_WL
-        inc = wl + WL_INCLUDE_SET
         try:
-            self.scanner.write_i64(inc + SET_BUFFER, self._orig["buffer"])
-            self.scanner.write_i64(inc + SET_CAP, self._orig["cap"])
-            self.scanner.write_i64(inc + SET_COUNT, self._orig["count"])
-            self.scanner.write_bytes(wl + WL_INCLUDE_ACTIVE, self._orig["active"])
-            self.scanner.write_i32(mgr + self._WL_ID_SCEN, self._orig["wl_scen"])
-            self.scanner.write_i32(mgr + self._WL_ID_SANDBOX, self._orig["wl_sandbox"])
-            self.scanner.write_bytes(mgr + self._POOL_DIRTY, b"\x00")   # rebuild against the restored state
-        except Exception as e:
-            logger.warning("market: restore failed: %s", e)
-            return False
-        logger.info("market: restored original include-set @mgr 0x%X (gate off; engine owns its buffer again)", mgr)
-        self._orig = None
-        return True
+            mgr = self.exchange_mgr()             # fresh resolve; None if the park already unloaded
+            if mgr is None or mgr != self._orig.get("mgr"):
+                self._orig = None                 # park gone/changed - can't safely write; drop (buffer leak is benign)
+                return False
+            wl = mgr + self._DEFAULT_WL
+            inc = wl + WL_INCLUDE_SET
+            try:
+                self.scanner.write_i64(inc + SET_BUFFER, self._orig["buffer"])
+                self.scanner.write_i64(inc + SET_CAP, self._orig["cap"])
+                self.scanner.write_i64(inc + SET_COUNT, self._orig["count"])
+                self.scanner.write_bytes(wl + WL_INCLUDE_ACTIVE, self._orig["active"])
+                self.scanner.write_i32(mgr + self._WL_ID_SCEN, self._orig["wl_scen"])
+                self.scanner.write_i32(mgr + self._WL_ID_SANDBOX, self._orig["wl_sandbox"])
+                self.scanner.write_bytes(mgr + self._POOL_DIRTY, b"\x00")   # rebuild against the restored state
+            except Exception as e:
+                logger.warning("market: restore failed: %s", e)
+                return False
+            logger.info("market: restored original include-set @mgr 0x%X (gate off; engine owns its buffer again)", mgr)
+            self._orig = None
+            return True
+        finally:
+            self._mgr_cache = None    # drop the resolve made for the writes, too
 
     def shutdown(self) -> None:
         """Restore the manager's original include-set (so the engine frees its OWN buffer, not ours), THEN

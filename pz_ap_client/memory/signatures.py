@@ -79,6 +79,15 @@ HOOKS: List[HookSite] = [
              "toward conservation_release. Found via Ghidra FindStrRefs on ExhibitAnimalReleasedMessage.",
              aob="40 55 53 56 57 41 56 48 8D AC 24 20 FF FF FF 48 81 EC E0 01 00 00 48 8B 41 20 31 F6 48 8B "
                  "59 10 49 89 CA 48 89 DA 48 2B 10 48 B8 AB AA AA AA AA AA AA 2A"),
+    HookSite("exhibit_release_species", 0x6048A92, "4d8bbef8000000",
+             "EXHIBIT release STORAGE-branch capture (FUN_146048940+0x152, `mov r15,[r14+0xf8]`): "
+             "ebx = released exhibit-animal id (msg+0x18), r14 = exhibit mgr, loads r15 = H = "
+             "*(mgr+0xF8) = the owned-id-set/def-map holder - the per-species cr_ attribution the "
+             "placed-only census diff can't provide (fires only for storage releases).",
+             # site instruction + the two following (mov [rbp+0x110],ebx; lea r14,[r15+0x2a0]);
+             # the 7-byte site instruction alone repeats once elsewhere - this 20-byte pattern is
+             # unique in-module (verified against the on-disk exe 2026-07-09).
+             aob="4D 8B BE F8 00 00 00 89 9D 10 01 00 00 4D 8D B7 A0 02 00 00"),
 ]
 
 # ── data anchors (resolved via anchors.json chains) with plausible-value sanity ranges ───────────────
@@ -410,6 +419,32 @@ def check_terrain(scanner, gate=None) -> List[CheckResult]:
     return [CheckResult("system", "terrain_bytecode", "broken", "main.2 signature not found (zoo loaded? bytecode changed?)")]
 
 
+def check_exhibit_enrich(scanner, gate=None) -> List[CheckResult]:
+    """ExhibitInfoPopUp bytecode (exhibit-enrichment gate) - same shape as check_terrain: reuse the
+    client's gate state when passed (no fresh full-heap scan); standalone callers get a real scan.
+    NOTE the arrays are only loaded after an exhibit info panel has been opened once in this park."""
+    if gate is not None:
+        try:
+            if gate._cache_valid():
+                return [CheckResult("system", "exhibit_enrich_bytecode", "ok",
+                                    "%s located" % {k: len(v) for k, v in gate._addrs.items()})]
+        except Exception:
+            pass
+        return [CheckResult("system", "exhibit_enrich_bytecode", "ok",
+                            "scan deferred off the first tick (locates once an exhibit panel opens); "
+                            "verify on demand with tools/selfcheck.py")]
+    try:
+        from .exhibit_enrich import ExhibitEnrichmentGate
+        hits = ExhibitEnrichmentGate(scanner)._find()
+        found = {k: len(v) for k, v in hits.items()}
+    except Exception as e:
+        return [CheckResult("system", "exhibit_enrich_bytecode", "unresolved", "scan error: %s" % type(e).__name__)]
+    if all(found.values()):
+        return [CheckResult("system", "exhibit_enrich_bytecode", "ok", "located %s" % found)]
+    return [CheckResult("system", "exhibit_enrich_bytecode", "broken",
+                        "signature(s) missing %s (exhibit panel opened once? bytecode changed?)" % found)]
+
+
 def check_roots(scanner) -> List[CheckResult]:
     base = scanner.module_base
     hits = module_aob_scan(scanner, ROOT_CLUSTER["aob"])
@@ -453,7 +488,7 @@ def check_session(scanner, reader=None) -> List[CheckResult]:
 
 
 def run_selfcheck(scanner, anchor_table=None, *, session_reader=None, terrain_gate=None,
-                  installed_hooks=None) -> List[CheckResult]:
+                  exhibit_enrich_gate=None, installed_hooks=None) -> List[CheckResult]:
     """Resolve every dependency and return a health report. anchor_table optional (skips anchor checks).
 
     session_reader / terrain_gate: the client passes its own already-resolved instances so the preflight
@@ -470,5 +505,6 @@ def run_selfcheck(scanner, anchor_table=None, *, session_reader=None, terrain_ga
         results += check_anchors(scanner, anchor_table)
     results += check_research(scanner)
     results += check_terrain(scanner, gate=terrain_gate)
+    results += check_exhibit_enrich(scanner, gate=exhibit_enrich_gate)
     results += check_session(scanner, reader=session_reader)
     return results

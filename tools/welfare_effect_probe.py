@@ -142,38 +142,10 @@ def _dump_record(g, rs, reg, rec, cid, typ, flag):
     print("   " + " | ".join(parts))
 
 
-def main() -> int:
-    try:
-        sys.stdout.reconfigure(line_buffering=True)
-    except Exception:
-        pass
-    needle = (sys.argv[1] if len(sys.argv) > 1 else "buffalo").lower()
-    s = MemoryScanner("PlanetZoo.exe")
-    if not s.attach():
-        print("FAIL: not attached (is PlanetZoo.exe running?)")
-        return 1
-
-    rr = ResearchReader(s, registry=RegistryResolver(s))
-    rs = rr._research_system()
-    if not rs:
-        print("FAIL: no research system (zoo not loaded?)")
-        return 1
-    print("research system: 0x%X" % rs)
-    edu = _i32(s, rs + EDU_COUNTER_OFF)
-    print("rs+0x52c GLOBAL education counter = %s (NOT per-species)" % edu)
-
-    try:
-        reg = InternRegistry(s)
-        reg.build_index()
-        m = UnlockMap(s, rs)
-    except Exception as e:
-        print("FAIL: %s" % e)
-        return 1
-    g = RewardGranter(s, rr)
-
+def _dump_matched(s, g, rs, reg, m, needle):
+    """Print welfare records matching `needle`; return (matched_cids, matched_bks)."""
     print("\n=== welfare records (type 0/2/3) matching %r ===" % needle)
-    shown = 0
-    matched_cids, matched_bks = set(), set()
+    shown, matched_cids, matched_bks = 0, set(), set()
     for rec, cid, typ, flag in m.iter_records():
         if typ not in WELFARE_TYPES:
             continue
@@ -187,12 +159,63 @@ def main() -> int:
             matched_bks.add(bk)
         shown += 1
     print("   (%d records shown)" % shown)
+    return matched_cids, matched_bks
 
-    # Raw map dumps: the level-map (rs+0x1e8, keyed by content id) gives the per-LEVEL target the fix
-    # needs; the count-map (rs+0x210, keyed per-species bookkeep key) is the field we cap. Restricting
-    # to the matched keys keeps it readable.
+
+def _set_breeding(s, g, rs, bks, setval):
+    """Write the per-species breeding f32 (count-map crec+4) for each bk - the save/reload persistence test."""
+    print("\n--set-breeding: writing count-map f32 = %s for %d species" % (setval, len(bks)))
+    for bk in sorted(bks):
+        crec = g._intmap_find(rs + COUNT_MAP_OFF, 0xC, bk)
+        if crec is None:
+            print("   bk=0x%X: no count-map record" % bk)
+            continue
+        before = _f32(s, crec + 4)
+        s.pm.write_bytes(crec + 4, struct.pack("<f", setval), 4)
+        print("   bk=0x%X: f32 %s -> %s" % (bk, before, _f32(s, crec + 4)))
+    print("   NOW: save the park, reload it, and re-run WITHOUT --set-breeding. If f32 reverts to its"
+          " researched value, our writes DON'T persist (read fresh each tick); if still %s, they DO." % setval)
+
+
+def main() -> int:
+    try:
+        sys.stdout.reconfigure(line_buffering=True)
+    except Exception:
+        pass
+    needle = (sys.argv[1] if len(sys.argv) > 1 and not sys.argv[1].startswith("--") else "buffalo").lower()
+    s = MemoryScanner("PlanetZoo.exe")
+    if not s.attach():
+        print("FAIL: not attached (is PlanetZoo.exe running?)")
+        return 1
+
+    rr = ResearchReader(s, registry=RegistryResolver(s))
+    rs = rr._research_system()
+    if not rs:
+        print("FAIL: no research system (zoo not loaded?)")
+        return 1
+    print("research system: 0x%X" % rs)
+    print("rs+0x52c GLOBAL education counter = %s (NOT per-species)" % _i32(s, rs + EDU_COUNTER_OFF))
+
+    try:
+        reg = InternRegistry(s)
+        reg.build_index()
+        m = UnlockMap(s, rs)
+    except Exception as e:
+        print("FAIL: %s" % e)
+        return 1
+    g = RewardGranter(s, rr)
+
+    matched_cids, matched_bks = _dump_matched(s, g, rs, reg, m, needle)
+    # Raw map dumps: level-map rs+0x1e8 (per-LEVEL target) + count-map rs+0x210 (per-species field we cap).
     _dump_raw_map(s, rs + LEVEL_MAP_OFF, 0x10, "level-map rs+0x1e8 (key=content id)", want_keys=matched_cids)
     _dump_raw_map(s, rs + COUNT_MAP_OFF, 0xC, "count-map rs+0x210 (key=bookkeep)", want_keys=matched_bks)
+
+    # --set-breeding=VALUE: write the breeding f32 to test save/reload persistence (does the fix need to
+    # source "researched levels" from research status, or can it read the count-map fresh each tick?).
+    setval = next((float(a.split("=", 1)[1]) for a in sys.argv if a.startswith("--set-breeding=")), None)
+    if setval is not None:
+        _set_breeding(s, g, rs, matched_bks, setval)
+
     print("\nInterpretation:")
     print("  - breeding (type 2): countmap f32 is the fertility LEVEL - correlate with the UI %% for the")
     print("    fully-researched animal (e.g. 30%% -> confirm which f32 == level 2). That field is what a")

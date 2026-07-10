@@ -72,6 +72,27 @@ def _loadbool(reg_a: int, gate: int) -> bytes:
     return struct.pack("<I", 3 | ((reg_a & 0xFF) << 6) | ((gate & 1) << 23))
 
 
+def writable_regions(scanner):
+    """All committed writable (non-guard) regions of the game process - the VM heap where loaded Lua
+    code arrays live. Shared by every bytecode-patch gate (TerrainGate, ExhibitEnrichmentGate, probes)."""
+    try:
+        handle = scanner.pm.process_handle
+    except Exception:
+        return []
+    k32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    k32.VirtualQueryEx.restype = ctypes.c_size_t
+    mbi = _MBI(); addr = 0; out = []
+    while addr < 0x7FFFFFFFFFFF:
+        if not k32.VirtualQueryEx(handle, ctypes.c_void_p(addr), ctypes.byref(mbi), ctypes.sizeof(mbi)):
+            break
+        base = mbi.BaseAddress or 0
+        if (mbi.State == _MEM_COMMIT and not (mbi.Protect & _PAGE_GUARD)
+                and (mbi.Protect & 0xFF) in _WRITABLE and mbi.RegionSize < 0x10000000):
+            out.append((base, mbi.RegionSize))
+        addr = base + mbi.RegionSize
+    return out
+
+
 class TerrainGate:
     """Native terrain-tool gate by patching main.2's loaded Lua bytecode. Driven from the received
     tool-item set each tick (authoritative + idempotent, restart-correct)."""
@@ -93,22 +114,7 @@ class TerrainGate:
     # -- bytecode location -----------------------------------------------------
 
     def _regions(self):
-        try:
-            handle = self.scanner.pm.process_handle
-        except Exception:
-            return []
-        k32 = ctypes.WinDLL("kernel32", use_last_error=True)
-        k32.VirtualQueryEx.restype = ctypes.c_size_t
-        mbi = _MBI(); addr = 0; out = []
-        while addr < 0x7FFFFFFFFFFF:
-            if not k32.VirtualQueryEx(handle, ctypes.c_void_p(addr), ctypes.byref(mbi), ctypes.sizeof(mbi)):
-                break
-            base = mbi.BaseAddress or 0
-            if (mbi.State == _MEM_COMMIT and not (mbi.Protect & _PAGE_GUARD)
-                    and (mbi.Protect & 0xFF) in _WRITABLE and mbi.RegionSize < 0x10000000):
-                out.append((base, mbi.RegionSize))
-            addr = base + mbi.RegionSize
-        return out
+        return writable_regions(self.scanner)
 
     def _cache_valid(self) -> bool:
         """Cheap check that the cached addresses still hold main.2's code (a scenario reload moves it)."""

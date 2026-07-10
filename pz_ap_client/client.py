@@ -241,6 +241,7 @@ class PZContext(CommonContext):
         self.research_gate = None  # ResearchGate (memory mode); enforces research_centre/workshop
         self.presence_gate = None  # PresenceGate (memory mode); native greyed-button UX for those
         self.terrain_gate = None  # TerrainGate (memory mode); native terrain-tool greying (water_tools)
+        self.exhibit_enrich_gate = None  # ExhibitEnrichmentGate (memory mode); native exhibit-enrichment tier gate
         self.market_gate = None  # SpeciesMarketGate (memory mode); restricts the habitat autofill market to unlocked species
         self.exhibit_gate = None  # ExhibitMarketGate (memory mode); same include-set gate for the exhibit-animal market
         self.reward_granter = None  # RewardGranter (memory mode); grants decoupled research rewards
@@ -377,6 +378,16 @@ class PZContext(CommonContext):
         # ResearchReader so it resolves the research system the same way.
         from .memory.rewards import RewardGranter
         self.reward_granter = RewardGranter(scanner, research=self.trigger_source.research)
+        # Exhibit-enrichment gate - native per-tier gating of the exhibit panel's enrichment UI
+        # (shown + toggle state), by patching ExhibitInfoPopUp's Lua bytecode; driven by the received
+        # Progressive Exhibit Enrichment count. Real enforcement for exhibits (the rs+0x148 byte the
+        # reward granter also flips is cosmetic there); active only if this seed carries the item.
+        from .memory.exhibit_enrich import ExhibitEnrichmentGate
+        self.exhibit_enrich_gate = ExhibitEnrichmentGate(scanner)
+        self.exhibit_enrich_gate.set_gated(any(
+            i.effect_type == "progressive_research_reward"
+            and i.effect_args.get("family") == "exhibit_enrichment"
+            for i in self.game_data.items))
         # AP-session detection - the whole poll tick is a no-op unless the LOADED park is the AP
         # scenario (park-name marker planted by Scenario_AP_Script + scenario-mode market). Keeps the
         # client from gating/awarding inside franchise/sandbox/vanilla-career parks. Escape hatch:
@@ -455,6 +466,7 @@ class PZContext(CommonContext):
             ("mechanic_content", self._reconcile_mechanic_content),  # shops/themes/blueprints/transport/staff/power gates
             ("rewards", self._reconcile_rewards),          # animal research_reward (enrichment...) = unlocked iff received
             ("terrain", self._reconcile_terrain),          # native terrain-tool greying = received tool set
+            ("exhibit_enrichment", self._reconcile_exhibit_enrichment),  # exhibit enrichment tiers <= received count
             ("market", self._reconcile_market),            # scenario market stocked = unlocked species only
             ("market_fill", self._reconcile_market_fill),  # bootstrap fill: keep a minimum selection in both markets
         )
@@ -1033,6 +1045,11 @@ class PZContext(CommonContext):
                     logger.exception("market gate restore on park-unload failed")
         self._market_last_allowed = None        # force a fresh apply if the AP scenario reloads
         self._market_last_applied_ids = frozenset()
+        if self._session is not None:
+            # Drop the park-name cache: freed park-info memory can ghost-read the OLD park's name
+            # indefinitely (read() never rescans while a cached name still resolves), which would serve
+            # a stale marker instead of the resumed/next park. Fresh scan on the next tick redetects.
+            self._session.names.invalidate()
 
     def _reconcile_market_fill(self) -> None:
         """Bootstrap fill: each tick, keep both autofill markets stocked with a minimum selection so an
@@ -1074,6 +1091,7 @@ class PZContext(CommonContext):
                 scanner, at,
                 session_reader=(self._session.names if self._session is not None else None),
                 terrain_gate=self.terrain_gate,
+                exhibit_enrich_gate=self.exhibit_enrich_gate,
                 installed_hooks=HookManager.active_hooks(),
             )
             bad = [r for r in results if r.status not in ("ok", "relocated")]
@@ -1104,6 +1122,23 @@ class PZContext(CommonContext):
             self.terrain_gate.reconcile(received)
         except Exception:
             logger.exception("terrain reconcile failed")
+
+    def _reconcile_exhibit_enrichment(self) -> None:
+        """Drive the native exhibit-enrichment tier gate from the received Progressive Exhibit
+        Enrichment count: tiers <= N show their items (with correct toggle state) in every exhibit
+        panel, higher tiers read NOT YET RESEARCHED. Authoritative + idempotent (restart-correct);
+        no-op if the seed doesn't carry the item. This is the real exhibit-side enforcement - the
+        rs+0x148 flips from _reconcile_rewards are cosmetic for exhibit species."""
+        if self.exhibit_enrich_gate is None or not self.exhibit_enrich_gate.enabled:
+            return
+        count = sum(1 for net_item in self.items_received
+                    if (it := self.game_data.item_by_id.get(net_item.item)) is not None
+                    and it.effect_type == "progressive_research_reward"
+                    and it.effect_args.get("family") == "exhibit_enrichment")
+        try:
+            self.exhibit_enrich_gate.reconcile(count)
+        except Exception:
+            logger.exception("exhibit-enrichment reconcile failed")
 
     # -- goal detection --------------------------------------------------------
 
@@ -1234,7 +1269,8 @@ def _shutdown_gates(ctx) -> None:
     for gate, method in ((ctx.trigger_source, "close"), (ctx.permit_gate, "shutdown"),
                          (ctx.market_gate, "shutdown"), (ctx.exhibit_gate, "shutdown"),
                          (ctx.facility_gate, "shutdown"), (ctx.research_gate, "shutdown"),
-                         (ctx.presence_gate, "shutdown"), (ctx.terrain_gate, "shutdown")):
+                         (ctx.presence_gate, "shutdown"), (ctx.terrain_gate, "shutdown"),
+                         (ctx.exhibit_enrich_gate, "shutdown")):
         if gate is None:
             continue
         try:

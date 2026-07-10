@@ -38,7 +38,28 @@ REC_BOOKKEEP = 0x0C     # u32 per-type bookkeeping key
 REC_UNLOCKED = 0x12     # u8 unlocked flag (the byte we flip)
 COUNT_MAP_OFF = 0x210   # stride 0xC {+0 key, +4 f32 max-level, +8 i32 count}
 LEVEL_MAP_OFF = 0x1E8   # stride 0x10 {+0 content id, +4 f32 level}
-EDU_COUNTER_OFF = 0x52C  # plain i32 on the research system
+# The ZOO EDUCATION RATING = i32 counter@rs+0x52C / i32 total@rs+0x528, clamped (zoo-stats decomp
+# fn_at_14049F49F, RE'd 2026-07-10). The counter = number of unlocked education contents zoo-wide;
+# the game only increments it at research-completion transitions (fn_140E3FBF0 education case), so
+# the gate keeps it equal to the number of SET type-3 bytes (_sync_education_counter).
+EDU_COUNTER_OFF = 0x52C
+
+# The PER-SPECIES education unlock-level STORE - what the education panel's per-species caps (and
+# any other GetEducationUnlockLevel consumer) actually read. RE'd 2026-07-10 from the binding's
+# executor chain (registrar block 0x140499xxx -> handler thunk 0x14049D930 -> FUN_146018830 ->
+# reader FUN_1482f7500): STORE = *(*(park+0x10)+0x660); open-addressing map @store+0x88
+# {u32 topic_id -> 0x60-stride record, u32 unlock level @rec+8, u32 max level @rec+0x18} with the
+# engine's standard u32 hash + bitmap layout (find helper FUN_14836f0f0). Live-verified: 210
+# records (the education-capable species), gpfrog topic 0x68 at level 2 the only nonzero; the
+# record level is plain-writable. The gate writes level = min(received, 3) to EVERY record each
+# education reconcile - the same authoritative barrier model as the byte gate; the game recomputes
+# from research at load/completion and the next tick reasserts (accepted ~1s flicker class).
+EDU_STORE_PARENT_OFF = 0x10    # park -> parent object
+EDU_STORE_OFF = 0x660          # parent -> store object
+EDU_STORE_MAP_OFF = 0x88       # store -> map header {count@+8, cap@+0x10 pow2, buckets@+0x18}
+EDU_REC_STRIDE = 0x60
+EDU_REC_LEVEL = 0x8
+EDU_MAX_LEVEL = 3
 HEAP_LO, HEAP_HI = 0x10000, (1 << 47)
 
 # progressive_research_reward family -> unlock-map record type byte.
@@ -60,6 +81,24 @@ FAMILY_LEVEL_RE = {
     "education": re.compile(r"educationl(\d+)"),
 }
 LEVEL_FAMILIES = frozenset(FAMILY_LEVEL_RE)
+
+# Families whose EFFECT is a research-driven value in the count-map @rs+0x210 (ONE record per
+# species, keyed by the records' rec+0xC bookkeep id): breeding = fertility-rate f32 @crec+4,
+# supplement = food-quality TIER count i32 @crec+8 (floor 1 = the default quality-1 food every
+# species ships with; research L1/L2 raise it to 2/3 - so the AP gate is min(1+received, granted),
+# NEVER 0: capping to 0 emptied the food-quality dropdown, live 2026-07-10). For these the
+# unlocked BYTE is COSMETIC (live 2026-07-08/10):
+# the engine applies the effect at research completion and RECOMPUTES it from research state on
+# every park load (persistence test 2026-07-10, golden poison frog: written 0.30->0.15 reverted on
+# save/reload; the UI read 15% live before the save). So the gate is a PER-TICK CAP: effect =
+# level min(received progressive count, research-granted level), re-applied within a tick of any
+# load / research completion. Breeding rates are FLAT across species (buffalo + golden poison frog
+# live-confirmed L1=15% L2=30%); a value above L2's rate is treated as level 3 and only ever capped
+# DOWN - restoring level 3 = restoring the observed granted value, so L3's exact rate is never
+# needed. Education is NOT here: its per-species store is still unlocated (rs+0x52C is global).
+EFFECT_CAP_FAMILIES = frozenset(("breeding", "supplement"))
+BREEDING_RATE = {0: 0.0, 1: 0.15, 2: 0.30}
+_RATE_EPS = 1e-4
 
 # Barriers ("Progressive Barrier Level", 6 copies) are NOT rs+0x148 unlock-map content - they are
 # HABITAT-BOUNDARY build content gated by MECHANIC research (rs+0xF8). LIVE-CONFIRMED 2026-06-20: a
@@ -261,6 +300,12 @@ class RewardGranter:
         # received after it would never apply) and re-log the warning every retry tick.
         self._not_gated_warned: set = set()
         self._last_unlock_count = -1     # unlock-map record count last tick (growth -> refresh snapshots)
+        # Research-GRANTED effect high-water per (family, bookkeep id) - what the cap restores up to
+        # when more progressive copies arrive. Bookkeep ids re-intern per park load, so this is
+        # cleared with the other snapshots on unlock-map change (a stale id colliding with a fresh
+        # load's could otherwise restore a value research never granted in that zoo).
+        self._effect_granted: Dict[Tuple[str, int], float] = {}
+        self._edu_store_hdr: Optional[int] = None   # cached education level-store map header
 
     def _registry_index(self) -> Optional[InternRegistry]:
         if self._registry is None:
@@ -297,6 +342,7 @@ class RewardGranter:
             if self._registry is not None:
                 self._registry._index = None
             self._level_maps.clear()
+            self._effect_granted.clear()
 
     def _flip(self, rs: int, rec: int, cid: int, typ: int, flag: int) -> bool:
         if flag:
@@ -346,6 +392,80 @@ class RewardGranter:
                 if struct.unpack_from("<I", blob, i * stride)[0] == key:
                     return records + i * stride
         return None
+
+    @staticmethod
+    def _breeding_level_of(value: float) -> int:
+        """Flat-rate level for an observed fertility f32 (above L2's rate = level 3, whose exact
+        rate is never needed because level 3 is only ever capped DOWN or fully restored)."""
+        if value > BREEDING_RATE[2] + _RATE_EPS:
+            return 3
+        if value >= BREEDING_RATE[2] - _RATE_EPS:
+            return 2
+        if value >= BREEDING_RATE[1] - _RATE_EPS:
+            return 1
+        return 0
+
+    def _cap_effects(self, family: str, m: "UnlockMap", levels: Dict[int, int], received: int) -> int:
+        """Cap each species' EFFECT value (count-map @rs+0x210) to the received progressive count -
+        the real gate for breeding/supplement (the unlocked byte is cosmetic for them). Effect =
+        level min(received, research-granted); the granted high-water is tracked per (family,
+        bookkeep id) so later copies RESTORE it. The game rewrites the researched value on every
+        park load and our next tick re-caps (~1s of full effect - the accepted gate flicker).
+        Returns the number of effect writes."""
+        if family not in EFFECT_CAP_FAMILIES:
+            return 0
+        rs = self.research._research_system()
+        if not rs:
+            return 0
+        bks = set()
+        for rec, cid, _typ, _flag in m.iter_records():
+            if cid in levels:
+                try:
+                    bks.add(struct.unpack("<I", self.scanner.read_bytes(rec + REC_BOOKKEEP, 4))[0])
+                except Exception:
+                    continue
+        bks.discard(0)
+        writes = 0
+        for bk in bks:
+            try:
+                crec = self._intmap_find(rs + COUNT_MAP_OFF, 0xC, bk)
+                if crec is None:
+                    continue    # record is inserted lazily on first grant - nothing granted, nothing to cap
+                writes += self._cap_one_effect(family, bk, crec, received)
+            except Exception as e:
+                logger.debug("%s effect cap: bk=0x%X skipped (%s)", family, bk, e)
+        return writes
+
+    def _cap_one_effect(self, family: str, bk: int, crec: int, received: int) -> int:
+        """Cap/restore one species' effect field; returns 1 if written."""
+        if family == "breeding":
+            cur = struct.unpack("<f", self.scanner.read_bytes(crec + 4, 4))[0]
+            granted = max(self._effect_granted.get(("breeding", bk), 0.0), cur)
+            self._effect_granted[("breeding", bk)] = granted
+            glevel = self._breeding_level_of(granted)
+            eff = min(received, glevel)
+            desired = granted if eff == glevel else BREEDING_RATE[eff]
+            if abs(cur - desired) <= _RATE_EPS:
+                return 0
+            self.scanner.write_bytes(crec + 4, struct.pack("<f", desired))
+            logger.info("breeding effect cap: bk=0x%X %.2f -> %.2f (granted %.2f, received %d)",
+                        bk, cur, desired, granted, received)
+        else:   # supplement
+            # The count @crec+8 is the number of AVAILABLE FOOD-QUALITY TIERS, floor 1: every species
+            # ships with quality-1 food (vanilla-unresearched reads 1; live 2026-07-10 the pangolin's
+            # food-quality dropdown went EMPTY when this capped to 0), research L1/L2 raise it to 2/3.
+            # So the gate maps received copies to tiers ABOVE the default: desired = min(1+received,
+            # granted), granted floored at 1 (also self-heals records an older build zeroed).
+            cur = struct.unpack("<i", self.scanner.read_bytes(crec + 8, 4))[0]
+            granted = int(max(self._effect_granted.get(("supplement", bk), 0), cur, 1))
+            self._effect_granted[("supplement", bk)] = granted
+            desired = min(1 + received, granted)
+            if cur == desired:
+                return 0
+            self.scanner.write_bytes(crec + 8, struct.pack("<i", desired))
+            logger.info("supplement effect cap: bk=0x%X %d -> %d (granted %d, received %d)",
+                        bk, cur, desired, granted, received)
+        return 1
 
     def _bookkeep_breeding(self, rs: int, cid: int, crec: int) -> None:
         lrec = self._intmap_find(rs + LEVEL_MAP_OFF, 0x10, cid)
@@ -604,8 +724,11 @@ class RewardGranter:
         """Authoritatively gate a COUNT-BASED per-species LEVEL family (supplement/breeding/education/
         exhibit_enrichment): the progressive item's N-th received copy unlocks level <= N for EVERY
         species that has it - sets each <Species><Family>L<k> content's unlocked byte = (k <=
-        received_count). The barrier model: restart-correct, driven each tick from the received progressive
-        count. Idempotent (writes on change). False if the maps aren't readable yet (retry)."""
+        received_count), and for the EFFECT_CAP_FAMILIES (breeding/supplement, whose byte is
+        cosmetic) additionally caps the per-species effect value to the received count
+        (_cap_effects). The barrier model: restart-correct, driven each tick from the received
+        progressive count. Idempotent (writes on change). False if the maps aren't readable yet
+        (retry)."""
         if family not in FAMILY_LEVEL_RE:
             logger.warning("progressive levels: unknown family %r", family)
             return False
@@ -622,12 +745,103 @@ class RewardGranter:
         want_unlocked = {cid for cid, lvl in levels.items() if lvl <= received_count}
         try:
             locked, unlocked = self._apply_reward_gate(m, levels, want_unlocked)
+            capped = self._cap_effects(family, m, levels, received_count)
+            if family == "education":
+                capped += self._sync_education_counter(m)
+                capped += self._sync_education_levels(received_count)
         except Exception as e:
             logger.warning("%s level reconcile failed (%s)", family, e)
             return False
-        if locked or unlocked:
-            logger.info("%s gate: level<=%d -> unlocked %d, locked %d", family, received_count, unlocked, locked)
+        if locked or unlocked or capped:
+            logger.info("%s gate: level<=%d -> unlocked %d, locked %d, effect writes %d",
+                        family, received_count, unlocked, locked, capped)
         return True
+
+    def _sync_education_counter(self, m: "UnlockMap") -> int:
+        """Keep the ZOO EDUCATION RATING numerator in step with the byte gate. The rating is
+        counter@rs+0x52C / total@rs+0x528 (zoo-stats decomp fn_at_14049F49F: the fraction of
+        education contents unlocked zoo-wide); the game only ever INCREMENTS the counter at a
+        research-completion transition (fn_140E3FBF0), so a research grant beyond the received
+        count leaks rating until re-synced. The byte gate has just made the type-3 unlocked bytes
+        authoritative, so the correct numerator is simply the number of SET education bytes -
+        recount and write it. Returns 1 if written."""
+        rs = self.research._research_system()
+        if not rs:
+            return 0
+        total = sum(1 for _rec, _cid, typ, flag in m.iter_records()
+                    if typ == FAMILY_TYPE["education"] and flag)
+        addr = rs + EDU_COUNTER_OFF
+        cur = struct.unpack("<i", self.scanner.read_bytes(addr, 4))[0]
+        if cur == total:
+            return 0
+        self.scanner.write_bytes(addr, struct.pack("<i", total))
+        logger.info("education rating counter synced: %d -> %d (set education bytes)", cur, total)
+        return 1
+
+    def _resolve_edu_store_map(self) -> "Optional[tuple]":
+        """(cap, buckets) of the per-species education level map, validated, or None. Cached;
+        re-resolved when the cached header stops validating (park reload)."""
+        for fresh in (False, True):
+            hdr = self._edu_store_hdr
+            if hdr is None or fresh:
+                try:
+                    from .animals import AnimalResolver
+                    park = AnimalResolver(self.scanner).resolve_park()
+                    if not park:
+                        return None
+                    parent = self.scanner.read_qword(park + EDU_STORE_PARENT_OFF)
+                    store = self.scanner.read_qword(parent + EDU_STORE_OFF) if parent else 0
+                    if not store:
+                        return None
+                    hdr = store + EDU_STORE_MAP_OFF
+                except Exception:
+                    return None
+            try:
+                count = self.scanner.read_qword(hdr + 0x08)
+                cap = self.scanner.read_qword(hdr + 0x10)
+                buckets = self.scanner.read_qword(hdr + 0x18)
+            except Exception:
+                count = cap = buckets = 0
+            if buckets and 0 < count <= cap <= (1 << 12) and (cap & (cap - 1)) == 0:
+                self._edu_store_hdr = hdr
+                return cap, buckets
+            self._edu_store_hdr = None
+        return None
+
+    def _sync_education_levels(self, received: int) -> int:
+        """Write the per-species education unlock level (the panel's caps / GetEducationUnlockLevel)
+        to min(received, 3) for EVERY species record - the same authoritative barrier model as the
+        byte gate, so the display and the gate agree. Idempotent; sanity-guards the decoded records
+        (small keys, levels <= 5) before writing anything. Returns the number of writes."""
+        resolved = self._resolve_edu_store_map()
+        if resolved is None:
+            return 0
+        cap, buckets = resolved
+        bm = ((cap >> 3) + 7) & ~7
+        try:
+            data = self.scanner.read_bytes(buckets, bm + cap * EDU_REC_STRIDE)
+        except Exception:
+            return 0
+        desired = min(max(received, 0), EDU_MAX_LEVEL)
+        recs = []
+        for i in range(cap):
+            if not ((data[i >> 3] >> (i & 7)) & 1):
+                continue
+            base = bm + i * EDU_REC_STRIDE
+            key = struct.unpack_from("<I", data, base)[0]
+            cur = struct.unpack_from("<I", data, base + EDU_REC_LEVEL)[0]
+            if key >= (1 << 20) or cur > 5:
+                return 0    # not the store we think it is - touch nothing
+            recs.append((buckets + base + EDU_REC_LEVEL, cur))
+        writes = 0
+        for addr, cur in recs:
+            if cur != desired:
+                self.scanner.write_bytes(addr, struct.pack("<I", desired))
+                writes += 1
+        if writes:
+            logger.info("education panel levels synced: %d record(s) -> level %d (received %d)",
+                        writes, desired, received)
+        return writes
 
     def reconcile_mechanic(self, contents) -> bool:
         """Make each received MECHANIC research_reward content (shops/themes/blueprints/transport/staff/power)

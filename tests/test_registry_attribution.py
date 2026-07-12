@@ -15,7 +15,7 @@ from pathlib import Path
 os.environ.setdefault("SKIP_REQUIREMENTS_UPDATE", "1")
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from pz_ap_client.memory.research import ResearchReader, ANIMAL_CATEGORY  # noqa: E402
+from pz_ap_client.memory.research import ResearchReader, ANIMAL_CATEGORY, ADVANCED_LEVEL  # noqa: E402
 
 # A species NOT in SPECIES_WELFARE_ITEM (the captured 11). aardvark proves the registry path
 # covers the other 67 with zero capture.
@@ -80,6 +80,31 @@ def test_per_level_welfare_for_uncaptured_species():
     assert rr.is_research_complete("welfare_aardvark", level=6) is False  # level 6 researching
     # "all standard levels complete" is False while level 6 is still researching
     assert rr.is_welfare_complete("aardvark") is False
+
+
+def test_per_level_welfare_exhibit_id_layout():
+    """Regression (live 2026-07-12, 'Research Welfare 1 - Malabar Rose' never fired while 2/3 fired
+    shifted-early): for exhibit species the LOWEST cat-7 item id is NOT the level-1 record, so the
+    old id-arithmetic (level N @ min_id + N-1) read the wrong records. Levels must resolve by RANK
+    over the level FIELDS. Layout here: the advanced record holds the smallest item id; the three
+    standard levels sit at non-contiguous higher ids; levels 1-2 complete, 3 researching."""
+    H = 0x3017
+    by_item = {
+        0x7000: (H, ADVANCED_LEVEL, 2, ANIMAL_CATEGORY),   # advanced/infinite record @ MIN item id
+        0x7002: (H, 0, 4, ANIMAL_CATEGORY),                # level 1 (field 0) complete
+        0x7003: (H, 1, 4, ANIMAL_CATEGORY),                # level 2 complete
+        0x7005: (H, 2, 2, ANIMAL_CATEGORY),                # level 3 researching (id gap before it)
+    }
+    by_handle = {H: [(lvl, st, cat) for (_h, lvl, st, cat) in by_item.values()]}
+    rr = ResearchReader(FakeMem(),
+                        registry=FakeRegistry({H: "MalabarRose"}),
+                        token_to_key={"malabarrose": "mrose"})
+    rr._snapshot = lambda: (by_item, by_handle)
+    assert rr.is_research_complete("welfare_mrose", level=1) is True, \
+        "level 1 fires despite the advanced record owning the min item id"
+    assert rr.is_research_complete("welfare_mrose", level=2) is True
+    assert rr.is_research_complete("welfare_mrose", level=3) is False, "level 3 still researching"
+    assert rr.is_research_complete("welfare_mrose", level=4) is False, "no 4th standard level"
 
 
 def test_degrades_without_registry():

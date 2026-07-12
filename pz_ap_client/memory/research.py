@@ -444,10 +444,15 @@ class ResearchReader:
 
     def is_welfare_level_complete(self, species_key: str, level: int,
                                   snap: Optional[Tuple[dict, dict]] = None) -> bool:
-        """True iff the species' welfare research at the given 1-based level is status 4. Welfare
-        levels are a consecutive item-id run from the level-0 record, so level N's item = base+(N-1).
+        """True iff the species' welfare research at the given 1-based level is status 4. The level
+        is resolved by RANK over the species' STANDARD (level<ADVANCED_LEVEL) cat-7 records ordered
+        by their LEVEL FIELD - NOT by item-id arithmetic. The old id-run rule (level N @ i0+(N-1))
+        held for the captured habitat runs but broke on EXHIBIT species, whose lowest cat-7 item id
+        is not the level-1 record (live report 2026-07-12: 'Research Welfare 1 - Malabar Rose' never
+        fired while levels 2/3 fired shifted-early). Rank matching is base-agnostic (0- or 1-based
+        level fields) and immune to the id layout; i0 is only used to name the species' HANDLE.
         False if unmapped/unreadable/incomplete (no false positives)."""
-        if not level:
+        if not level or level < 1:
             return False
         snap = snap or self._snapshot()
         if snap is None:
@@ -455,8 +460,14 @@ class ResearchReader:
         i0 = self._welfare_item(species_key, snap)
         if i0 is None:
             return False
-        rec = snap[0].get(i0 + (level - 1))  # (handle, level, status, category)
-        return rec is not None and rec[2] == STATUS_COMPLETE
+        rec = snap[0].get(i0)               # (handle, level, status, category)
+        if rec is None:
+            return False
+        std = sorted((lvl, st) for (lvl, st, cat) in snap[1].get(rec[0], ())
+                     if cat == ANIMAL_CATEGORY and lvl < ADVANCED_LEVEL)
+        if len(std) < level:
+            return False
+        return std[level - 1][1] == STATUS_COMPLETE
 
     def _item_id_complete(self, item: Optional[int], snap: Optional[Tuple[dict, dict]]) -> bool:
         """A specific research-item id is complete iff its record's status == COMPLETE. Handles a None

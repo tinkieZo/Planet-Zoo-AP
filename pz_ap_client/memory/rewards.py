@@ -655,7 +655,12 @@ class RewardGranter:
 
         Scope: the PER-CONTENT (named) universe only. The progressive 'exhibit_enrichment' family
         (grant_progressive) flips the lowest-locked type-1 content, which can overlap this named pool;
-        if a progressive grant lands on a named content this re-locks it next tick (per-content wins)."""
+        if a progressive grant lands on a named content this re-locks it next tick (per-content wins).
+
+        NOT A LEAK (checked 2026-07-10): 14 DLC-added enrichment contents (EN_Rubber_Duck,
+        DLC11_EN_PumpkinBall, EN_BeaverDam, ...) unlock via vanilla research despite not being AP
+        items - the APWorld's generate_items.py EXCLUDES them by an explicit skip-list (DLC ownership
+        varies per player), so they intentionally ride along with research instead of being gated."""
         reg = self._registry_index()
         if reg is None:
             return False
@@ -778,35 +783,42 @@ class RewardGranter:
         logger.info("education rating counter synced: %d -> %d (set education bytes)", cur, total)
         return 1
 
-    def _resolve_edu_store_map(self) -> "Optional[tuple]":
-        """(cap, buckets) of the per-species education level map, validated, or None. Cached;
-        re-resolved when the cached header stops validating (park reload)."""
-        for fresh in (False, True):
-            hdr = self._edu_store_hdr
-            if hdr is None or fresh:
-                try:
-                    from .animals import AnimalResolver
-                    park = AnimalResolver(self.scanner).resolve_park()
-                    if not park:
-                        return None
-                    parent = self.scanner.read_qword(park + EDU_STORE_PARENT_OFF)
-                    store = self.scanner.read_qword(parent + EDU_STORE_OFF) if parent else 0
-                    if not store:
-                        return None
-                    hdr = store + EDU_STORE_MAP_OFF
-                except Exception:
-                    return None
-            try:
-                count = self.scanner.read_qword(hdr + 0x08)
-                cap = self.scanner.read_qword(hdr + 0x10)
-                buckets = self.scanner.read_qword(hdr + 0x18)
-            except Exception:
-                count = cap = buckets = 0
-            if buckets and 0 < count <= cap <= (1 << 12) and (cap & (cap - 1)) == 0:
-                self._edu_store_hdr = hdr
-                return cap, buckets
-            self._edu_store_hdr = None
+    def _locate_edu_store_hdr(self) -> "Optional[int]":
+        """Fresh walk park -> parent(+0x10) -> store(+0x660) to the level-map header address, or
+        None if any link is unresolvable (no zoo / mid-load)."""
+        from .animals import AnimalResolver
+        try:
+            park = AnimalResolver(self.scanner).resolve_park()
+            parent = self.scanner.read_qword(park + EDU_STORE_PARENT_OFF) if park else 0
+            store = self.scanner.read_qword(parent + EDU_STORE_OFF) if parent else 0
+        except Exception:
+            return None
+        return store + EDU_STORE_MAP_OFF if store else None
+
+    def _read_edu_map_hdr(self, hdr: int) -> "Optional[tuple]":
+        """(cap, buckets) if the header at ``hdr`` validates (pow2 cap, sane count), else None."""
+        try:
+            count = self.scanner.read_qword(hdr + 0x08)
+            cap = self.scanner.read_qword(hdr + 0x10)
+            buckets = self.scanner.read_qword(hdr + 0x18)
+        except Exception:
+            return None
+        if buckets and 0 < count <= cap <= (1 << 12) and (cap & (cap - 1)) == 0:
+            return cap, buckets
         return None
+
+    def _resolve_edu_store_map(self) -> "Optional[tuple]":
+        """(cap, buckets) of the per-species education level map, validated, or None. Tries the
+        cached header first; on a miss does one fresh park-chain walk (a park reload moves the
+        store), keeping the steady state at two validation reads."""
+        resolved = self._read_edu_map_hdr(self._edu_store_hdr) if self._edu_store_hdr else None
+        if resolved is None:
+            self._edu_store_hdr = self._locate_edu_store_hdr()
+            if self._edu_store_hdr is not None:
+                resolved = self._read_edu_map_hdr(self._edu_store_hdr)
+        if resolved is None:
+            self._edu_store_hdr = None
+        return resolved
 
     def _sync_education_levels(self, received: int) -> int:
         """Write the per-species education unlock level (the panel's caps / GetEducationUnlockLevel)

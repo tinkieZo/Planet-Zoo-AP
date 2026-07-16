@@ -82,22 +82,26 @@ FAMILY_LEVEL_RE = {
 }
 LEVEL_FAMILIES = frozenset(FAMILY_LEVEL_RE)
 
-# Families whose EFFECT is a research-driven value in the count-map @rs+0x210 (ONE record per
-# species, keyed by the records' rec+0xC bookkeep id): breeding = fertility-rate f32 @crec+4,
-# supplement = food-quality TIER count i32 @crec+8 (floor 1 = the default quality-1 food every
-# species ships with; research L1/L2 raise it to 2/3 - so the AP gate is min(1+received, granted),
-# NEVER 0: capping to 0 emptied the food-quality dropdown, live 2026-07-10). For these the
-# unlocked BYTE is COSMETIC (live 2026-07-08/10):
-# the engine applies the effect at research completion and RECOMPUTES it from research state on
-# every park load (persistence test 2026-07-10, golden poison frog: written 0.30->0.15 reverted on
-# save/reload; the UI read 15% live before the save). So the gate is a PER-TICK CAP: effect =
-# level min(received progressive count, research-granted level), re-applied within a tick of any
-# load / research completion. Breeding rates are FLAT across species (buffalo + golden poison frog
-# live-confirmed L1=15% L2=30%); a value above L2's rate is treated as level 3 and only ever capped
-# DOWN - restoring level 3 = restoring the observed granted value, so L3's exact rate is never
-# needed. Education is NOT here: its per-species store is still unlocated (rs+0x52C is global).
-EFFECT_CAP_FAMILIES = frozenset(("breeding", "supplement"))
+# Families whose EFFECT is a value in the count-map @rs+0x210 (ONE record per species, keyed by
+# the records' rec+0xC bookkeep id): breeding = fertility-rate f32 @crec+4, supplement =
+# food-quality TIER count i32 @crec+8 (floor 1 = the default quality-1 food every species ships
+# with; tiers 2/3 above it - writing 0 emptied the food-quality dropdown, live 2026-07-10).
+#
+# These are AUTHORITATIVE like the byte families (user decision 2026-07-13, replacing the earlier
+# min(research-granted, received) cap): the N-th received copy sets the effect for EVERY species,
+# research NOT required - breeding fertility = BREEDING_RATE[min(received, 2)] (flat rates across
+# species, buffalo + golden poison frog live-confirmed L1=15% L2=30%), supplement tiers =
+# min(1+received, 3). The engine rewrites the values from research state at park load / research
+# completion (both observed live; the load recompute is byte-independent) and the next tick
+# re-syncs - the accepted ~1s flicker class. History: the pre-2026-07-13 cap design also required
+# hands-off unlocked bytes (FUN_140E3FBF0 applies the researched effect only on the byte's 0->1
+# transition, so our byte pre-set starved the granted value - panda stuck +0% with 2 copies); with
+# authoritative targets the granted value is irrelevant, so the byte pass is restored for panel
+# consistency with the other families.
+EFFECT_SYNC_FAMILIES = frozenset(("breeding", "supplement"))
 BREEDING_RATE = {0: 0.0, 1: 0.15, 2: 0.30}
+BREEDING_MAX_LEVEL = 2       # the item ships 2 copies; rates above L2 are never written
+SUPPLEMENT_MAX_TIERS = 3     # quality-1 default + item tiers 2 and 3
 _RATE_EPS = 1e-4
 
 # Barriers ("Progressive Barrier Level", 6 copies) are NOT rs+0x148 unlock-map content - they are
@@ -300,11 +304,6 @@ class RewardGranter:
         # received after it would never apply) and re-log the warning every retry tick.
         self._not_gated_warned: set = set()
         self._last_unlock_count = -1     # unlock-map record count last tick (growth -> refresh snapshots)
-        # Research-GRANTED effect high-water per (family, bookkeep id) - what the cap restores up to
-        # when more progressive copies arrive. Bookkeep ids re-intern per park load, so this is
-        # cleared with the other snapshots on unlock-map change (a stale id colliding with a fresh
-        # load's could otherwise restore a value research never granted in that zoo).
-        self._effect_granted: Dict[Tuple[str, int], float] = {}
         self._edu_store_hdr: Optional[int] = None   # cached education level-store map header
 
     def _registry_index(self) -> Optional[InternRegistry]:
@@ -342,7 +341,6 @@ class RewardGranter:
             if self._registry is not None:
                 self._registry._index = None
             self._level_maps.clear()
-            self._effect_granted.clear()
 
     def _flip(self, rs: int, rec: int, cid: int, typ: int, flag: int) -> bool:
         if flag:
@@ -393,26 +391,15 @@ class RewardGranter:
                     return records + i * stride
         return None
 
-    @staticmethod
-    def _breeding_level_of(value: float) -> int:
-        """Flat-rate level for an observed fertility f32 (above L2's rate = level 3, whose exact
-        rate is never needed because level 3 is only ever capped DOWN or fully restored)."""
-        if value > BREEDING_RATE[2] + _RATE_EPS:
-            return 3
-        if value >= BREEDING_RATE[2] - _RATE_EPS:
-            return 2
-        if value >= BREEDING_RATE[1] - _RATE_EPS:
-            return 1
-        return 0
-
-    def _cap_effects(self, family: str, m: "UnlockMap", levels: Dict[int, int], received: int) -> int:
-        """Cap each species' EFFECT value (count-map @rs+0x210) to the received progressive count -
-        the real gate for breeding/supplement (the unlocked byte is cosmetic for them). Effect =
-        level min(received, research-granted); the granted high-water is tracked per (family,
-        bookkeep id) so later copies RESTORE it. The game rewrites the researched value on every
-        park load and our next tick re-caps (~1s of full effect - the accepted gate flicker).
-        Returns the number of effect writes."""
-        if family not in EFFECT_CAP_FAMILIES:
+    def _sync_effects(self, family: str, m: "UnlockMap", levels: Dict[int, int], received: int) -> int:
+        """Write each species' EFFECT value (count-map @rs+0x210) to the AUTHORITATIVE item-driven
+        target - see the EFFECT_SYNC_FAMILIES block: the N-th received copy sets the effect for
+        EVERY species, research not required. The game rewrites values from research state at park
+        load / research completion; the next tick re-syncs (~1s of drift - the accepted flicker
+        class). Species whose count-map record hasn't been inserted yet are skipped (the game
+        inserts lazily; observed maps carry records for every species after a park load). Returns
+        the number of effect writes."""
+        if family not in EFFECT_SYNC_FAMILIES:
             return 0
         rs = self.research._research_system()
         if not rs:
@@ -430,41 +417,33 @@ class RewardGranter:
             try:
                 crec = self._intmap_find(rs + COUNT_MAP_OFF, 0xC, bk)
                 if crec is None:
-                    continue    # record is inserted lazily on first grant - nothing granted, nothing to cap
-                writes += self._cap_one_effect(family, bk, crec, received)
+                    continue    # record is inserted lazily by the game - nothing to write through yet
+                writes += self._sync_one_effect(family, bk, crec, received)
             except Exception as e:
-                logger.debug("%s effect cap: bk=0x%X skipped (%s)", family, bk, e)
+                logger.debug("%s effect sync: bk=0x%X skipped (%s)", family, bk, e)
         return writes
 
-    def _cap_one_effect(self, family: str, bk: int, crec: int, received: int) -> int:
-        """Cap/restore one species' effect field; returns 1 if written."""
+    def _sync_one_effect(self, family: str, bk: int, crec: int, received: int) -> int:
+        """Write one species' effect field to the item-driven target; returns 1 if written."""
         if family == "breeding":
             cur = struct.unpack("<f", self.scanner.read_bytes(crec + 4, 4))[0]
-            granted = max(self._effect_granted.get(("breeding", bk), 0.0), cur)
-            self._effect_granted[("breeding", bk)] = granted
-            glevel = self._breeding_level_of(granted)
-            eff = min(received, glevel)
-            desired = granted if eff == glevel else BREEDING_RATE[eff]
+            desired = BREEDING_RATE[min(max(received, 0), BREEDING_MAX_LEVEL)]
             if abs(cur - desired) <= _RATE_EPS:
                 return 0
             self.scanner.write_bytes(crec + 4, struct.pack("<f", desired))
-            logger.info("breeding effect cap: bk=0x%X %.2f -> %.2f (granted %.2f, received %d)",
-                        bk, cur, desired, granted, received)
+            logger.info("breeding effect sync: bk=0x%X %.2f -> %.2f (received %d)",
+                        bk, cur, desired, received)
         else:   # supplement
             # The count @crec+8 is the number of AVAILABLE FOOD-QUALITY TIERS, floor 1: every species
-            # ships with quality-1 food (vanilla-unresearched reads 1; live 2026-07-10 the pangolin's
-            # food-quality dropdown went EMPTY when this capped to 0), research L1/L2 raise it to 2/3.
-            # So the gate maps received copies to tiers ABOVE the default: desired = min(1+received,
-            # granted), granted floored at 1 (also self-heals records an older build zeroed).
+            # ships with quality-1 food (writing 0 emptied the food-quality dropdown, live 2026-07-10);
+            # each received copy opens the next tier for everyone.
             cur = struct.unpack("<i", self.scanner.read_bytes(crec + 8, 4))[0]
-            granted = int(max(self._effect_granted.get(("supplement", bk), 0), cur, 1))
-            self._effect_granted[("supplement", bk)] = granted
-            desired = min(1 + received, granted)
+            desired = min(1 + max(received, 0), SUPPLEMENT_MAX_TIERS)
             if cur == desired:
                 return 0
             self.scanner.write_bytes(crec + 8, struct.pack("<i", desired))
-            logger.info("supplement effect cap: bk=0x%X %d -> %d (granted %d, received %d)",
-                        bk, cur, desired, granted, received)
+            logger.info("supplement effect sync: bk=0x%X %d -> %d (received %d)",
+                        bk, cur, desired, received)
         return 1
 
     def _bookkeep_breeding(self, rs: int, cid: int, crec: int) -> None:
@@ -728,12 +707,12 @@ class RewardGranter:
     def reconcile_progressive_levels(self, family: str, received_count: int) -> bool:
         """Authoritatively gate a COUNT-BASED per-species LEVEL family (supplement/breeding/education/
         exhibit_enrichment): the progressive item's N-th received copy unlocks level <= N for EVERY
-        species that has it - sets each <Species><Family>L<k> content's unlocked byte = (k <=
-        received_count), and for the EFFECT_CAP_FAMILIES (breeding/supplement, whose byte is
-        cosmetic) additionally caps the per-species effect value to the received count
-        (_cap_effects). The barrier model: restart-correct, driven each tick from the received
-        progressive count. Idempotent (writes on change). False if the maps aren't readable yet
-        (retry)."""
+        species that has it, research NOT required (the barrier model, uniform across all four
+        families since 2026-07-13). Every family drives the unlocked bytes (= k <= received_count);
+        the EFFECT_SYNC_FAMILIES (breeding/supplement) additionally write their count-map effect
+        value to the item-driven target (_sync_effects), and education syncs its rating counter +
+        per-species level store. Restart-correct, driven each tick from the received progressive
+        count. Idempotent (writes on change). False if the maps aren't readable yet (retry)."""
         if family not in FAMILY_LEVEL_RE:
             logger.warning("progressive levels: unknown family %r", family)
             return False
@@ -750,7 +729,7 @@ class RewardGranter:
         want_unlocked = {cid for cid, lvl in levels.items() if lvl <= received_count}
         try:
             locked, unlocked = self._apply_reward_gate(m, levels, want_unlocked)
-            capped = self._cap_effects(family, m, levels, received_count)
+            capped = self._sync_effects(family, m, levels, received_count)
             if family == "education":
                 capped += self._sync_education_counter(m)
                 capped += self._sync_education_levels(received_count)

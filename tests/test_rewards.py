@@ -307,24 +307,52 @@ def test_lazy_interned_reward_relocked_after_map_growth():
 
 
 def test_reconcile_progressive_levels_generalizes_per_family():
-    # The same count gate serves every level family by name pattern <Species><Family>L<k>, with the family's
-    # OWN record type for bookkeeping (supplement = type 0). Levels run 1..2 here. Each family is isolated:
-    # the supplement gate must not touch breeding content (and vice versa).
+    # The same count gate serves every level family by name pattern <Species><Family>L<k>. Byte-driven
+    # families (education here) set bytes = (k <= received) and stay isolated from other families'
+    # content; the EFFECT_CAP families are covered by the hands-off test below.
     s = FakeScanner()
-    names = {0x40: "aardvarksupplementl1", 0x41: "aardvarksupplementl2",
+    names = {0x40: "aardvarkeducationl1", 0x41: "aardvarkeducationl2",
              0x50: "aardvarkbreedingl1", 0x51: "aardvarkbreedingl2"}
-    _build(s, names=names, unlock_records=[(0x40, 0, 0), (0x41, 0, 0), (0x50, 2, 0), (0x51, 2, 0)])
+    _build(s, names=names, unlock_records=[(0x40, 3, 0), (0x41, 3, 0), (0x50, 2, 0), (0x51, 2, 0)])
+    s.put(RS + rewards.EDU_COUNTER_OFF, struct.pack("<i", 0))
     g = _granter(s)
     def flags():
         return {cid: f for _, cid, _, f in rewards.UnlockMap(s, RS).iter_records()}
+    assert g.reconcile_progressive_levels("education", 1) is True
+    f = flags()
+    assert f[0x40] == 1 and f[0x41] == 0, "education level 1 unlocked, level 2 locked"
+    assert f[0x50] == 0 and f[0x51] == 0, "breeding content untouched by the education gate"
+    assert g.reconcile_progressive_levels("education", 2) is True
+    f = flags()
+    assert f[0x40] == 1 and f[0x41] == 1, "education levels 1+2 unlocked"
+
+
+def test_effect_families_authoritative_bytes_and_values():
+    """Breeding/supplement behave like education/enrichment (user decision 2026-07-13): the N-th
+    received copy sets bytes AND effect values for EVERY species, research not required - an
+    unresearched species (byte 0, effect at vanilla) gets both raised; a fully-researched one
+    (byte 1, full effect) gets both capped down to the received count."""
+    s = FakeScanner()
+    names = {0x40: "pandasupplementl1", 0x41: "pandasupplementl2",
+             0x50: "pandabreedingl1", 0x51: "pandabreedingl2"}
+    # panda fully researched: all bytes set, effect at research maximums
+    _build(s, names=names, unlock_records=[(0x40, 0, 1, 0x66), (0x41, 0, 1, 0x66),
+                                           (0x50, 2, 1, 0x66), (0x51, 2, 1, 0x66)])
+    _build_count_map(s, {0x66: (0.30, 3)})
+    g = _granter(s)
+    def flags():
+        return {cid: f for _, cid, _, f in rewards.UnlockMap(s, RS).iter_records()}
+    assert g.reconcile_progressive_levels("breeding", 1) is True
     assert g.reconcile_progressive_levels("supplement", 1) is True
     f = flags()
-    assert f[0x40] == 1 and f[0x41] == 0, "supplement level 1 unlocked, level 2 locked"
-    assert f[0x50] == 0 and f[0x51] == 0, "breeding content untouched by the supplement gate"
+    assert f[0x50] == 1 and f[0x51] == 0, "breeding bytes follow the received count (L2 re-locked)"
+    assert f[0x40] == 1 and f[0x41] == 0, "supplement bytes follow the received count"
+    assert abs(_breeding_f32(s, g, 0x66) - 0.15) < 1e-4, "fertility capped to received=1's rate"
+    assert _supplement_i32(s, g, 0x66) == 2, "food tiers capped to 1+received"
     assert g.reconcile_progressive_levels("breeding", 2) is True
-    f = flags()
-    assert f[0x50] == 1 and f[0x51] == 1, "breeding levels 1+2 unlocked"
-    assert f[0x40] == 1 and f[0x41] == 0, "supplement state preserved"
+    assert g.reconcile_progressive_levels("supplement", 2) is True
+    assert abs(_breeding_f32(s, g, 0x66) - 0.30) < 1e-4, "second copy restores the full rate"
+    assert _supplement_i32(s, g, 0x66) == 3, "second copy opens quality 3"
 
 
 def _breeding_f32(s, g, bk):
@@ -347,32 +375,36 @@ def test_breeding_effect_capped_and_recapped_after_reload():
     _build_count_map(s, {0x77: (0.30, 0)})     # research granted level 2
     g = _granter(s)
     assert g.reconcile_progressive_levels("breeding", 1) is True
-    assert abs(_breeding_f32(s, g, 0x77) - 0.15) < 1e-4, "granted L2 capped to received=1's rate"
-    # park reload: the engine rewrites the researched value; the per-tick cap must reassert
+    assert abs(_breeding_f32(s, g, 0x77) - 0.15) < 1e-4, "research's L2 rate overridden to received=1's"
+    # park reload: the engine rewrites the researched value; the per-tick sync must reassert
     crec = g._intmap_find(RS + rewards.COUNT_MAP_OFF, 0xC, 0x77)
     s.put(crec + 4, struct.pack("<f", 0.30))
     assert g.reconcile_progressive_levels("breeding", 1) is True
-    assert abs(_breeding_f32(s, g, 0x77) - 0.15) < 1e-4, "re-capped after the load rewrite"
-    # the second progressive copy RESTORES the research-granted level-2 value
+    assert abs(_breeding_f32(s, g, 0x77) - 0.15) < 1e-4, "re-synced after the load rewrite"
     assert g.reconcile_progressive_levels("breeding", 2) is True
-    assert abs(_breeding_f32(s, g, 0x77) - 0.30) < 1e-4, "granted high-water restored at received=2"
+    assert abs(_breeding_f32(s, g, 0x77) - 0.30) < 1e-4, "second copy sets L2's rate"
 
 
-def test_breeding_effect_never_raised_beyond_granted():
-    """Items alone never raise the effect past what research granted (min semantics): a species at
-    researched level 1 stays at L1's rate no matter how many copies arrived."""
+def test_breeding_effect_authoritative_without_research():
+    """Items raise the effect for every species regardless of research (authoritative model, user
+    decision 2026-07-13): an unresearched species gets the received count's flat rate, and the rate
+    table is never exceeded past L2 (the item ships 2 copies)."""
     s = FakeScanner()
     _build(s, names={0x30: "AardvarkBreedingL1", 0x31: "AardvarkBreedingL2"},
-           unlock_records=[(0x30, 2, 1, 0x55), (0x31, 2, 0, 0x55)])
-    _build_count_map(s, {0x55: (0.15, 0)})     # research granted only level 1
+           unlock_records=[(0x30, 2, 0, 0x55), (0x31, 2, 0, 0x55)])
+    _build_count_map(s, {0x55: (0.0, 1)})      # nothing researched
     g = _granter(s)
+    assert g.reconcile_progressive_levels("breeding", 2) is True
+    assert abs(_breeding_f32(s, g, 0x55) - 0.30) < 1e-4, "2 copies -> 30% without any research"
     assert g.reconcile_progressive_levels("breeding", 3) is True
-    assert abs(_breeding_f32(s, g, 0x55) - 0.15) < 1e-4
+    assert abs(_breeding_f32(s, g, 0x55) - 0.30) < 1e-4, "counts past L2 clamp to L2's rate"
+    assert g.reconcile_progressive_levels("breeding", 0) is True
+    assert abs(_breeding_f32(s, g, 0x55) - 0.0) < 1e-4, "received=0 -> no bonus"
 
 
-def test_supplement_effect_capped_and_restored():
+def test_supplement_effect_synced_to_received():
     """The count @crec+8 is the number of available FOOD-QUALITY TIERS, floor 1 (the default
-    quality-1 food): research L1/L2 raise it to 2/3, so the gate is min(1+received, granted)."""
+    quality-1 food): tiers = min(1+received, 3), authoritative for every species."""
     s = FakeScanner()
     _build(s, names={0x40: "AardvarkSupplementL1", 0x41: "AardvarkSupplementL2"},
            unlock_records=[(0x40, 0, 1, 0x66), (0x41, 0, 1, 0x66)])
@@ -381,9 +413,9 @@ def test_supplement_effect_capped_and_restored():
     assert g.reconcile_progressive_levels("supplement", 0) is True
     assert _supplement_i32(s, g, 0x66) == 1, "received=0 keeps the default quality-1 tier, never 0"
     assert g.reconcile_progressive_levels("supplement", 1) is True
-    assert _supplement_i32(s, g, 0x66) == 2, "first copy unlocks quality 2 (of the granted 3)"
+    assert _supplement_i32(s, g, 0x66) == 2, "first copy opens quality 2"
     assert g.reconcile_progressive_levels("supplement", 2) is True
-    assert _supplement_i32(s, g, 0x66) == 3, "granted high-water restored at received=2"
+    assert _supplement_i32(s, g, 0x66) == 3, "second copy opens quality 3"
 
 
 def test_supplement_default_tier_never_locked():

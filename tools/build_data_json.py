@@ -127,6 +127,22 @@ def engine_token(stringid: str, label: str) -> str:
     return ENGINE_TOKEN_ALIAS.get(stringid) or _norm(label)
 
 
+# APWorld item DISPLAY names that no longer round-trip (convert_readable) to their ENGINE content
+# token: the 2026-07-17 APWorld renamed the "Orient" theme to "East Asian" and fixed the "Just
+# AMomento" typo for DISPLAY, but the engine's research branch/content names are unchanged
+# (verified against the DLC-complete tools/research_catalog.json: only OrientThemeSets* /
+# SouvenirShopsJustAMomento exist). Without the alias these fell back to the display name as the
+# token, which breaks the /pz_install ApGate minting AND the client's mechanic-content reconcile
+# (both resolve gates by 'apgate' + norm(content)).
+ITEM_TOKEN_ALIAS = {
+    "East Asian Theme Sets Scenery": "OrientThemeSetsScenery",
+    "East Asian Theme Sets Blueprints Level 1": "OrientThemeSetsBlueprintsL1",
+    "East Asian Theme Sets Blueprints Level 2": "OrientThemeSetsBlueprintsL2",
+    "East Asian Theme Sets Blueprints Level 3": "OrientThemeSetsBlueprintsL3",
+    "Souvenir Shops Just A Momento": "SouvenirShopsJustAMomento",
+}
+
+
 def build_token_index(catalog: dict) -> dict:
     """{readable_name -> raw content token} by replaying convert_readable over every reward
     token (species rewards + mechanic items) in the research catalog."""
@@ -160,7 +176,7 @@ def map_item(name: str, lab2sid: dict, token_index: dict) -> dict:
         return {"effect_type": "cc", "effect_args": {"size": size, "amount": amount}}
     if name.strip() in PROGRESSIVE:
         return {"effect_type": "progressive_research_reward", "effect_args": {"family": PROGRESSIVE[name.strip()]}}
-    token = token_index.get(name)
+    token = ITEM_TOKEN_ALIAS.get(name) or token_index.get(name)
     if token is None:
         # Decoupled reward whose token didn't round-trip through the catalog (e.g. an item added
         # outside the catalog-derived set). Fall back to the display name; flag it loudly.

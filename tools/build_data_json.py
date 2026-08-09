@@ -73,12 +73,12 @@ def convert_readable(name: str) -> str:
 # Large = double - see Options.FillerAmountsCash/-Conservation). data.json carries each item's
 # SIZE (what the client scales by) plus a fallback `amount` = the option DEFAULT resolved per
 # size, used only when slot_data lacks the option (e.g. console/dev rooms).
-CASH = {"Cash Injection (Small)": ("small", 250),
-        "Cash Injection (Medium)": ("medium", 500),      # FillerAmountsCash default
-        "Cash Injection (Large)": ("large", 1000)}
-CC = {"Conservation Credits (Small)": ("small", 100),
-      "Conservation Credits (Medium)": ("medium", 200),  # FillerAmountsConservation default
-      "Conservation Credits (Large)": ("large", 400)}
+CASH = {"Cash Inject Small": ("small", 250),
+        "Cash Inject Medium": ("medium", 500),      # FillerAmountsCash default
+        "Cash Inject Large": ("large", 1000)}
+CC = {"Conservation Credits Small": ("small", 100),
+      "Conservation Credits Medium": ("medium", 200),  # FillerAmountsConservation default
+      "Conservation Credits Large": ("large", 400)}
 PROGRESSIVE = {
     "Progressive Supplement Level": "supplement",
     "Progressive Education Level": "education",
@@ -185,32 +185,40 @@ def map_item(name: str, lab2sid: dict, token_index: dict) -> dict:
     return {"effect_type": "research_reward", "effect_args": {"content": token}}
 
 
-def map_location(stringid: str, loc) -> dict:
-    sp = loc.species_type
-    if loc.type.value == "research welfare":
+def map_location(entry: dict, token_index: dict) -> dict:
+    stringid, sp, ltype = entry["stringid"], entry["species_type"], entry["type"]
+    if ltype == "research welfare":
         # Exhibit-species welfare stringids carry an "e_" prefix (e_welfare1_gdscorpian); habitat
         # ones don't (welfare1_aardvark). Accept either so the per-level location gets its level.
         m = re.match(r"(?:e_)?welfare(\d+)_", stringid)
         level = int(m.group(1)) if m else None
         return {"trigger_type": "research_complete",
                 "trigger_args": {"research_key": f"welfare_{sp}", "level": level, "species_key": sp}}
-    if loc.type.value == "firsts":
+    if ltype == "firsts":
         if stringid.startswith("fa_"):
             return {"trigger_type": "first_acquire", "trigger_args": {"species_key": sp}}
         return {"trigger_type": "first_breed", "trigger_args": {"species_key": sp}}
-    if loc.type.value == "conservation":
+    if ltype == "conservation":
         return {"trigger_type": "conservation_release", "trigger_args": {"species_key": sp}}
-    if loc.type.value == "milestones":
+    if ltype == "milestones":
         if stringid.startswith("zoo_rating"):
             return {"trigger_type": "milestone",
                     "trigger_args": {"metric": "zoo_rating", "threshold": int(stringid.replace("zoo_rating", ""))}}
         if stringid.startswith("guests_"):
             return {"trigger_type": "milestone",
                     "trigger_args": {"metric": "guest_count", "threshold": int(stringid.split("_")[1])}}
-    # mechanic (and any fallthrough): a per-item mechanic-research completion. research_key kept as
-    # the stringid; mechanic-research detection is capture-gated (client RESEARCH_ITEM map), degrades.
+    # mechanic (and any fallthrough): a per-item mechanic-research completion. Since the 2026-08-09
+    # apworld the stringids are opaque codes (A1, C3, staff_a_large) - the LABEL is the readable form
+    # of the engine research-item name, so recover the ENGINE NAME the same way item content tokens
+    # are recovered (convert_readable replay + the rename aliases). research.py resolves it against
+    # the live cat-3 records by name; an unrecovered key degrades to not-firing (flagged loudly).
+    token = ITEM_TOKEN_ALIAS.get(entry["label"]) or token_index.get(entry["label"])
+    if token is None:
+        print(f"  WARN: no engine name for mechanic location {entry['label']!r} - using label as key",
+              file=sys.stderr)
+        token = entry["label"]
     return {"trigger_type": "research_complete",
-            "trigger_args": {"research_key": stringid, "mechanic": True}}
+            "trigger_args": {"research_key": token, "mechanic": True}}
 
 
 def main() -> None:
@@ -222,17 +230,12 @@ def main() -> None:
     os.environ.setdefault("SKIP_REQUIREMENTS_UPDATE", "1")
     pzdata = ap / "worlds" / "planetzoo" / "data"
 
-    # APWorld is authoritative on IDs. Import its maps (read the data files directly to avoid the
-    # world's hardcoded-relative-path open() calls; they only resolve from the AP parent dir).
-    items_raw = json.loads((pzdata / "items.json").read_text(encoding="utf-8"))
-    old_items_raw = json.loads((pzdata / "old_items.json").read_text(encoding="utf-8"))
-    item_entries = items_raw + old_items_raw  # SAME order as Items.complete_item_list
-    item_name_to_id = {e["name"]: 1000 + i for i, e in enumerate(item_entries)}
-    item_class = {e["name"]: e["ap_classification"] for e in item_entries}
-
-    species_locs = json.loads((pzdata / "specieslocations.json").read_text(encoding="utf-8"))
-    mech_locs = json.loads((pzdata / "mech_n_milestones.json").read_text(encoding="utf-8"))
-    loc_entries = species_locs + mech_locs  # SAME order as Locations.complete_location_list
+    # APWorld is authoritative on IDs. Since the 2026-08-09 apworld (bd4cc1cd "runs based on the
+    # jsons") items.json and locations.json carry EXPLICIT per-entry `id` fields - the old positional
+    # 1000+index / 2000+index scheme over the (items+old_items / specieslocations+mech_n_milestones)
+    # concatenations is gone (those files moved to data/old_data/). Read the two sources directly.
+    item_entries = json.loads((pzdata / "items.json").read_text(encoding="utf-8"))
+    loc_entries = json.loads((pzdata / "locations.json").read_text(encoding="utf-8"))
 
     specieses = json.loads((pzdata / "specieses.json").read_text(encoding="utf-8"))
     lab2sid = {s["label"]: s["stringid"] for s in specieses}
@@ -241,20 +244,19 @@ def main() -> None:
 
     # --- items ---
     items = []
-    for name, iid in sorted(item_name_to_id.items(), key=lambda kv: kv[1]):
+    for e in sorted(item_entries, key=lambda e: e["id"]):
+        name = e["name"].strip()
         eff = map_item(name, lab2sid, token_index)
-        items.append({"id": iid, "name": name, "classification": classification(item_class[name]),
-                      **eff})
+        items.append({"id": e["id"], "name": name,
+                      "classification": classification(e["ap_classification"]), **eff})
 
     # --- locations ---
-    from types import SimpleNamespace
     locations = []
-    for i, e in enumerate(loc_entries):
-        loc = SimpleNamespace(type=SimpleNamespace(value=e["type"]), species_type=e["species_type"])
-        trig = map_location(e["stringid"], loc)
-        # name = the APWorld LABEL (Locations.location_name_to_id keys by `label`, so the label IS the
-        # name the AP server uses). The stringid only drives the trigger mapping above (welfare/fa/fb/...).
-        locations.append({"id": 2000 + i, "name": e["label"], **trig})
+    for e in sorted(loc_entries, key=lambda e: e["id"]):
+        trig = map_location(e, token_index)
+        # name = the APWorld LABEL (Locations keys location_name_to_id by `label`, so the label IS the
+        # name the AP server uses). The stringid only drives the trigger mapping (welfare/fa/fb/...).
+        locations.append({"id": e["id"], "name": e["label"], **trig})
 
     # --- species (gate = permit [+ water tools]; flagship = giant panda) ---
     species = []
@@ -274,11 +276,14 @@ def main() -> None:
             "scope": "v1.0-full",
             "mode": "challenge",
             "generated_by": "tools/build_data_json.py from the Planet Zoo APWorld",
-            "notes": ("IDs/names mirror the APWorld EXACTLY: items = 1000+index of "
-                      "worlds/planetzoo/data/(items.json + old_items.json); locations = 2000+index of "
-                      "(specieslocations.json + mech_n_milestones.json). Do not hand-edit - "
-                      "regenerate with tools/build_data_json.py. Species keys = specieses.json stringid."),
-            "id_ranges": {"items": "1000-1999", "locations": "2000-2999"},
+            "notes": ("IDs/names mirror the APWorld EXACTLY: the explicit per-entry `id` fields of "
+                      "worlds/planetzoo/data/items.json and locations.json (sources of truth since "
+                      "apworld bd4cc1cd). Do not hand-edit - regenerate with tools/build_data_json.py. "
+                      "Species keys = specieses.json stringid."),
+            "id_ranges": {
+                "items": f"{min(i['id'] for i in items)}-{max(i['id'] for i in items)}",
+                "locations": f"{min(l['id'] for l in locations)}-{max(l['id'] for l in locations)}",
+            },
         },
         "species": species,
         "items": items,

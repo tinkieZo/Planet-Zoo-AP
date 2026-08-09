@@ -30,7 +30,7 @@ def _apworld_data_dir():
         repo / "vendor" / "Archipelago" / "worlds" / "planetzoo" / "data",
     ]
     for c in candidates:
-        if (c / "items.json").exists() and (c / "specieslocations.json").exists():
+        if (c / "items.json").exists() and (c / "locations.json").exists():
             return c
     return None
 
@@ -39,29 +39,31 @@ _DATA = _apworld_data_dir()
 pytestmark = pytest.mark.skipif(_DATA is None, reason="Planet Zoo APWorld not found (set PZ_APWORLD_DATA)")
 
 
-def _field(path: Path, key: str):
-    return [e[key] for e in json.loads(path.read_text(encoding="utf-8"))]
+def _entries(path: Path):
+    return json.loads(path.read_text(encoding="utf-8"))
 
 
 def test_item_ids_match_apworld(gd):
-    ap = _field(_DATA / "items.json", "name") + _field(_DATA / "old_items.json", "name")
+    # Since apworld bd4cc1cd, items.json carries EXPLICIT per-entry ids (the positional 1000+index
+    # scheme over items.json+old_items.json is gone). Names are stripped (Track B has had
+    # trailing-space name bugs before).
+    ap = {e["id"]: e["name"].strip() for e in _entries(_DATA / "items.json")}
     by_id = {it.id: it.name for it in gd.items}
-    assert len(gd.items) == len(ap), f"item-table size {len(gd.items)} != APWorld {len(ap)}"
-    for i, name in enumerate(ap):
-        assert by_id.get(1000 + i) == name, \
-            f"item id {1000 + i}: client {by_id.get(1000 + i)!r} != APWorld {name!r}"
+    assert by_id == ap, (
+        f"item id/name tables diverge: only-client={sorted(set(by_id) - set(ap))[:5]} "
+        f"only-apworld={sorted(set(ap) - set(by_id))[:5]} "
+        f"renamed={[i for i in (set(ap) & set(by_id)) if ap[i] != by_id[i]][:5]}")
 
 
 def test_location_ids_match_apworld(gd):
-    # The AP server keys locations by LABEL (Locations.location_name_to_id = {label: 2000+index}),
-    # so data.json's location name MUST be the label - not the stringid.
-    ap = _field(_DATA / "specieslocations.json", "label") + \
-        _field(_DATA / "mech_n_milestones.json", "label")
+    # The AP server keys locations by LABEL (Locations.location_name_to_id = {label: id}), so
+    # data.json's location name MUST be the label - not the stringid. Ids are explicit per entry.
+    ap = {e["id"]: e["label"] for e in _entries(_DATA / "locations.json")}
     by_id = {loc.id: loc.name for loc in gd.locations}
-    assert len(gd.locations) == len(ap), f"location count {len(gd.locations)} != APWorld {len(ap)}"
-    for i, label in enumerate(ap):
-        assert by_id.get(2000 + i) == label, \
-            f"location id {2000 + i}: client {by_id.get(2000 + i)!r} != APWorld {label!r}"
+    assert by_id == ap, (
+        f"location id/label tables diverge: only-client={sorted(set(by_id) - set(ap))[:5]} "
+        f"only-apworld={sorted(set(ap) - set(by_id))[:5]} "
+        f"renamed={[i for i in (set(ap) & set(by_id)) if ap[i] != by_id[i]][:5]}")
 
 
 def test_every_permit_has_a_species(gd):

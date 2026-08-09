@@ -77,13 +77,19 @@ def main() -> None:
     # save, so skip the live-write assertions when a game is actually attachable.
     applier = MemoryEffectApplier(scanner, table)
     gd = pz_data.load()
-    cash_item = gd.item_by_id[1009]
+    # Resolve by EFFECT, not a hardcoded id (ids are the APWorld's and reflow across versions).
+    # NB the old hardcoded 1009 had drifted onto a research_reward item; cash itself is
+    # ledger-acknowledged (on_cash returns True regardless of attach), so use one of each.
+    cash_item = next(i for i in gd.items if i.effect_type == "cash")
+    reward_item = next(i for i in gd.items if i.effect_type == "research_reward")
     _game_running = MemoryScanner(table.process_name).attach()
     if _game_running:
         print("SKIP - apply/trigger live-write checks (a game process is attached)")
     else:
-        # attach() fails (no game) -> _ensure_attached False -> apply False.
-        _check(applier.apply(cash_item) is False, "cash apply returns False when no game/anchor")
+        # attach() fails (no game): memory-writing effects return False (retry later); cash is
+        # acknowledge-only (the granted-ledger reconcile applies it) so it returns True even here.
+        _check(applier.apply(reward_item) is False, "research_reward apply returns False when no game")
+        _check(applier.apply(cash_item) is True, "cash apply is ledger-acknowledged even when no game")
 
         # --- trigger source polls harmlessly with nothing attached ----------
         fired = []

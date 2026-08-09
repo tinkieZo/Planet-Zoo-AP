@@ -483,10 +483,13 @@ class ResearchReader:
     def is_research_complete(self, research_key: str, snap: Optional[Tuple[dict, dict]] = None,
                              level: Optional[int] = None) -> bool:
         """Generic dispatch for any data.json research_key. A key in RESEARCH_ITEM is complete when its
-        single item's status == 4. A MECHANIC_RESEARCH_NAME key resolves its engine item NAME to a
-        cat-3 record (via +0x08) and checks that record's status. `welfare_<species>` uses the leveled
-        animal-research rule: with a `level` it checks just that level's record; without, it requires
-        ALL standard levels complete. Unknown keys -> False (logged once)."""
+        single item's status == 4. `welfare_<species>` uses the leveled animal-research rule: with a
+        `level` it checks just that level's record; without, it requires ALL standard levels complete.
+        MECHANIC keys are the ENGINE research-item NAME itself (data.json since the 2026-08-09 apworld,
+        whose location stringids became opaque codes - build_data_json recovers the engine name from
+        the label), resolved to a live cat-3 record via the record's name intern (+0x08); the legacy
+        MECHANIC_RESEARCH_NAME stringid->name table is kept for older data.json files. Unknown keys ->
+        False (logged once)."""
         if research_key in self.research_items:
             return self._item_id_complete(self.research_items[research_key], snap)
         if research_key in MECHANIC_RESEARCH_NAME:
@@ -496,10 +499,13 @@ class ResearchReader:
             species = research_key[len("welfare_"):]
             return (self.is_welfare_level_complete(species, level, snap) if level
                     else self.is_welfare_complete(species, snap))
+        item = self._mechanic_item_map().get(_norm_token(research_key))
+        if item is not None:
+            return self._item_id_complete(item, snap)
         if research_key not in self._warned_unmapped:
             self._warned_unmapped.add(research_key)
-            logger.info("research: key %r not mapped (add to SPECIES_WELFARE_ITEM, RESEARCH_ITEM, "
-                        "or MECHANIC_RESEARCH_NAME)", research_key)
+            logger.info("research: key %r not mapped (no live mechanic record by that name; add to "
+                        "SPECIES_WELFARE_ITEM, RESEARCH_ITEM, or MECHANIC_RESEARCH_NAME)", research_key)
         return False
 
 

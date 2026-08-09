@@ -1,10 +1,12 @@
 """Game-free tests for mechanic-research (the 57 non-welfare research_complete locations).
 
-Detection maps each apworld stringid (drink_shop1, barrier1, sf_research_centre_l, ...) to an engine
-research-item NAME (MECHANIC_RESEARCH_NAME), resolves that name to a live cat-3 record via the record's
-+0x08 name-intern id, and fires when the record's status == 4. These tests guard the map's coverage
-against data.json drift and exercise the is_research_complete dispatch with a stubbed map/snapshot.
-(The live name-bridge + 57/57 resolution is validated separately by tools/mechanic_probe.py.)
+Since the 2026-08-09 apworld the data.json research_key IS the engine research-item name (recovered
+from the location label by build_data_json; the apworld stringids became opaque codes). Detection
+resolves that name to a live cat-3 record via the record's +0x08 name-intern id and fires when the
+record's status == 4; the legacy MECHANIC_RESEARCH_NAME stringid->name table remains as a fallback
+for older data.json files. These tests guard the keys' engine-name validity against the DLC-complete
+catalog and exercise the is_research_complete dispatch (both key styles) with a stubbed map/snapshot.
+(The live name-bridge resolution is validated separately by tools/mechanic_probe.py.)
 """
 from __future__ import annotations
 
@@ -29,13 +31,38 @@ def _data_mechanic_keys() -> set:
             and not l["trigger_args"].get("research_key", "").startswith("welfare")}
 
 
-def test_mechanic_map_covers_every_location_key():
-    """MECHANIC_RESEARCH_NAME must map EXACTLY the data.json non-welfare research keys - no missing
-    (a check that could never fire) and no stale extras. Catches apworld/data.json drift."""
-    data_keys = _data_mechanic_keys()
-    map_keys = set(MECHANIC_RESEARCH_NAME)
-    assert not (data_keys - map_keys), f"unmapped mechanic locations: {sorted(data_keys - map_keys)}"
-    assert not (map_keys - data_keys), f"stale mechanic map entries: {sorted(map_keys - data_keys)}"
+def test_mechanic_keys_are_known_engine_names():
+    """Since the 2026-08-09 apworld, data.json mechanic research_keys ARE engine research-item names
+    (recovered from the location label by build_data_json) - each must exist in the DLC-complete
+    research catalog's mechanic token set, else the location's check could never fire (a recovery
+    fallback wrote the raw label). Catches label-rename drift like Orient -> East Asian."""
+    catalog = json.loads((ROOT / "tools" / "research_catalog.json").read_text(encoding="utf-8"))
+    tokens = {_norm_token(o["item"]) for opts in catalog["mechanic"].values() for o in opts}
+    unknown = {k for k in _data_mechanic_keys() if _norm_token(k) not in tokens}
+    assert not unknown, f"mechanic research_keys with no engine token: {sorted(unknown)}"
+
+
+def test_mechanic_keys_are_unique_per_location():
+    """Two mechanic locations must not share a research_key, else one research completion would
+    fire both checks."""
+    data = json.loads((ROOT / "data.json").read_text(encoding="utf-8"))
+    keys = [l["trigger_args"]["research_key"] for l in data["locations"]
+            if l.get("trigger_type") == "research_complete"
+            and not l["trigger_args"].get("research_key", "").startswith("welfare")]
+    dupes = {k for k in keys if keys.count(k) > 1}
+    assert not dupes, f"duplicate mechanic research_keys: {sorted(dupes)}"
+
+
+def test_is_research_complete_engine_name_key_fires():
+    """The new-style key (engine item name, not in the legacy stringid table) resolves via the live
+    mechanic map fallback and fires on status 4; stays False when incomplete or unresolvable."""
+    name = _norm_token("IndiaThemeSetsBlueprintsL2")
+    rr = _reader_with({name: 0x3001}, {0x3001: (0, 1, STATUS_COMPLETE, MECHANIC_CATEGORY)})
+    assert rr.is_research_complete("IndiaThemeSetsBlueprintsL2") is True
+    rr = _reader_with({name: 0x3001}, {0x3001: (0, 1, 2, MECHANIC_CATEGORY)})
+    assert rr.is_research_complete("IndiaThemeSetsBlueprintsL2") is False
+    rr = _reader_with({}, {})
+    assert rr.is_research_complete("IndiaThemeSetsBlueprintsL2") is False
 
 
 def test_mechanic_engine_names_are_unique():

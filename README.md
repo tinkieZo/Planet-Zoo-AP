@@ -1,4 +1,4 @@
-#Planet Zoo Archipelago Client
+# Planet Zoo Archipelago Client
 
 This is a client mod used to allow you to play a randomized Planet Zoo game. This is required to work with the [Ap world](https://github.com/tinkieZo/ArchipelagoPZ/releases) in order to connect to an Archipelago server among other things.
 Make sure to read the setup.md first. And if something goes wrong, read it again <3, then ask, as some problems are solved that way :)

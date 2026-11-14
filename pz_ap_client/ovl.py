@@ -540,6 +540,18 @@ def _status_stamped(game_dir: Path, current: str, stamp: dict) -> OvlStatus:
         if not pack_ovl.is_file() or sha256_file(pack_ovl) != stamp.get("pack_sha256"):
             return OvlStatus("stale", "The PZArchipelago content pack is missing or modified - reinstall.",
                              game_dir)
+        # GameMain carries the mechanic-research rename; a revert here (Steam file verification of
+        # just that depot chunk, or a partial game update) is INVISIBLE in gameplay setup but makes
+        # every fresh AP park start with ALL mechanic research pre-completed -> the client fires all
+        # 57 mechanic checks on connect (foreign report 20260812_Ollieberry). Verify it like the rest.
+        gm_stamp = stamp.get("gamemain_sha256")
+        if gm_stamp:
+            gm = game_dir / GAMEMAIN_REL_PATH
+            if not gm.is_file() or sha256_file(gm) != gm_stamp:
+                return OvlStatus("stale", "GameMain Main.ovl doesn't match the install receipt (a Steam "
+                                          "file verification or game update likely reverted it) - mechanic "
+                                          "research would start pre-completed on a new AP park. Reinstall.",
+                                 game_dir)
         return OvlStatus("installed", "AP scenario shell is installed and current.", game_dir)
     if current == stamp.get("vanilla_sha256"):
         return OvlStatus("vanilla", "Vanilla ovl (the AP shell was removed, e.g. by Steam file verification).",
@@ -797,6 +809,12 @@ _BENIGN_COBRA = tuple(re.compile(p) for p in (
     r"^WARNING \| Missing sub-element 'next_research' on XML element 'research'$",  # optional in vanilla data
 ))
 
+# Child-output substrings surfaced to the client console (progress + must-see results). "AP-GM |"
+# is our own marker printed by _child_gamemain; "Renaming for"/"Renamed " are cobra's rename() INFO
+# lines - the ONLY signal of how many files a rename actually matched.
+_SURFACE_MARKERS = ("Loading archive", "Injecting", "Saving archive", "Injected files",
+                    "Created OVL", "Creating OVL", "Renaming for", "Renamed ", "AP-GM |")
+
 
 def _run_cobra_child(op: str, src: Path, out: Path, base: Optional[Path], log: LogFn) -> None:
     """Run one cobra-tools operation in a crash-isolated subprocess."""
@@ -832,9 +850,11 @@ def _run_cobra_child(op: str, src: Path, out: Path, base: Optional[Path], log: L
                 benign += 1
             else:
                 log(line)
-        # Surface the slow archive passes so the user sees progress, not a hang.
-        elif any(k in line for k in ("Loading archive", "Injecting", "Saving archive",
-                                     "Injected files", "Created OVL", "Creating OVL")):
+        # Surface the slow archive passes so the user sees progress, not a hang - and the rename
+        # result lines: cobra's rename is a silent no-op when the source entry is absent ("Renamed
+        # 0 of N" at INFO, exit 0), which foreign report 20260812_Ollieberry could not distinguish
+        # from success in the client log.
+        elif any(k in line for k in _SURFACE_MARKERS):
             log(line)
     if benign:
         log("   (%d known-benign cobra warnings hidden; set PZAP_DEBUG=1 for the full output)" % benign)
@@ -868,6 +888,25 @@ def build_loc_ovl(out: Path, log: LogFn = logger.info) -> None:
     _run_cobra_child("new", src_dir() / "pack_loc", out, None, log)
 
 
+def gamemain_rename_error(loader_names) -> Optional[str]:
+    """cobra's OvlFile.rename is a SILENT no-op when the source entry isn't in the archive (it logs
+    'Renamed 0 of N files' at INFO and the child still exits 0). Without the rename the ARCHIPELAGO
+    scenario has no mechanic-research config, the engine falls back to `default` (everything
+    pre-completed) and the client fires every mechanic research check on connect (foreign report
+    20260812_Ollieberry). Returns the error text if the rename didn't take, else None."""
+    src, dst = MECHANIC_RENAME
+    problems = []
+    if dst not in loader_names:
+        problems.append(f"target {dst} MISSING")
+    if src in loader_names:
+        problems.append(f"source {src} still present")
+    if not problems:
+        return None
+    return ("GameMain mechanic-research rename did not apply (%s). The vanilla GameMain backup "
+            "probably doesn't match this game version - verify game files in Steam, delete "
+            "ovldata\\GameMain\\Main.ovl.apbak, then run /pz_install again." % ", ".join(problems))
+
+
 def _child_gamemain(ovl_tool_cmd, base: str, out: str) -> None:
     """Patch GameMain in one save: (a) RENAME the all-locked vanilla mechanic config onto our scenario code
     (BaseFile passthrough - faithful), and (b) add the minted gate NAMES to default_off_noneresearchable - the
@@ -892,6 +931,10 @@ def _child_gamemain(ovl_tool_cmd, base: str, out: str) -> None:
         o.clear()
         o.load(base, {"game": COBRA_GAME_LABEL})
         o.rename([MECHANIC_RENAME])
+        err = gamemain_rename_error(o.loaders)
+        if err:
+            raise SystemExit(err)
+        print("AP-GM | mechanic research rename applied: %s -> %s" % MECHANIC_RENAME, flush=True)
         o.add_files([str(staged)], stage_tmp)
         o.save(out, commands={"update_aux": True})
 

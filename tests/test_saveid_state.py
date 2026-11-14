@@ -32,6 +32,7 @@ def _client(state, cash=BAKED, slot=1):
     ``cash`` = what the cash anchor reads (BAKED == untouched fresh park). _apply_starting_money is
     stubbed no-op (its own behaviour is covered in test_starting_money)."""
     return types.SimpleNamespace(state=state, slot=slot, _fresh_reset_done=False,
+                                 _fresh_park_verdict=None,   # research-guard latch (set by the method)
                                  BAKED_STARTING_CASH=BAKED,
                                  _current_cash=lambda: cash,
                                  _apply_starting_money=lambda: None)

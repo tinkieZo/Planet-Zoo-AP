@@ -223,6 +223,48 @@ def test_status_stamp_states(game):
     assert ovl.status(game).state == "game-updated"
 
 
+def test_status_gamemain_reverted_is_stale(game):
+    """A GameMain revert (Steam verify / partial update) is invisible in gameplay setup but makes
+    every fresh AP park start with all mechanic research pre-completed (foreign report
+    20260812_Ollieberry) - status() must flag it."""
+    install(game)
+    gm, _ = gamemain_paths(game)
+    gm.write_bytes(GM_VANILLA)                   # Steam verify put vanilla back
+    st = ovl.status(game)
+    assert st.state == "stale"
+    assert "GameMain" in st.detail
+    gm.write_bytes(GM_PATCHED)
+    assert ovl.status(game).state == "installed"
+    # Pre-gamemain stamps (no gamemain_sha256 key) must not trip the check.
+    _, _, stamp_path = paths(game)
+    stamp = json.loads(stamp_path.read_text())
+    del stamp["gamemain_sha256"]
+    stamp_path.write_text(json.dumps(stamp), encoding="utf-8")
+    gm.write_bytes(GM_VANILLA)
+    assert ovl.status(game).state == "installed"
+
+
+def test_gamemain_rename_error_detection():
+    """The child hard-fails when cobra's rename silently no-ops (the 'Renamed 0 of N' case)."""
+    src, dst = ovl.MECHANIC_RENAME
+    assert ovl.gamemain_rename_error({dst: 1, "other.file": 1}) is None
+    err = ovl.gamemain_rename_error({src: 1, "other.file": 1})    # no-op: source kept, target absent
+    assert err and "did not apply" in err and "MISSING" in err and "still present" in err
+    err = ovl.gamemain_rename_error({src: 1, dst: 1})             # target exists but source survived
+    assert err and "still present" in err and "MISSING" not in err
+    err = ovl.gamemain_rename_error({"other.file": 1})            # neither present
+    assert err and "MISSING" in err
+
+
+def test_cobra_child_surfaces_rename_result_lines():
+    """The client console must show cobra's rename result and our applied-marker (a silent
+    'Renamed 0 of N' was indistinguishable from success in the Ollieberry report log)."""
+    for line in ("INFO | Renaming for [('a', 'b')]",
+                 "INFO | Renamed 1 of 1594 files",
+                 "AP-GM | mechanic research rename applied: a -> b"):
+        assert any(k in line for k in ovl._SURFACE_MARKERS), line
+
+
 # ---------------------------------------------------------------------------
 # install / restore
 # ---------------------------------------------------------------------------

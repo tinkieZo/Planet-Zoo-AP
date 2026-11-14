@@ -171,7 +171,7 @@ async def main() -> None:
                 self.mode = True
                 self.applied = []          # id-lists passed to apply_unlocked
                 self.expired = []          # id-lists passed to expire_blocked_listings
-            def scenario_mode(self): return self.mode
+            def gateable_mode(self): return self.mode
             def _resolve_handles(self, keys): return [self._h[k] for k in keys if k in self._h]
             def apply_unlocked(self, ids): self.applied.append(list(ids)); return True
             def expire_blocked_listings(self, ids): self.expired.append(list(ids)); return len(ids)
@@ -198,7 +198,7 @@ async def main() -> None:
         gate.mode = False
         ctx2._market_last_allowed = None     # force a re-eval
         ctx2._reconcile_market()
-        _check(gate.applied == [[H], [0xABC]], "no-op outside scenario mode")
+        _check(gate.applied == [[H], [0xABC]], "no-op outside the gateable market modes")
 
         print("\nALL OFFLINE TESTS PASSED")
     finally:

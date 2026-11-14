@@ -422,6 +422,95 @@ def test_orphan_includeset_neutralized() -> None:
     _check(g2._orig is not None and g2._orig["buffer"] == engine_buf,
            "genuine engine buffer left intact -> captured as the original")
 
+    # (3) ORPHAN in the CURRENT layout (magic BUF_PREFIX before the data pointer) is recognised too.
+    m3 = FakeMem()
+    m3.write_bytes(orphan_base, mk.SENTINEL_MAGIC)
+    m3.write_i64(inc + mk.SET_BUFFER, orphan_base + mk.BUF_PREFIX)
+    g3 = mk.SpeciesMarketGate(m3, research=FakeResearch({}))
+    g3._mgr_cache = mgr
+    g3._alloc_buffer = lambda _s: 0xA00000020
+    g3.apply_unlocked([0x1])
+    _check(g3._orig is not None and g3._orig["buffer"] == 0, "current-layout orphan neutralised too")
+
+
+class _FakeK32:
+    """Stands in for kernel32 VirtualAllocEx/VirtualFreeEx (records frees)."""
+
+    def __init__(self, base):
+        self.base, self.freed = base, []
+
+    def VirtualAllocEx(self, *_a):
+        return self.base
+
+    def VirtualFreeEx(self, _h, addr, *_a):
+        self.freed.append(addr.value)
+        return True
+
+
+def test_engine_free_safe_buffer() -> None:
+    """Crash 2026-11-13 (park torn down before the restore ran): if the engine frees our include-set buffer,
+    its sized free must take the LARGE path (size > 0x400) and read a NULL raw pointer at data-0x10, so it
+    becomes HeapFree(heap, 0, NULL) = no-op. And a buffer the engine may have freed is never freed/reused."""
+    import types
+    m = FakeMem()
+    m.pm = types.SimpleNamespace(process_handle=1)
+    m.attached = True
+    mgr = 0x500000000
+    inc = mgr + mk.SpeciesMarketGate._DEFAULT_WL + mk.WL_INCLUDE_SET
+    base = 0x7FF000000
+    k32 = _FakeK32(base)
+    g = mk.SpeciesMarketGate(m, research=FakeResearch({}))
+    g._kernel32 = k32
+    g._mgr_cache = mgr
+    _check(g.apply_unlocked([0x3042, 0x3025, 0x3096]), "apply ok")
+    data = m.read_i64(inc + mk.SET_BUFFER)
+    cap = m.read_i64(inc + mk.SET_CAP)
+    _check(data == base + mk.BUF_PREFIX, "include-set points past the sentinel + engine header")
+    _check(m.read_bytes(base, 16) == mk.SENTINEL_MAGIC, "sentinel at the allocation base")
+    raw, align, _size = struct.unpack("<QII", m.read_bytes(data - 0x10, 16))
+    _check(raw == 0, "engine header raw pointer is NULL -> engine free = HeapFree(heap, 0, NULL)")
+    _check(align == 0x10, "engine header alignment field mirrors the engine's own blocks")
+    set_bytes = (((cap >> 3) + 7) & ~7) + cap * 4
+    _check(cap >= mk.MIN_SET_CAP and set_bytes > mk.ENGINE_SMALL_FREE_MAX,
+           f"set size {set_bytes} bytes takes the engine's LARGE free path (never the small-block pool)")
+    # park torn down before restore: buffer abandoned (not freed, not reused for the next park)
+    g.exchange_mgr = lambda: None
+    _check(g.restore() is False, "restore can't run once the park is gone")
+    _check(g._buffer is None and k32.freed == [], "engine-freed buffer is abandoned, never VirtualFreeEx'd")
+    # clean path: restore succeeds -> our buffer is freed
+    g2 = mk.SpeciesMarketGate(m, research=FakeResearch({}))
+    g2._kernel32 = k32
+    g2._mgr_cache = mgr
+    g2.apply_unlocked([0x1])
+    g2.exchange_mgr = lambda: mgr
+    g2.shutdown()
+    _check(k32.freed == [base], "restored -> engine owns its buffer again -> ours is freed")
+
+
+def test_include_set_keys_are_pinned() -> None:
+    """Crash 2026-11-13 #2: the engine releases one symbol reference per include-set key when it destroys
+    the set at park teardown; our keys were never AddRef'd -> over-release -> symbol freed -> crash in
+    FUN_141343010. Every key we install must be PINNED (refcount -1, the engine's permanent marker);
+    dead/tagged symbols must never go in the set."""
+    m, _names = _build_registry_mem()
+    r = RegistryResolver(m)
+    top = 0x300000000 + 0x10000
+    ent = lambda sid: struct.unpack("<Q", m.read_bytes(top - sid * 8, 8))[0] & ~1   # noqa: E731
+    _check(r.pin(1) is True and m.read_i32(ent(1)) == -1, "live symbol pinned to -1")
+    _check(r.pin(1) is True and m.read_i32(ent(1)) == -1, "pinning is idempotent")
+    _check(r.pin(5) is False and m.read_i32(ent(5)) == 0, "dead (refcount 0) symbol refused, not resurrected")
+    _check(r.pin(6) is False, "tagged/busy slot refused")
+    _check(r.pin(0) is False and r.pin(99) is False, "out-of-range ids refused")
+
+    mgr = 0x500000000
+    inc = mgr + mk.SpeciesMarketGate._DEFAULT_WL + mk.WL_INCLUDE_SET
+    g = mk.SpeciesMarketGate(m, research=FakeResearch({}), registry=r)
+    g._mgr_cache = mgr
+    g._alloc_buffer = lambda _s: 0xA00000020
+    _check(g.apply_unlocked([2, 3, 5]), "apply ok")
+    _check(m.read_i32(ent(2)) == -1 and m.read_i32(ent(3)) == -1, "every installed key pinned")
+    _check(m.read_i64(inc + mk.SET_COUNT) == 2, "dead symbol 5 dropped from the allow-list")
+
 
 def main() -> None:
     test_hash_set()
@@ -430,6 +519,8 @@ def main() -> None:
     test_autofill_gates()
     test_market_restore_and_underfill()
     test_orphan_includeset_neutralized()
+    test_engine_free_safe_buffer()
+    test_include_set_keys_are_pinned()
     print("\nAll market-gate tests passed.")
 
 

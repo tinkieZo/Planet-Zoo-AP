@@ -132,9 +132,9 @@ def test_first_scan_deferred() -> None:
         return {S54.name: [at54], S32.name: [at32]}
 
     g._find = _fake_find  # the real byte-search is exercised live, not here
-    _check(g._first_scan_pending is True, "fresh gate starts with the first scan pending")
-    _check(g.reconcile(1) is False and calls["n"] == 0, "first reconcile defers without scanning")
-    _check(g.reconcile(1) is True and calls["n"] == 1, "second reconcile scans once and locates")
+    g._finder.background = False   # run the BackgroundFinder search inline, same deferral
+    _check(g.reconcile(1) is False and calls["n"] == 1, "first reconcile only starts the search")
+    _check(g.reconcile(1) is True and calls["n"] == 1, "second reconcile adopts it and locates")
     _check(sc.read_bytes(at54 + S54.off, S54.len) == S54.variant(1),
            "after locating, the deferred reconcile applies the patch")
 
@@ -143,11 +143,12 @@ def test_partial_find_rejected() -> None:
     """Both arrays live in the same chunk - a find that only sees one is stale/foreign: don't patch."""
     g, sc, at54, _ = _make_gate()
     g._addrs = {}
-    g._first_scan_pending = False
     g._find = lambda: {S54.name: [at54], S32.name: []}
+    g._finder.background = False
+    g.reconcile(1)                                    # starts the search
     _check(g.reconcile(1) is False, "partial find -> not located, nothing patched")
     _check(sc.read_bytes(at54 + S54.off, S54.len) == S54.orig, "main.54 untouched on partial find")
-    _check(g._cooldown == E._FIND_COOLDOWN, "partial find arms the re-scan cooldown")
+    _check(g._finder.retry_armed, "partial find arms the wall-clock re-scan retry")
 
 
 def main() -> int:

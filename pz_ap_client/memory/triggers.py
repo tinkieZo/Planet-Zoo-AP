@@ -18,7 +18,8 @@ runs harmlessly against an incomplete table during the spike.
 from __future__ import annotations
 
 import logging
-from typing import Callable, List
+import time
+from typing import Callable, List, Optional
 
 from .anchors import AnchorTable
 from .births import BirthDetector
@@ -36,6 +37,13 @@ logger = logging.getLogger("PZClient")
 # (the give-up diag dumps state to confirm). The count + conservation gate already fired regardless.
 EXHIBIT_GIVEUP_TICKS = 20
 
+# Research quarantine guard: how long the first-snapshot research checks may be HELD while the
+# fresh-park signal (park age + untouched-baked-cash fingerprint) is still resolving. The signal
+# normally lands within ~15s of attach (park-age vtable sweep); after this bound we fail OPEN
+# (release the checks unguarded, old behaviour) so a disabled/broken park-age anchor can never
+# block legitimate retroactive checks forever - mirrors the item-application FRESH_WAIT_MAX.
+RESEARCH_FRESH_HOLD_MAX_S = 60.0
+
 # metric name in data.json -> anchor name in anchors.json
 _MILESTONE_ANCHOR = {
     "zoo_rating": "zoo_rating",
@@ -46,11 +54,25 @@ _MILESTONE_ANCHOR = {
 
 class MemoryTriggerSource:
     def __init__(self, scanner: MemoryScanner, anchors: AnchorTable, game_data,
-                 report_check: Callable[[int], None]):
+                 report_check: Callable[[int], None],
+                 fresh_park_verdict: "Optional[Callable[[], Optional[bool]]]" = None):
         self.scanner = scanner
         self.anchors = anchors
         self.game_data = game_data
         self.report_check = report_check
+        # Research quarantine guard (foreign report 20260812_Ollieberry): AP checks are irreversible,
+        # so a park that loads with the pre-completed `default` mechanic config (GameMain patch not in
+        # effect) must NOT dump all 57 mechanic research checks into the multiworld. The client passes
+        # a tri-state probe: True = this park is a never-handled FRESH park (park age Year-1 + the
+        # untouched baked-cash fingerprint - unreachable by legit play with research done), False =
+        # established/already-handled park (retroactive checks are legit), None = still resolving.
+        # research_complete checks HOLD while None (bounded by RESEARCH_FRESH_HOLD_MAX_S, fail-open),
+        # and mechanic ones are QUARANTINED for the session on the fresh + 100%-complete signature.
+        # No probe (tests/legacy callers) = guard off, original behaviour.
+        self._fresh_verdict = fresh_park_verdict
+        self._research_gate = "open" if fresh_park_verdict is None else "hold"  # hold|open|quarantine
+        self._research_hold_t0: "Optional[float]" = None   # set on the first readable snapshot
+        self._research_hold_logged = False                 # one-shot "holding" notice
         # A3 research_complete: reads the research-system items map via a stable master-root
         # chain (research record +0x10 = species handle, +0x49 = status; see research.py). The
         # RegistryResolver + engine_token map let the reader attribute/locate EVERY species via the
@@ -101,6 +123,7 @@ class MemoryTriggerSource:
         self._exhibit_capture_unresolved: set = set()  # captured ids awaiting species (def entries survive
                                                        # the release, so retry each tick while pending)
         self._exhibit_roster_warned = False            # one-shot: holder/id-set unresolvable diagnostic
+        self._research_snap_logged = False             # one-shot: first-research-snapshot diagnostic
         # A3 conservation_release: software-detour on the release-to-wild executor that
         # counts releases (no stable game counter exists - see releases.py / the A2 spike).
         self.releases = ReleaseDetector(scanner)
@@ -136,15 +159,114 @@ class MemoryTriggerSource:
         snap = self.research._snapshot()  # read the research map once per tick
         if snap is None:
             return out
+        if not self._research_snap_logged:
+            self._research_snap_logged = True
+            self._log_first_research_snapshot(snap)
+        gate = self._research_gate_state(snap)
+        if gate == "hold":
+            return out    # fresh-park signal still resolving - detection re-runs next tick (level-triggered)
         for loc in self.game_data.locations_by_trigger("research_complete"):
             if loc.id in already:
                 continue
             key = loc.trigger_args.get("research_key") or ""
+            if gate == "quarantine" and not key.startswith("welfare_"):
+                continue  # mechanic checks suppressed for the session (fallback signature, not progress)
             level = loc.trigger_args.get("level")  # per-level welfare locations carry a 1-based level
             if self.research.is_research_complete(key, snap, level=level):
                 logger.info("Detected research complete: %s%s", key, f" L{level}" if level else "")
                 out.append(loc.id)
         return out
+
+    def _research_split(self, snap) -> "tuple[int, int, int, int]":
+        """(mechanic complete, mechanic total, welfare complete, welfare total) over every
+        research_complete location, read from the given snapshot."""
+        mech_done = mech_total = welf_done = welf_total = 0
+        for loc in self.game_data.locations_by_trigger("research_complete"):
+            key = loc.trigger_args.get("research_key") or ""
+            done = self.research.is_research_complete(key, snap, level=loc.trigger_args.get("level"))
+            if key.startswith("welfare_"):
+                welf_total += 1
+                welf_done += bool(done)
+            else:
+                mech_total += 1
+                mech_done += bool(done)
+        return mech_done, mech_total, welf_done, welf_total
+
+    def _research_gate_state(self, snap) -> str:
+        """Advance the research quarantine guard (see __init__) and return the current gate:
+        'hold' (fresh-park signal unresolved, report nothing yet), 'open' (normal detection), or
+        'quarantine' (fresh park + ALL mechanic research read complete = the GameMain default-
+        fallback signature; mechanic research checks are suppressed for the session). All
+        transitions are one-way per park session; reset_park_session() re-arms on park unload."""
+        if self._research_gate != "hold":
+            return self._research_gate
+        now = time.monotonic()
+        if self._research_hold_t0 is None:
+            self._research_hold_t0 = now
+        try:
+            verdict = self._fresh_verdict()
+        except Exception:
+            logger.exception("research guard: fresh-park probe failed - releasing checks unguarded")
+            self._research_gate = "open"
+            return "open"
+        if verdict is None:
+            if now - self._research_hold_t0 >= RESEARCH_FRESH_HOLD_MAX_S:
+                logger.warning("research guard: fresh-park signal unresolved after %.0fs - releasing "
+                               "research checks unguarded (park-age anchor unavailable?)",
+                               now - self._research_hold_t0)
+                self._research_gate = "open"
+            elif not self._research_hold_logged:
+                self._research_hold_logged = True
+                logger.info("research guard: holding research checks until the fresh-park signal "
+                            "(park age) resolves [max %.0fs]", RESEARCH_FRESH_HOLD_MAX_S)
+            return self._research_gate
+        if not verdict:
+            logger.info("research guard: established/handled park - releasing research checks "
+                        "(retroactive checks are legit)")
+            self._research_gate = "open"
+            return "open"
+        mech_done, mech_total, _, _ = self._research_split(snap)
+        if mech_total >= 10 and mech_done == mech_total:
+            self._research_gate = "quarantine"
+            logger.error(
+                "research guard: QUARANTINE - this park was just created, yet ALL %d mechanic "
+                "research locations read complete. That is the GameMain fallback signature (the "
+                "scenario's all-locked mechanic config is not in effect), NOT player progress - "
+                "mechanic research checks are suppressed for this session so they can't pollute the "
+                "multiworld; welfare and all other checks are unaffected. Run /pz_report and attach "
+                "it when reporting.", mech_total)
+        else:
+            logger.info("research guard: fresh park reads mechanic %d/%d complete - normal, "
+                        "releasing research checks", mech_done, mech_total)
+            self._research_gate = "open"
+        return self._research_gate
+
+    def reset_park_session(self) -> None:
+        """Re-arm the per-park one-shots when the AP park unloads (Exit-to-Menu / another save):
+        the next park gets its own first-snapshot diagnostic and hold->verdict guard cycle."""
+        self._research_snap_logged = False
+        self._research_hold_t0 = None
+        self._research_hold_logged = False
+        if self._fresh_verdict is not None:
+            self._research_gate = "hold"
+
+    def _log_first_research_snapshot(self, snap) -> None:
+        """One-shot triage log on the session's first readable research map. Foreign report
+        20260812_Ollieberry: a brand-new AP park read ALL 57 mechanic research locations complete
+        (and 0 welfare) on the first tick and sent them all as checks - the signature of the engine
+        falling back to the pre-completed `default` mechanic config because the GameMain rename had
+        no effect at runtime. Log the completeness split up front, and log an ERROR on the 100%-
+        mechanic-complete signature so the very next report pins the state before any check fires."""
+        mech_done, mech_total, welf_done, welf_total = self._research_split(snap)
+        logger.info("first research snapshot: mechanic %d/%d complete, welfare %d/%d complete",
+                    mech_done, mech_total, welf_done, welf_total)
+        if mech_total >= 10 and mech_done == mech_total:
+            logger.error(
+                "ALL %d mechanic research locations read COMPLETE on the first research snapshot. "
+                "On a newly-created AP park this is the GameMain fallback signature (the scenario's "
+                "all-locked mechanic config was not honored; the engine fell back to `default`, "
+                "which is fully pre-completed) - these are NOT player-earned checks. Run /pz_report "
+                "and attach it when reporting.", mech_total)
 
     # -- inserts (births + acquisitions share one drain) -----------------------
 

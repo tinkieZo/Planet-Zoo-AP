@@ -21,6 +21,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import os
+import random
 import sys
 import time
 from pathlib import Path
@@ -170,6 +171,22 @@ class PZCommandProcessor(ClientCommandProcessor):
         self.output(f"Goal: {len(have)}/{len(need)} - {'COMPLETE' if self.ctx.finished_game else 'in progress'}")
         return True
 
+    # --- Challenge-mode zoo claim ----------------------------------------------
+
+    def _cmd_pz_claim(self, option: str = "") -> bool:
+        """Use the loaded Challenge zoo as this slot's Archipelago zoo (again in a new zoo = start over)."""
+        if option and option.lower() != "force":
+            self.output("Usage: /pz_claim [force]")
+            return False
+        msg = self.ctx.claim_zoo(force=option.lower() == "force")
+        self.output(msg)
+        return msg.startswith("Claimed")
+
+    def _cmd_pz_unclaim(self) -> bool:
+        """Release this slot's claimed Challenge zoo."""
+        self.output(self.ctx.unclaim_zoo())
+        return True
+
     # --- AP scenario shell (ovl) management -------------------------------
 
     def _cmd_pz_mod(self) -> bool:
@@ -201,6 +218,22 @@ class PZCommandProcessor(ClientCommandProcessor):
         self.output("Launching Planet Zoo via Steam... pick the ARCHIPELAGO career entry once it's up.")
         return True
 
+    def _cmd_pz_report(self) -> bool:
+        """Write a diagnostic bundle (versions, data fingerprint, session state, checks sent,
+        log tail) to a file for bug reports - attach that file when reporting an issue."""
+        from . import report
+        try:
+            path = report.write_report(self.ctx)
+        except Exception as e:
+            self.output(f"Report failed: {e!r}")
+            return False
+        sent = len(self.ctx._session_check_log)
+        self.output(f"Diagnostic report written to: {path}")
+        self.output(f"  (this session: {sent} check(s) sent, {len(self.ctx.items_received)} item(s) "
+                    f"received, server-checked {len(self.ctx.checked_locations)})")
+        self.output("Attach that file to your bug report.")
+        return True
+
 
 class PZContext(CommonContext):
     # Stay game-agnostic at construction (game="") so CommonContext.__init__ doesn't look up a LOCAL
@@ -228,6 +261,9 @@ class PZContext(CommonContext):
                  state_dir: Optional[str] = None):
         super().__init__(server_address, password)
         self.game_data = pz_data.load(data_path)
+        self._data_path = data_path              # remembered for /pz_report's data.json fingerprint
+        self._session_check_log: List[tuple] = []  # (unix time, location id) per check sent this session
+        self._preflight_results = None           # last preflight self-check results (for /pz_report)
         self.applier: EffectApplier = applier or ConsoleEffectApplier()
         self.state: Optional[ClientState] = None
         # Override the on-disk state location (tests pass a temp dir).
@@ -253,6 +289,17 @@ class PZContext(CommonContext):
         self._scanner = None  # the shared MemoryScanner (memory mode)
         self._fresh_reset_done = False  # fresh handling ran for the CURRENT fingerprint episode (re-arms
         # when the baked-balance fingerprint disappears; stops a no-op handling refiring every tick)
+        self._fresh_park_verdict: "Optional[bool]" = None  # research-guard latch: True = never-handled
+        # fresh park detected THIS park session, False = established/handled, None = still resolving
+        # (latched by _maybe_fresh_reset, computed side-effect-free by _fresh_park_verdict_cb; reset
+        # on park unload)
+        # Challenge-mode claim flow (see claim_zoo): the unclaimed challenge park currently loaded as
+        # (ParkIdentity, fresh: Optional[bool]), refreshed by the poll thread while the session is idle;
+        # the last prompt logged for it (logged once per state); and the pending fresh handling a claim
+        # schedules for the next active tick (starting money + full re-award).
+        self._claim_candidate: "Optional[tuple]" = None
+        self._claim_prompted: "Optional[tuple]" = None
+        self._claim_fresh_pending = False
         self._ovl_job_running = False  # one ovl install/restore at a time (see run_ovl_job)
         self._initial_applied: "Optional[int]" = None  # high-water mark at session start (drives re-award)
         self._fresh_wait_ticks = 0  # ticks spent holding item apply for the park-age (fresh) signal to land
@@ -343,7 +390,10 @@ class PZContext(CommonContext):
         research_fac = all_fac & set(FACILITY_RESEARCH_CATEGORY)
         placement_fac = all_fac - research_fac
         # Trigger source owns the ReleaseDetector (release-gate) + a ResearchReader the gate reuses.
-        self.trigger_source = MemoryTriggerSource(scanner, anchors, self.game_data, self._collect_check)
+        # fresh_park_verdict powers the research quarantine guard (hold first-snapshot research
+        # checks until the park is known fresh/established; see triggers._research_gate_state).
+        self.trigger_source = MemoryTriggerSource(scanner, anchors, self.game_data, self._collect_check,
+                                                  fresh_park_verdict=self._fresh_park_verdict_cb)
         # Facility (placement) gate - only the non-research facilities (trade_centre, vet_surgery).
         self.facility_gate = FacilityGate(scanner)
         self.facility_gate.set_gated(placement_fac)
@@ -388,13 +438,15 @@ class PZContext(CommonContext):
             i.effect_type == "progressive_research_reward"
             and i.effect_args.get("family") == "exhibit_enrichment"
             for i in self.game_data.items))
-        # AP-session detection - the whole poll tick is a no-op unless the LOADED park is the AP
-        # scenario (park-name marker planted by Scenario_AP_Script + scenario-mode market). Keeps the
-        # client from gating/awarding inside franchise/sandbox/vanilla-career parks. Escape hatch:
-        # PZAP_NO_SESSION_GATE=1 restores the old gate-whatever-is-loaded behaviour (debugging, or an
-        # ovl that predates the SetParkName marker).
+        # AP-session detection - the whole poll tick is a no-op unless the LOADED park is the AP zoo:
+        # the AP scenario (park-name marker planted by Scenario_AP_Script + scenario-mode market) or the
+        # Challenge zoo claimed for this slot (/pz_claim; challenge-mode market + identity binding).
+        # Keeps the client from gating/awarding inside franchise/sandbox/vanilla-career/unclaimed parks.
+        # Escape hatch: PZAP_NO_SESSION_GATE=1 restores the old gate-whatever-is-loaded behaviour
+        # (debugging, or an ovl that predates the SetParkName marker).
         from .memory.session import ApSessionDetector
-        self._session = ApSessionDetector(scanner, mode_check=self.market_gate.scenario_mode)
+        self._session = ApSessionDetector(scanner, game_mode=self.market_gate.game_mode,
+                                          claim_match=self._claim_matches)
         self.applier = MemoryEffectApplier(scanner, anchors, permit_gate=self.permit_gate,
                                            release_gate=self.trigger_source.releases,
                                            facility_gate=self.facility_gate,
@@ -431,7 +483,159 @@ class PZContext(CommonContext):
         scanner = self._scanner
         if not scanner.attached and not scanner.attach():
             return False    # game not running; nothing to gate
-        return self._session.is_ap_session()
+        if self._session.is_ap_session():
+            self._claim_candidate = None
+            return True
+        self._update_claim_candidate()
+        return False
+
+    def _session_kind(self) -> "Optional[str]":
+        """'scenario' | 'challenge' while an AP session is active, else None (also in console mode)."""
+        session = getattr(self, "_session", None)
+        return getattr(session, "kind", None)
+
+    # -- Challenge-mode zoo claim ----------------------------------------------
+    # A Challenge zoo carries no AP marker, so the player CLAIMS it for the slot (/pz_claim): the client
+    # binds the park's native identity and is active only in that park. The binding lives in the room's
+    # data storage (follows the player to another PC) with a local copy in ClientState. Claiming is also
+    # the new-save signal: it schedules the starting money + full re-award (see _challenge_fresh_reset).
+
+    # Challenge zoos start with 300 CC; the AP scenario starts with none (its parksettings nInitialCCs=0)
+    # and conservation credits come from AP items - so a claimed zoo starts at the same 0.
+    CLAIM_STARTING_CCS = 0
+    # First research-item id of the hidden gate items /pz_install mints (50000 facility placeholders,
+    # 50002-50007 barrier gates, ... - rewards.py); live 2026-11-13: 50000-50058 present, status 0.
+    AP_GATE_ITEM_MIN = 50000
+
+    def _zoo_key(self) -> "Optional[str]":
+        if self.slot is None:
+            return None
+        return f"pz_zoo_{self.team}_{self.slot}"
+
+    def _zoo_binding(self) -> "Optional[dict]":
+        """The zoo claimed for this slot: the room's data-storage value, else the local copy."""
+        key = self._zoo_key()
+        if key is None:
+            return None
+        server = self.stored_data.get(key)
+        if isinstance(server, dict) and server:
+            return server
+        if self.state is None:
+            return None
+        return self.state.get_zoo_binding(self.seed_name or "unknown", self.slot)
+
+    def _claim_matches(self, identity) -> bool:
+        """ApSessionDetector's claim check: is this challenge park the zoo claimed for the slot?"""
+        binding = self._zoo_binding()
+        return binding is not None and identity.matches(binding)
+
+    def _store_zoo_binding(self, binding: "Optional[dict]") -> None:
+        """Persist the claim (None = release it) locally AND in the room's data storage."""
+        if self.state is not None:
+            self.state.set_zoo_binding(self.seed_name or "unknown", self.slot, binding)
+        key = self._zoo_key()
+        if key is None:
+            return
+        self.stored_data[key] = binding     # local view until the server's SetReply echoes it
+        self._spawn(self.send_msgs([{"cmd": "Set", "key": key, "default": None, "want_reply": True,
+                                     "operations": [{"operation": "replace", "value": binding}]}]))
+
+    def _park_is_fresh(self) -> "Optional[bool]":
+        """True iff the loaded park is brand-new: Year 1 (park age) AND no research completed at all.
+        False if either is violated, None while either is unreadable. Only a fresh zoo is claimed
+        without 'force': claiming a played zoo would send its completed research as checks."""
+        from .memory.zoodate import FRESH_YEARS
+        from .memory.research import STATUS_COMPLETE
+        years = self._park_years()
+        snap = self.trigger_source.research._snapshot() if self.trigger_source is not None else None
+        if years is None or snap is None:
+            return None
+        # Item ids >= AP_GATE_ITEM_MIN are the install's hidden gate items (barrier/facility gates,
+        # rewards.py) - status-written by the client in an ACTIVE zoo, never player research.
+        researched = any(status == STATUS_COMPLETE for item, (_h, _lvl, status, _cat) in snap[0].items()
+                         if item < self.AP_GATE_ITEM_MIN)
+        return years < FRESH_YEARS and not researched
+
+    def _update_claim_candidate(self) -> None:
+        """Poll thread, session idle: track an unclaimed challenge park and tell the player once (per
+        park + state) what /pz_claim would do with it."""
+        session = self._session
+        if session is None or session.mode != "challenge" or session.identity is None or self.slot is None:
+            self._claim_candidate = None
+            return
+        identity = session.identity
+        fresh = self._park_is_fresh()
+        self._claim_candidate = (identity, fresh)
+        binding = self._zoo_binding()
+        prompt = (identity, fresh, bool(binding))
+        if fresh is None or prompt == self._claim_prompted:
+            return
+        self._claim_prompted = prompt
+        here = identity.describe()
+        if binding and fresh:
+            logger.info("Challenge zoo %s is new, but this slot already plays in '%s'. Type /pz_claim to "
+                        "START OVER here: the old zoo stops being tracked and all %d received items are "
+                        "applied again (already-sent checks stay sent).", here, binding.get("name"),
+                        len(self.items_received))
+        elif binding:
+            logger.info("Challenge zoo %s is not this slot's Archipelago zoo ('%s') - client idle.",
+                        here, binding.get("name"))
+        elif fresh:
+            logger.info("New Challenge zoo %s loaded. Type /pz_claim to make it this slot's Archipelago "
+                        "zoo.", here)
+        else:
+            logger.info("Challenge zoo %s isn't brand-new (research completed or past Year 1), so it "
+                        "can't be claimed safely: its completed research would be sent as checks. Start a "
+                        "new Challenge zoo, or type /pz_claim force to claim it anyway.", here)
+
+    def claim_zoo(self, force: bool = False) -> str:
+        """/pz_claim: bind the loaded unclaimed Challenge zoo to this slot (also re-claims = start over).
+        Returns the message for the player."""
+        if self.slot is None:
+            return "Connect to the Archipelago server first."
+        candidate = self._claim_candidate
+        if candidate is None:
+            if self._session_kind() == "challenge":
+                return "This zoo is already this slot's Archipelago zoo."
+            return ("No unclaimed Challenge zoo is loaded. Create a new Challenge zoo in Planet Zoo, load "
+                    "it, then type /pz_claim again.")
+        identity, fresh = candidate
+        if not fresh and not force:
+            reason = ("couldn't confirm yet that it's new - wait a few seconds and retry"
+                      if fresh is None else "it isn't brand-new (research completed or past Year 1)")
+            return (f"Not claiming {identity.describe()}: {reason}. Type /pz_claim force to claim it "
+                    "anyway (completed research would be sent as checks).")
+        previous = self._zoo_binding()
+        # Mark the zoo with an invisible, unique globe-pin shift (session.PIN_NONCE_MAX_ULPS) and bind the
+        # MARKED identity: a restart at the same spot under the same name, or a save made before this
+        # claim, no longer matches. Unlocated/unreadable latitude -> bind the plain identity.
+        from .memory.session import PIN_NONCE_MAX_ULPS
+        names = getattr(self._session, "names", None)
+        nonce = random.randint(1, PIN_NONCE_MAX_ULPS)  # NOSONAR - a save marker, not a secret
+        stamped = names.stamp_pin_nonce(nonce) if names else None
+        if stamped is not None and stamped.name == identity.name:
+            identity = stamped
+        binding = identity.to_binding()
+        binding["claimed_at"] = round(time.time())
+        self._store_zoo_binding(binding)
+        self._claim_fresh_pending = True    # next active tick: starting money + full re-award
+        self._fresh_park_verdict = None
+        self._claim_candidate = None
+        self._claim_prompted = None
+        logger.info("Claimed Challenge zoo %s for slot %s%s.", identity.describe(), self.slot,
+                    f" (replacing '{previous.get('name')}')" if previous else "")
+        return (f"Claimed {identity.describe()} as this slot's Archipelago zoo - applying all "
+                f"{len(self.items_received)} received items.")
+
+    def unclaim_zoo(self) -> str:
+        """/pz_unclaim: release the slot's claimed Challenge zoo (the client goes idle in it)."""
+        binding = self._zoo_binding()
+        if binding is None:
+            return "No Challenge zoo is claimed for this slot."
+        self._store_zoo_binding(None)
+        self._claim_prompted = None
+        return (f"Released '{binding.get('name')}'. Load a new Challenge zoo and type /pz_claim to "
+                "pick it.")
 
     def _poll_tick(self) -> None:
         """The synchronous poll body. Runs in a worker thread (see poll_loop) and does only memory I/O -
@@ -533,8 +737,13 @@ class PZContext(CommonContext):
             self.location_names.update_game(self.game, self.game_data.name_to_location_id)
             self.slot_data = args.get("slot_data", {}) or {}
             self.state = ClientState.load(self.seed_name or "unknown", self.slot, self._state_dir)
+            self.set_notify(self._zoo_key())     # the claimed Challenge zoo (room data storage)
             self._resolve_goal_locations()
-            logger.info("Connected as slot %s. Goal: %s", self.slot, self.slot_data.get("goal"))
+            logger.info("Connected as slot %s. Goal: %s | server-checked %d, missing %d, "
+                        "items already received %d (retroactive research/milestone checks on an "
+                        "in-progress zoo fire over the next poll ticks)",
+                        self.slot, self.slot_data.get("goal"), len(self.checked_locations),
+                        len(self.missing_locations), len(self.items_received))
             self._apply_new_items()
             self._check_goal()
         elif cmd == "ReceivedItems":
@@ -563,6 +772,7 @@ class PZContext(CommonContext):
         """Report a single location check to the server (deduped)."""
         if location_id in self.effective_checked:
             return
+        self._session_check_log.append((time.time(), location_id))  # /pz_report's session audit trail
         self.locations_checked.add(location_id)
         self._spawn(self.check_locations([location_id]))
         self._check_goal()
@@ -612,6 +822,31 @@ class PZContext(CommonContext):
         except Exception:
             return None
 
+    def _fresh_park_verdict_cb(self) -> "Optional[bool]":
+        """Tri-state fresh-park probe for the research quarantine guard (triggers.py): True = this
+        park is a never-handled FRESH park, False = established/already-handled, None = still
+        resolving (keep holding). Prefers the latch _maybe_fresh_reset sets; otherwise computes the
+        SAME fingerprint (park age + untouched baked cash) side-effect-free. Race-free by tick
+        order: the triggers step runs BEFORE apply_items, so on the tick the park age lands this
+        reads the fingerprint before the fresh handling consumes it (starting-money write)."""
+        if self._fresh_park_verdict is not None:
+            return self._fresh_park_verdict
+        if self._session_kind() == "challenge":
+            # No baked fingerprint in a challenge zoo: the claim IS the fresh signal.
+            return self._claim_fresh_pending
+        from .memory.zoodate import FRESH_YEARS
+        years = self._park_years()
+        if years is None:
+            # Still resolving - unless no signal is coming at all (park-age disabled/absent), in
+            # which case there is nothing to wait for: fail open like the item-application hold.
+            return None if self._fresh_signal_pending() else False
+        if years >= FRESH_YEARS:
+            return False
+        cash = self._current_cash()
+        if cash is None:
+            return None    # young park but cash unreadable this tick - keep holding (bounded)
+        return abs(cash - self.BAKED_STARTING_CASH) <= 0.005
+
     def _maybe_fresh_reset(self, seed: str, applied: int, years: "Optional[int]") -> int:
         """Detect a NEVER-HANDLED fresh save and run the fresh handling (starting money -> ledger reset ->
         the item re-award). FINGERPRINT detection: a park below the age threshold whose cash is EXACTLY the
@@ -622,13 +857,21 @@ class PZContext(CommonContext):
         Unknown age or unreadable cash => do nothing (fail safe: never a spurious re-award).
         LIMITATION: a brand-new scenario PLAYED (money spent/earned) before the client ever connects no
         longer reads the baked balance and is NOT detected - connect the client before playing a new
-        scenario. (Fix-for-good: a script-planted per-park save id; needs an ovl rebuild.)"""
+        scenario. (Fix-for-good: a script-planted per-park save id; needs an ovl rebuild.)
+        A claimed CHALLENGE zoo has no baked balance (its cash depends on the chosen difficulty): there
+        the claim itself is the fresh signal - see _challenge_fresh_reset."""
+        if getattr(getattr(self, "_session", None), "kind", None) == "challenge":
+            return self._challenge_fresh_reset(seed, applied)
         from .memory.zoodate import FRESH_YEARS
         if years is None or years >= FRESH_YEARS:
+            if years is not None and self._fresh_park_verdict is None:
+                self._fresh_park_verdict = False   # research guard: established park
             return applied
         cash = self._current_cash()
         if cash is None or abs(cash - self.BAKED_STARTING_CASH) > 0.005:
             self._fresh_reset_done = False   # fingerprint gone -> arm for the next new save
+            if cash is not None and self._fresh_park_verdict is None:
+                self._fresh_park_verdict = False   # research guard: young but handled/played park
             return applied            # not the untouched baked balance -> already handled (or played)
         if self._fresh_reset_done:
             # Handling already ran this episode but was a visible no-op (e.g. the room's starting_money
@@ -642,6 +885,7 @@ class PZContext(CommonContext):
         logger.info("Fresh zoo detected (Year 1, %d years open, untouched baked $%s) - applying starting "
                     "money and re-awarding all received items", years, self.BAKED_STARTING_CASH)
         self._fresh_reset_done = True
+        self._fresh_park_verdict = True   # research guard: never-handled fresh park (latched)
         self._apply_starting_money()
         self.state.reset_granted(seed, self.slot)
         if applied > 0:
@@ -649,6 +893,34 @@ class PZContext(CommonContext):
             applied = 0
         self.state.set_fresh_pending(seed, self.slot, True)
         return applied
+
+    def _challenge_fresh_reset(self, seed: str, applied: int) -> int:
+        """Fresh handling for a claimed Challenge zoo, run once on the first active tick after /pz_claim
+        (a new claim or a start-over): starting money + starting CCs, zero the money ledger, and re-run
+        the whole item list - the same handling a fresh scenario save gets. A reconnect to the claimed
+        zoo has no pending claim and is left alone (established park)."""
+        if not self._claim_fresh_pending:
+            if self._fresh_park_verdict is None:
+                self._fresh_park_verdict = False   # research guard: claimed zoo already handled
+            return applied
+        logger.info("Claimed Challenge zoo: applying starting money and re-awarding all %d received items",
+                    len(self.items_received))
+        self._claim_fresh_pending = False
+        self._fresh_park_verdict = True   # research guard: never-handled fresh park (latched)
+        self._apply_starting_money()
+        self._apply_starting_ccs()
+        self.state.reset_granted(seed, self.slot)
+        self.state.set(seed, self.slot, 0)
+        return 0
+
+    def _apply_starting_ccs(self) -> None:
+        """Set a claimed Challenge zoo's conservation credits to CLAIM_STARTING_CCS (the scenario's start)."""
+        anchors = getattr(self.applier, "anchors", None)
+        scanner = getattr(self.applier, "scanner", None)
+        if anchors is None or scanner is None:
+            return
+        if not anchors.write(scanner, "conservation_credits", self.CLAIM_STARTING_CCS):
+            logger.info("Could not set starting conservation credits (anchor unresolved)")
 
     def _apply_starting_money(self) -> None:
         """Override the scenario's default starting cash with the room's ``starting_money`` (slot_data,
@@ -1002,9 +1274,9 @@ class PZContext(CommonContext):
         future autofill only spawns unlocked species. The SAME id set goes to both gates: each pool
         holds only its own type, so the exhibit gate self-filters to unlocked exhibit species and the
         habitat gate to unlocked habitat species. Re-applied only when the unlocked set CHANGES (each
-        apply forces a pool rebuild). No-op outside scenario mode (sandbox/franchise markets are
-        engine-driven)."""
-        if self.market_gate is None or not self.market_gate.scenario_mode():
+        apply forces a pool rebuild). No-op outside the autofill modes the gate controls - scenario and
+        challenge (sandbox markets are engine-driven; franchise parks never get an AP session)."""
+        if self.market_gate is None or not self.market_gate.gateable_mode():
             return
         received_ids = [ni.item for ni in self.items_received]
         allowed = self.game_data.purchase_universe() - self.game_data.purchase_blocked_species(received_ids)
@@ -1024,7 +1296,7 @@ class PZContext(CommonContext):
             self._market_last_applied_ids = applied_ids
             self.market_gate.expire_blocked_listings(allowed_ids)  # clear stale blocked listings now
             # Same allow-list to the exhibit market (the pool there self-filters to exhibit species).
-            if self.exhibit_gate is not None and self.exhibit_gate.scenario_mode():
+            if self.exhibit_gate is not None and self.exhibit_gate.gateable_mode():
                 self.exhibit_gate.apply_unlocked(allowed_ids)
                 self.exhibit_gate.expire_blocked_listings(allowed_ids)
 
@@ -1037,6 +1309,14 @@ class PZContext(CommonContext):
         apply-cache so the gate re-applies if the AP scenario reloads. Detours are process-stable and
         self-heal on re-attach, so they're intentionally left installed."""
         logger.info("AP park unloaded - restoring market gates before the engine tears them down")
+        # Re-arm the research quarantine guard + fresh-park latch: the NEXT park (possibly another
+        # brand-new one) must get its own hold->verdict cycle, not this park's verdict.
+        self._fresh_park_verdict = None
+        if self.trigger_source is not None:
+            try:
+                self.trigger_source.reset_park_session()
+            except Exception:
+                logger.exception("trigger-source park-session reset failed")
         for gate in (self.market_gate, self.exhibit_gate):
             if gate is not None:
                 try:
@@ -1045,6 +1325,7 @@ class PZContext(CommonContext):
                     logger.exception("market gate restore on park-unload failed")
         self._market_last_allowed = None        # force a fresh apply if the AP scenario reloads
         self._market_last_applied_ids = frozenset()
+        self._claim_prompted = None             # re-prompt for whatever challenge park loads next
         if self._session is not None:
             # Drop the park-name cache: freed park-info memory can ghost-read the OLD park's name
             # indefinitely (read() never rescans while a cached name still resolves), which would serve
@@ -1058,9 +1339,9 @@ class PZContext(CommonContext):
         at ~2 listings per unlocked species so the ask stays reachable - which, with the engine's
         per-species spawn backoff, also tends toward ~one of each unlocked species. Soft + sanity-guarded
         + wake-throttled (see ensure_min_fill); only ever spawns from the gated pool, so it can't offer
-        anything locked. No-op outside scenario mode."""
+        anything locked. No-op outside the gateable (scenario / challenge) market modes."""
         for gate in (self.market_gate, self.exhibit_gate):
-            if gate is not None and gate.scenario_mode():
+            if gate is not None and gate.gateable_mode():
                 gate.ensure_min_fill(self.MARKET_MIN_LISTINGS)
 
     def _run_preflight(self) -> None:
@@ -1094,6 +1375,7 @@ class PZContext(CommonContext):
                 exhibit_enrich_gate=self.exhibit_enrich_gate,
                 installed_hooks=HookManager.active_hooks(),
             )
+            self._preflight_results = results    # retained for /pz_report
             bad = [r for r in results if r.status not in ("ok", "relocated")]
             reloc = [r for r in results if r.status == "relocated"]
             ok = len(results) - len(bad)
@@ -1395,6 +1677,12 @@ def main(args=None):
 
     async def _run(args):
         ctx = PZContext(args.connect, args.password, data_path=getattr(args, "data", None))
+        # Startup banner: names the exact build + data contract in every log/report (beta triage).
+        from . import CLIENT_VERSION
+        meta = ctx.game_data.meta or {}
+        logger.info("Planet Zoo AP client %s | data.json: %d items / %d locations (ids %s) | %s",
+                    CLIENT_VERSION, len(ctx.game_data.items), len(ctx.game_data.locations),
+                    meta.get("id_ranges"), "frozen exe" if getattr(sys, "frozen", False) else "source")
         ctx.auth = args.name
         if args.memory:
             ctx.enable_memory(poll_interval=args.poll_interval)

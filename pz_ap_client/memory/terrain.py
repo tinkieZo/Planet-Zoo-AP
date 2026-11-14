@@ -29,6 +29,8 @@ from __future__ import annotations
 import ctypes
 import logging
 import struct
+import threading
+import time
 from ctypes import wintypes
 from typing import Dict, List, Optional
 
@@ -47,6 +49,11 @@ MAIN2_CODE = bytes.fromhex(
 )
 # Stable validity prefix (instr 0+1) - never patched, so it marks a live, unpatched-or-patched copy.
 _SIG_PREFIX = MAIN2_CODE[:8]
+# _find must match a copy we ALREADY patched (a client restarted while the game kept running, or a copy that
+# outlives park reloads - live 2026-11-14 the 0x7xxxxxxx copy did): the instructions at +0x08/+0x0C are the
+# patch windows, so the search anchors on the code AFTER them and checks the prefix BEFORE them.
+_PATCH_END = 0x10
+_ANCHOR = MAIN2_CODE[_PATCH_END:]
 
 # tool_key -> byte offset into the code array of the GETTABLE that loads its disabled flag.
 TOOL_BYTEOFF: Dict[str, int] = {
@@ -57,7 +64,6 @@ TOOL_BYTEOFF: Dict[str, int] = {
 _MEM_COMMIT = 0x1000
 _PAGE_GUARD = 0x100
 _WRITABLE = {0x04, 0x08, 0x40, 0x80}  # RW / WC / EXEC_RW / EXEC_WC
-_FIND_COOLDOWN = 8  # reconciles to skip after a failed find (avoid re-scanning every tick out-of-game)
 
 
 class _MBI(ctypes.Structure):
@@ -93,6 +99,58 @@ def writable_regions(scanner):
     return out
 
 
+class BackgroundFinder:
+    """Runs a gate's full writable-heap search (~20 s live) on a worker thread so it NEVER blocks the poll
+    tick, and paces retries in wall-clock seconds. Live 2026-11-14: after a park reload the Lua bytecode
+    the terrain / exhibit-enrichment gates patch isn't in the heap until the player opens those menus, and
+    the old tick-counted cooldown re-ran BOTH sweeps inline every ~8 ticks - ~70% of a core, 20-40 s ticks,
+    and every check (e.g. a first acquisition) delayed by minutes.
+
+    take(): the finished search result exactly once, else None (search running / retry not due yet - a
+    new search is started when due). miss(): the caller found nothing usable -> retry after RETRY_S.
+    ``background=False`` runs the search inline (tests) but keeps the same one-call deferral."""
+
+    RETRY_S = 30.0
+    _NONE = object()
+
+    def __init__(self, find_fn, background: bool = True):
+        self._find_fn = find_fn
+        self.background = background
+        self._thread = None
+        self._result = self._NONE
+        self._next_ok = 0.0
+
+    def _run(self) -> None:
+        try:
+            self._result = self._find_fn()
+        except Exception as e:      # a failed sweep is a miss, never a crash of the poll loop
+            logger.debug("background heap search failed: %s", e)
+            self._result = None
+
+    def take(self):
+        if self._thread is not None and self._thread.is_alive():
+            return None
+        self._thread = None
+        if self._result is not self._NONE:
+            result, self._result = self._result, self._NONE
+            return result
+        if time.monotonic() < self._next_ok:
+            return None
+        if self.background:
+            self._thread = threading.Thread(target=self._run, name="pz-heap-search", daemon=True)
+            self._thread.start()
+        else:
+            self._run()
+        return None
+
+    def miss(self) -> None:
+        self._next_ok = time.monotonic() + self.RETRY_S
+
+    @property
+    def retry_armed(self) -> bool:
+        return time.monotonic() < self._next_ok
+
+
 class TerrainGate:
     """Native terrain-tool gate by patching main.2's loaded Lua bytecode. Driven from the received
     tool-item set each tick (authoritative + idempotent, restart-correct)."""
@@ -103,8 +161,8 @@ class TerrainGate:
         self._addrs: List[int] = []          # located copies of main.2's code
         self._orig: Dict[int, bytes] = {}     # byteoff -> original 4 bytes (for restore)
         self._applied: Dict[int, int] = {}    # byteoff -> last gate value written (idempotency)
-        self._cooldown = 0
-        self._first_scan_pending = True       # defer the first full-heap scan off the first poll tick
+        # full-heap search off the poll thread (late-bound so tests can swap _find)
+        self._finder = BackgroundFinder(lambda: self._find())
 
     def set_gated(self, tool_keys) -> None:
         """Declare which terrain tools have an AP item (only these are ever patched)."""
@@ -132,49 +190,49 @@ class TerrainGate:
                 data = self.scanner.read_bytes(rb, rs)
             except Exception:
                 continue
-            i = data.find(MAIN2_CODE)
+            i = data.find(_ANCHOR)
             while i != -1:
-                hits.append(rb + i)
-                i = data.find(MAIN2_CODE, i + 1)
+                start = i - _PATCH_END     # patch windows (+0x08/+0x0C) may hold ORIG or our LOADBOOL
+                if start >= 0 and data[start:start + len(_SIG_PREFIX)] == _SIG_PREFIX:
+                    hits.append(rb + start)
+                i = data.find(_ANCHOR, i + 1)
         return hits
 
     def _ensure_located(self) -> bool:
+        """Cached copies valid -> True. Otherwise the full-heap _find() (~20 s live) runs on the
+        BackgroundFinder thread - never on the poll tick (this also keeps it off the first tick, so READY
+        comes ~20 s sooner); a later tick adopts the result. The gate is ungated while it searches, but
+        main.2 only exists once the terrain menu was opened, and the search resumes within RETRY_S."""
         if self._cache_valid():
             return True
-        if self._first_scan_pending:
-            # The first _find() is a full writable-heap sweep (~20s on a slow box). The first poll tick
-            # already pays the park-info vtable scan (session detection) + the initial item apply, so
-            # keep this off it: defer one tick. The terrain-tool gate is invisible for that extra tick
-            # (the player isn't in the terrain-edit menu within the first second of a scenario load),
-            # and the client logs READY ~20s sooner. Reset only here (a scenario reload re-scans at once
-            # since by then we're past initial setup and prompt re-greying matters).
-            self._first_scan_pending = False
+        hits = self._finder.take()
+        if hits is None:
             return False
-        if self._cooldown > 0:
-            self._cooldown -= 1
-            return False
-        self._addrs = self._find()
+        # the sweep took a while - keep only copies that still hold main.2's code
+        hits = [a for a in hits if self._prefix_at(a)]
+        self._addrs = hits
         self._orig.clear()
         self._applied.clear()
-        if self._addrs:
-            logger.info("terrain gate: located main.2 bytecode at %s", [hex(a) for a in self._addrs])
+        if hits:
+            logger.info("terrain gate: located main.2 bytecode at %s", [hex(a) for a in hits])
             return True
-        self._cooldown = _FIND_COOLDOWN
+        self._finder.miss()
         return False
+
+    def _prefix_at(self, addr: int) -> bool:
+        try:
+            return self.scanner.read_bytes(addr, len(_SIG_PREFIX)) == _SIG_PREFIX
+        except Exception:
+            return False
 
     # -- patch / reconcile -----------------------------------------------------
 
     def _patch(self, byteoff: int, gate: int) -> None:
-        """Write LOADBOOL R<A>,gate,0 at every located copy (idempotent; records originals)."""
-        for a in self._addrs:
-            try:
-                if byteoff not in self._orig:
-                    self._orig[byteoff] = self.scanner.read_bytes(a + byteoff, 4)
-            except Exception:
-                continue
-        orig = self._orig.get(byteoff)
-        if not orig:
-            return
+        """Write LOADBOOL R<A>,gate,0 at every located copy (idempotent). The original instruction comes
+        from MAIN2_CODE, never from the live copy: a copy found ALREADY patched (client restart) would
+        otherwise record our LOADBOOL as the 'original' and shutdown() would restore the gate, not the game."""
+        orig = MAIN2_CODE[byteoff:byteoff + 4]
+        self._orig[byteoff] = orig
         reg_a = (struct.unpack("<I", orig)[0] >> 6) & 0xFF
         patch = _loadbool(reg_a, gate)
         for a in self._addrs:

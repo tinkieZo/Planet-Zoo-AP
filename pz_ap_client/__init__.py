@@ -11,4 +11,8 @@ Both mappings come from the shared ``data.json`` contract.
 
 from . import data
 
-__all__ = ["data"]
+# Client build version - bump per release so beta reports (/pz_report, the startup banner) name the
+# exact build. Keep in the "<major>.<minor>.<patch>-<stage>" shape; the packaged exe ships this.
+CLIENT_VERSION = "1.0.0-beta1"
+
+__all__ = ["data", "CLIENT_VERSION"]

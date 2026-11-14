@@ -1,7 +1,12 @@
-"""ApSessionDetector - decides whether the LOADED park is the AP scenario, so the client only
-gates/awards inside AP worlds instead of whatever park happens to be loaded.
+"""ApSessionDetector - decides whether the LOADED park is the AP zoo, so the client only gates/awards
+inside AP worlds instead of whatever park happens to be loaded. Two kinds of AP zoo:
 
-How: the AP scenario script (ScenarioScripts.Scenario_AP_Script, which the scriptutils hijack activates
+* SCENARIO - the AP career entry (park-name marker, below).
+* CHALLENGE - a vanilla Challenge-mode zoo the player CLAIMED for the slot (client ``/pz_claim``): the
+  client binds the park's native identity (name + whatever identity fields are located, see
+  ParkIdentity) and the session is active only in the park matching that binding. No typed name.
+
+How the scenario is recognised: the AP scenario script (ScenarioScripts.Scenario_AP_Script, which the scriptutils hijack activates
 ONLY for worlds whose save code is 'Scenario_01_Empty') calls park:SetParkName("ARCHIPELAGO ZOO") in
 Init. SetParkName (executor 0x14667A8F0) interns that string and stores it natively at
 park-info+0x1E8 - the same vtable-scannable park-info class the fresh-save signal lives on - and the
@@ -26,8 +31,10 @@ instances; the heap scan runs only on a cache miss, throttled, so the poll loop 
 from __future__ import annotations
 
 import logging
+import struct
 import time
-from typing import Optional
+from dataclasses import dataclass
+from typing import Callable, Optional
 
 from pz_ap_client.memory import signatures as sig
 
@@ -36,6 +43,62 @@ logger = logging.getLogger("PZClient")
 # The marker the AP scenario script plants via SetParkName at Init. Must match the careerdata entry's
 # label (database.c0careerdata.lua) AND scenarioscripts.scenario_ap_script.lua - keep all three in sync.
 AP_PARK_NAME = "ARCHIPELAGO ZOO"
+
+# Park-info identity fields beyond the name (darwinworld GenerateMetadataTable persists exactly Name,
+# Geome, ContinentEnum, Latitude, Longitude on the park-info object). field -> (type, offset); an offset
+# of None = not located / not used, the field is simply not read or compared. "str" = refcounted string.
+# Located live 2026-11-13 (Challenge zoo Temperate/Europe: continent 1 @+0x1F0, lat 49.0 @+0x1F4,
+# lon 23.0 @+0x1F8, right after the name @+0x1E8). The geome is one of the two 'temperate' strings at
+# +0x1D0/+0x1E0 (not disambiguated) - left out: the globe pin already pins the area, and a mis-picked
+# string that the engine rewrites would silently un-match the claimed zoo.
+# continent is ONE BYTE: the 3 bytes after it vary at runtime (live 2026-11-13: read 0 at first, 0x0676B0 at
+# claim time -> an i32 read stored continent 108441601 and the claimed zoo never matched again).
+IDENTITY_FIELDS = {
+    "geome": ("str", None),
+    "continent": ("u8", 0x1F0),
+    "lat": ("f32", 0x1F4),
+    "lon": ("f32", 0x1F8),
+}
+# The claim NONCE: /pz_claim adds a random 1..PIN_NONCE_MAX_ULPS float steps to the park's latitude (raw
+# f32 bits), so the claimed zoo carries a unique invisible mark - at |lat| < 90 one step is <= 7.6e-6
+# degrees, the max shift < 1 km on the globe. It tells the claimed zoo apart from a restart at the same
+# spot with the same name, and from saves made BEFORE the claim. Floats are therefore compared EXACTLY
+# (an f32 read as a Python float round-trips through JSON / data storage bit-exactly).
+PIN_NONCE_MAX_ULPS = 1023
+
+
+@dataclass(frozen=True)
+class ParkIdentity:
+    """What the engine persists about a park that can tell one zoo from another (no typed marker)."""
+    name: str
+    geome: Optional[str] = None
+    continent: Optional[int] = None
+    lat: Optional[float] = None
+    lon: Optional[float] = None
+
+    def to_binding(self) -> dict:
+        """The JSON-safe binding stored for a claimed zoo (fields that weren't readable are left out)."""
+        return {k: v for k, v in self.__dict__.items() if v is not None}
+
+    def matches(self, binding: Optional[dict]) -> bool:
+        """True iff this park is the bound zoo: same name AND every other field present on BOTH sides
+        equal (floats exactly - see PIN_NONCE_MAX_ULPS). A field the binding lacks (claimed by an older
+        client) or this read lacks (unresolved) is not compared."""
+        if not binding or binding.get("name") != self.name:
+            return False
+        for key in IDENTITY_FIELDS:
+            mine, theirs = getattr(self, key), binding.get(key)
+            if mine is None or theirs is None:
+                continue
+            if isinstance(mine, float):
+                if mine != float(theirs):
+                    return False
+            elif mine != theirs:
+                return False
+        return True
+
+    def describe(self) -> str:
+        return f"'{self.name}'"
 
 
 def read_refcounted_string(scanner, str_ptr: int, max_len: int = 96) -> Optional[str]:
@@ -137,32 +200,107 @@ class ParkNameReader:
         self._last_val = val
         return val
 
+    def read_identity(self) -> Optional[ParkIdentity]:
+        """The loaded park's ParkIdentity (name + every located IDENTITY_FIELDS entry), read off the
+        same park-info instance the name came from; None if no named park is loaded."""
+        name = self.read()
+        target = self._target()
+        if not name or target is None:
+            return None
+        for addr in self._cached or ():
+            try:
+                if self._name_at(addr, target) != name:
+                    continue
+                fields = {k: self._read_field(addr, typ, off)
+                          for k, (typ, off) in IDENTITY_FIELDS.items() if off is not None}
+            except Exception:
+                continue
+            return ParkIdentity(name=name, **fields)
+        return ParkIdentity(name=name)
+
+    def stamp_pin_nonce(self, ulps: int) -> Optional[ParkIdentity]:
+        """Write the claim nonce: add ``ulps`` float steps to the loaded park's latitude (raw f32 bits,
+        so the result is exact and never NaN/inf for |lat| <= 90). Returns the re-read identity, or None
+        if the latitude isn't located or the park-info can't be resolved (claim then binds without it)."""
+        _typ, off = IDENTITY_FIELDS["lat"]
+        name = self.read()
+        target = self._target()
+        if off is None or not name or target is None:
+            return None
+        for addr in self._cached or ():
+            try:
+                if self._name_at(addr, target) != name:
+                    continue
+                bits = struct.unpack("<I", self.scanner.read_bytes(addr + off, 4))[0]
+                self.scanner.write_bytes(addr + off, struct.pack("<I", (bits + ulps) & 0xFFFFFFFF))
+            except Exception:
+                continue
+            return self.read_identity()
+        return None
+
+    def _read_field(self, addr: int, typ: str, off: int):
+        if typ == "str":
+            return read_refcounted_string(self.scanner, self.scanner.read_qword(addr + off))
+        if typ == "u8":
+            return self.scanner.read_bytes(addr + off, 1)[0]
+        raw = self.scanner.read_bytes(addr + off, 4)
+        return struct.unpack("<i" if typ == "i32" else "<f", raw)[0]
+
+
+_UNSET = object()
+
 
 class ApSessionDetector:
-    """is_ap_session() = park-name marker present AND the exchange manager runs in scenario mode.
+    """is_ap_session() = the loaded park is an AP zoo, of either kind (see ``kind``):
 
-    ``mode_check`` is a zero-arg callable returning True iff the animal exchange is in scenario mode
-    (SpeciesMarketGate.scenario_mode) - injected so this module stays decoupled from market internals.
-    Logs every session-state transition once instead of spamming each poll tick.
+    * scenario  - park-name marker present AND the market runs in scenario mode;
+    * challenge - the market runs in challenge mode (not franchise) AND ``claim_match(identity)`` - the
+      client's check against the zoo the player claimed for this slot.
+
+    ``game_mode`` is a zero-arg callable returning the park's mode ('scenario' | 'challenge' |
+    'franchise' | 'sandbox' | 'off' | None; SpeciesMarketGate.game_mode) - injected so this module stays
+    decoupled from market internals. ``mode_check`` (bool: scenario mode?) is the older scenario-only
+    form, kept for callers that only know scenarios. Logs every session-state transition once instead of
+    spamming each poll tick. After each call, ``mode`` and ``identity`` hold what was read, so the client
+    can prompt a claim for an unbound challenge park.
     """
 
-    def __init__(self, scanner, mode_check=None):
+    def __init__(self, scanner, mode_check=None,
+                 game_mode: "Optional[Callable[[], Optional[str]]]" = None,
+                 claim_match: "Optional[Callable[[ParkIdentity], bool]]" = None):
         self.names = ParkNameReader(scanner)
-        self._mode_check = mode_check
-        self._last_state: Optional[bool] = None
+        if game_mode is None and mode_check is not None:
+            game_mode = lambda: "scenario" if mode_check() else None  # noqa: E731
+        self._game_mode = game_mode
+        self._claim_match = claim_match
+        self._last_state = _UNSET
+        self.kind: Optional[str] = None                 # active session kind, None when idle
+        self.mode: Optional[str] = None                 # last read game mode
+        self.identity: Optional[ParkIdentity] = None    # last read identity of a challenge park
 
     def is_ap_session(self) -> bool:
         name = self.names.read()
-        ok = name == AP_PARK_NAME
-        if ok and self._mode_check is not None:
-            ok = bool(self._mode_check())
-        if ok != self._last_state:
-            self._last_state = ok
-            if ok:
+        mode = self._game_mode() if self._game_mode is not None else "scenario"
+        identity, kind = None, None
+        if mode == "scenario":
+            if name == AP_PARK_NAME:
+                kind = "scenario"
+        elif mode == "challenge" and name:
+            identity = self.names.read_identity()
+            if identity is not None and self._claim_match is not None and self._claim_match(identity):
+                kind = "challenge"
+        self.mode, self.identity, self.kind = mode, identity, kind
+        if kind != self._last_state:
+            self._last_state = kind
+            if kind == "scenario":
                 logger.info("AP session detected (park name %r, scenario mode) - client active.", name)
+            elif kind == "challenge":
+                logger.info("AP session detected (claimed Challenge zoo %s) - client active.",
+                            identity.describe())
             else:
-                logger.info("No AP session (park name %r) - client idle until the AP scenario loads. "
-                            "If this IS the AP scenario, the Main.ovl in play predates the SetParkName "
-                            "marker or the park-info vtable RVA is stale; set PZAP_NO_SESSION_GATE=1 "
-                            "to bypass detection while debugging.", name)
-        return ok
+                logger.info("No AP session (park name %r, mode %s) - client idle until the AP zoo loads: "
+                            "the AP career scenario, or a Challenge zoo claimed with /pz_claim. If this IS "
+                            "the AP scenario, the Main.ovl in play predates the SetParkName marker or the "
+                            "park-info vtable RVA is stale; set PZAP_NO_SESSION_GATE=1 to bypass detection "
+                            "while debugging.", name, mode)
+        return kind is not None

@@ -78,7 +78,7 @@ class RegistryResolver:
         if self._base_cache is not None:
             return self._base_cache
         mb = getattr(self.scanner, "module_base", None)
-        if not self.scanner.attached or mb is None:
+        if not getattr(self.scanner, "attached", False) or mb is None:
             return None
         global_addr = mb + REGISTRY_GLOBAL_RVA
         for cand in (self.scanner.read_qword(global_addr), global_addr):
@@ -117,6 +117,39 @@ class RegistryResolver:
         if entry is None:
             return None
         return self._read_name(entry)
+
+    def pin(self, sid: int) -> Optional[bool]:
+        """Make symbol ``sid`` PERMANENT (refcount -1). The engine's AddRef / Release (fn_141342d50 /
+        FUN_141343010) are CAS loops that both stop at -1, so one aligned 4-byte store can't be undone by
+        a racing update (its CAS fails and re-reads -1). Needed for every key we put in an engine-owned
+        int32 set: the engine releases one reference per key when it destroys the set (live crash
+        2026-11-13: symbol 0x3039 over-released to death by the market include-set teardown). True =
+        pinned (or already permanent), False = dead/invalid symbol (must NOT go in a set), None = the
+        registry isn't resolvable."""
+        base = self._registry_base()
+        if base is None:
+            return None
+        try:
+            top = self.scanner.read_qword(base + OFF_TOP)
+            stride = self.scanner.read_i64(base + OFF_STRIDE)
+            cap = self.scanner.read_i32(base + OFF_CAP)
+        except Exception:
+            return None
+        if not top or stride <= 0 or not 0 < sid < cap:
+            return False
+        entry = self._read_entry(top, stride, sid)
+        if entry is None:
+            return False
+        try:
+            rc = self.scanner.read_i32(entry + ENT_REFCOUNT)
+            if rc == -1:
+                return True
+            if rc <= 0:
+                return False                   # dead / being freed - never resurrect
+            self.scanner.write_i32(entry + ENT_REFCOUNT, -1)
+            return self.scanner.read_i32(entry + ENT_REFCOUNT) == -1
+        except Exception:
+            return False
 
     def _read_name(self, entry: int) -> Optional[str]:
         """Read the NUL-terminated name at entry+8 (skipping refcount==0 holes)."""

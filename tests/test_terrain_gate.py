@@ -99,8 +99,9 @@ def test_gate_and_enable() -> None:
 
 
 def test_first_scan_deferred() -> None:
-    """The first _find() (a full writable-heap sweep, ~20s live) is kept off the first poll tick:
-    the first reconcile defers without scanning, the next one scans + locates."""
+    """The _find() full writable-heap sweep (~20s live) never runs on the poll tick: the first reconcile
+    STARTS it (on the BackgroundFinder thread - inline here) and returns not-located; the next reconcile
+    adopts the result. A miss re-arms a wall-clock retry instead of re-scanning every few ticks."""
     base = 0x20000
     blob = b"\xCC" * 0x100 + T.MAIN2_CODE + b"\xCC" * 0x100
     code_at = base + 0x100
@@ -114,17 +115,74 @@ def test_first_scan_deferred() -> None:
         return [code_at]
 
     g._find = _fake_find  # the real byte-search is exercised live, not here
+    g._finder.background = False   # run the search inline, same deferral
 
-    _check(g._first_scan_pending is True, "fresh gate starts with the first scan pending")
     located1 = g.reconcile(set())
-    _check(located1 is False and calls["n"] == 0,
-           "first reconcile defers: no _find(), not located (kept off the first tick)")
-    _check(g._first_scan_pending is False, "defer flag cleared after the first reconcile")
+    _check(located1 is False and calls["n"] == 1,
+           "first reconcile only STARTS the search: not located yet (kept off the poll tick)")
     located2 = g.reconcile(set())
     _check(located2 is True and calls["n"] == 1,
-           "second reconcile scans once and locates main.2")
+           "second reconcile adopts the finished search and locates main.2 (no second sweep)")
     _check(sc.read_bytes(code_at + 0x0C, 4).hex() == "43018000",
            "after locating, the deferred reconcile applies the water gate (LOADBOOL R5,1)")
+
+
+def test_failed_search_retries_on_wall_clock() -> None:
+    """A miss (menu never opened -> main.2 not in the heap) must NOT re-scan every few ticks (live
+    2026-11-14: ~70% CPU, 20-40 s ticks after a reload); the retry waits RETRY_S of wall-clock time."""
+    sc = FakeScanner(0x20000, b"\xCC" * 0x200)
+    g = T.TerrainGate(sc)
+    g.set_gated({"water_tools"})
+    calls = {"n": 0}
+
+    def _miss():
+        calls["n"] += 1
+        return []
+
+    g._find = _miss
+    g._finder.background = False
+    for _ in range(20):
+        g.reconcile(set())
+    _check(calls["n"] == 1, f"one sweep, then quiet until the retry is due (got {calls['n']} sweeps)")
+    _check(g._finder.retry_armed, "miss armed the wall-clock retry")
+    g._finder._next_ok = 0.0          # retry due
+    g.reconcile(set())
+    _check(calls["n"] == 2, "sweeps again once the retry is due")
+
+
+def test_find_matches_already_patched_copy() -> None:
+    """A copy a PREVIOUS client already patched (water gated) must still be found - live 2026-11-14 a
+    restarted client never re-located main.2, so it could never ungate water when the item arrived - and
+    shutdown must restore the GAME's instruction, not the stale gate."""
+    base = 0x20000
+    patched = bytearray(T.MAIN2_CODE)
+    patched[0x0C:0x10] = bytes.fromhex("43018000")          # LOADBOOL R5,1 from an earlier session
+    blob = b"\xCC" * 0x100 + bytes(patched) + b"\xCC" * 0x100
+    sc = FakeScanner(base, blob)
+    g = T.TerrainGate(sc)
+    g.set_gated({"water_tools"})
+    g._finder.background = False
+    g._regions = lambda: [(base, len(blob))]               # the fake has no VirtualQueryEx
+    _check(g._find() == [base + 0x100], "already-patched copy found by the masked search")
+    g.reconcile({"water_tools"})                            # start search
+    _check(g.reconcile({"water_tools"}) is True, "located")
+    _check(sc.read_bytes(base + 0x100 + 0x0C, 4).hex() == "43010000", "item received -> ungated (LOADBOOL R5,0)")
+    g.shutdown()
+    _check(sc.read_bytes(base + 0x100 + 0x0C, 4) == T.MAIN2_CODE[0x0C:0x10],
+           "shutdown restores the game's original GETTABLE, not the earlier session's patch")
+
+
+def test_stale_hits_dropped() -> None:
+    """The background sweep takes ~20 s; a copy that no longer holds main.2 by adoption time is dropped."""
+    base = 0x20000
+    blob = b"\xCC" * 0x100 + T.MAIN2_CODE + b"\xCC" * 0x100
+    sc = FakeScanner(base, blob)
+    g = T.TerrainGate(sc)
+    g.set_gated({"water_tools"})
+    g._find = lambda: [base + 0x100, base + 0x10]   # second hit is stale (no main.2 there)
+    g._finder.background = False
+    g.reconcile(set())
+    _check(g.reconcile(set()) is True and g._addrs == [base + 0x100], "only the live copy is adopted")
 
 
 def test_other_offsets_untouched() -> None:
@@ -142,6 +200,9 @@ def main() -> int:
     test_set_gated_filters()
     test_gate_and_enable()
     test_first_scan_deferred()
+    test_failed_search_retries_on_wall_clock()
+    test_stale_hits_dropped()
+    test_find_matches_already_patched_copy()
     test_other_offsets_untouched()
     print("\nAll TerrainGate tests passed.")
     return 0

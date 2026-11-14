@@ -32,7 +32,7 @@ import logging
 import struct
 from typing import Dict, List, Optional
 
-from .terrain import writable_regions
+from .terrain import BackgroundFinder, writable_regions
 
 logger = logging.getLogger("PZClient")
 
@@ -64,7 +64,6 @@ MAIN32_CODE = bytes.fromhex(
 )
 
 MAX_LEVEL = 3    # exhibit enrichment tiers are 1..3
-_FIND_COOLDOWN = 8  # reconciles to skip after a failed find (bytecode absent until a panel opened)
 
 
 def _abc(op: int, a: int, b: int, c: int) -> int:
@@ -150,8 +149,8 @@ class ExhibitEnrichmentGate:
         self.enabled = False
         self._addrs: Dict[str, List[int]] = {}   # site name -> located copies of its code array
         self._applied: Optional[int] = None       # last count written (idempotency)
-        self._cooldown = 0
-        self._first_scan_pending = True           # defer the first full-heap scan off the first poll tick
+        # full-heap search off the poll thread (late-bound so tests can swap _find) - see BackgroundFinder
+        self._finder = BackgroundFinder(lambda: self._find())
 
     def set_gated(self, enabled: bool) -> None:
         """Declare whether this seed carries the Progressive Exhibit Enrichment item (only then
@@ -190,16 +189,13 @@ class ExhibitEnrichmentGate:
     def _ensure_located(self) -> bool:
         if self._cache_valid():
             return True
-        if self._first_scan_pending:
-            # Keep the first full-heap sweep off the first poll tick (same defer as TerrainGate -
-            # see terrain.py). The gate is invisible for that tick: the bytecode isn't even loaded
-            # until the player opens an exhibit info panel.
-            self._first_scan_pending = False
+        # the full-heap sweep runs on the BackgroundFinder thread, never on the poll tick (same as
+        # TerrainGate); the bytecode isn't even loaded until the player opens an exhibit info panel
+        hits = self._finder.take()
+        if hits is None:
             return False
-        if self._cooldown > 0:
-            self._cooldown -= 1
-            return False
-        hits = self._find()
+        # the sweep took a while - keep only copies that still hold the code arrays
+        hits = {site.name: [a for a in hits.get(site.name, []) if self._prefix_at(a, site)] for site in SITES}
         self._applied = None
         if all(hits[s.name] for s in SITES):
             self._addrs = hits
@@ -211,8 +207,14 @@ class ExhibitEnrichmentGate:
             # both arrays live in the same chunk, so a partial find means a stale/foreign copy
             logger.warning("exhibit-enrichment gate: PARTIAL find %s - not patching",
                            {k: len(v) for k, v in hits.items()})
-        self._cooldown = _FIND_COOLDOWN
+        self._finder.miss()
         return False
+
+    def _prefix_at(self, addr: int, site) -> bool:
+        try:
+            return self.scanner.read_bytes(addr, 8) == site.prefix[:8]
+        except Exception:
+            return False
 
     # -- patch / reconcile -----------------------------------------------------
 

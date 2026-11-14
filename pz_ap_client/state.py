@@ -69,6 +69,10 @@ class ClientState:
     # whose replay arithmetic broke whenever application stalled mid-list or the mark was zeroed at the
     # wrong moment.
     granted: Dict[str, Dict[str, float]] = field(default_factory=dict)
+    # (seed:slot) -> the Challenge zoo claimed for the slot (session.ParkIdentity.to_binding()). The
+    # client keeps the authoritative copy in the room's data storage so a claim follows the player to
+    # another PC; this local copy covers the gap before the server value arrives.
+    zoo_binding: Dict[str, dict] = field(default_factory=dict)
 
     @classmethod
     def load(cls, seed_name: str, slot: int, state_dir: "str | Path | None" = None) -> "ClientState":
@@ -80,17 +84,20 @@ class ClientState:
         applied: Dict[str, int] = {}
         pending: Dict[str, bool] = {}
         granted: Dict[str, Dict[str, float]] = {}
+        binding: Dict[str, dict] = {}
         if path.exists():
             try:
                 blob = json.loads(path.read_text(encoding="utf-8"))
                 applied = blob.get("applied_count", {})
                 pending = blob.get("fresh_pending", {})
                 granted = blob.get("granted", {})
+                binding = blob.get("zoo_binding", {})
             except (json.JSONDecodeError, OSError):
                 # Corrupt state: start fresh rather than crash. Worst case is a
                 # re-grant, which the high-water mark will then re-establish.
-                applied, pending, granted = {}, {}, {}
-        return cls(path=path, applied_count=applied, fresh_pending=pending, granted=granted)
+                applied, pending, granted, binding = {}, {}, {}, {}
+        return cls(path=path, applied_count=applied, fresh_pending=pending, granted=granted,
+                   zoo_binding=binding)
 
     def get(self, seed_name: str, slot: int, save_id: "str | None" = None) -> int:
         return self.applied_count.get(_slot_key(seed_name, slot, save_id), 0)
@@ -121,11 +128,24 @@ class ClientState:
         self.granted.pop(_slot_key(seed_name, slot, save_id), None)
         self._flush()
 
+    # -- claimed Challenge zoo ----------------------------------------------------------------------
+
+    def get_zoo_binding(self, seed_name: str, slot: int) -> "dict | None":
+        return self.zoo_binding.get(_slot_key(seed_name, slot)) or None
+
+    def set_zoo_binding(self, seed_name: str, slot: int, binding: "dict | None") -> None:
+        """Store (or with None, clear) the zoo claimed for this slot."""
+        if binding:
+            self.zoo_binding[_slot_key(seed_name, slot)] = dict(binding)
+        else:
+            self.zoo_binding.pop(_slot_key(seed_name, slot), None)
+        self._flush()
+
     def _flush(self) -> None:
         tmp = self.path.with_suffix(self.path.suffix + ".tmp")
         tmp.write_text(
             json.dumps({"applied_count": self.applied_count, "fresh_pending": self.fresh_pending,
-                        "granted": self.granted}, indent=2),
+                        "granted": self.granted, "zoo_binding": self.zoo_binding}, indent=2),
             encoding="utf-8",
         )
         os.replace(tmp, self.path)  # atomic on Windows + POSIX

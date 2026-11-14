@@ -60,6 +60,17 @@ OFF_MGR_POOL_DIRTY = 0x211        # u8: write 0 -> Advance rebuilds the candidat
                                   # clear this ONLY when the allow-list changed (apply path), never per
                                   # tick / in the fill path - that starves spawning = permanently empty.
 OFF_MGR_MODE = 0x41C             # u8: 0=scenario 1=sandbox 2=challenge/franchise 3=off
+OFF_MGR_FRANCHISE = 0x41D        # u8: 1 = franchise (Advance skips: the market is server-driven). The 4th
+                                 # bool of SetAnimalExchangeGameMode - the only thing telling a franchise
+                                 # park (mode 2) from a challenge park (mode 2). Live 2026-11-13: challenge=0.
+MODE_SCENARIO = 0
+MODE_SANDBOX = 1
+MODE_CHALLENGE = 2               # challenge AND franchise (see OFF_MGR_FRANCHISE)
+MODE_OFF = 3
+# Modes whose market AUTOFILLS through the include-set filter (fn_140ea0740 reads the active id @+0x3b8
+# for every mode but sandbox), i.e. the modes the allow-list gate controls. Live-proven 2026-11-13 for
+# challenge (2): pool 167 -> allow-list, both markets showed only the allowed species.
+GATEABLE_MODES = (MODE_SCENARIO, MODE_CHALLENGE)
 OFF_MGR_DEFAULT_WHITELIST = 0x3C0  # the default whitelist OBJECT (used when active id misses)
 # Active-whitelist SELECTION (FUN_14a098760): the rebuild uses the ACTIVE whitelist, chosen by an id
 # field looked up in the map @mgr+0x390; on a MISS it returns the default @+0x3c0. The id field is
@@ -147,14 +158,30 @@ SET_COUNT = 0x08
 SET_CAP = 0x10
 SET_BUFFER = 0x18
 
-# Orphan-detection sentinel. Our include-set buffer is allocated with a SENTINEL_SIZE-byte prefix holding
-# SENTINEL_MAGIC; the engine's include-set pointer is set to (base + SENTINEL_SIZE), so the magic sits
-# immediately BEFORE the pointer the engine holds. If a prior client process is HARD-KILLED (Task Manager /
+# Orphan-detection sentinel. Our include-set buffer starts with SENTINEL_MAGIC; the engine's include-set
+# pointer is set to (base + BUF_PREFIX), so the magic sits a fixed BUF_PREFIX before the pointer the engine
+# holds (clients before 2026-11-13 put it directly before: SENTINEL_SIZE - still recognised). If a prior client process is HARD-KILLED (Task Manager /
 # crash) before restoring, the manager keeps pointing at our orphaned buffer; a fresh client recognises it
 # by this magic and neutralises it (see _neutralize_orphan_includeset) so the engine never free()s a foreign
 # pointer on park teardown = the Exit crash. 16 bytes, fixed offset (cap-independent).
 SENTINEL_MAGIC = b"PZAP-MKT-ORPHAN!"
 SENTINEL_SIZE = 0x10
+
+# ENGINE-FREE SAFETY (live crash 2026-11-13: save + quit-to-menu while the poll thread sat ~36 s in startup
+# heap scans, so the unload restore came too late). If the park tears down while the include-set still points
+# at our buffer, the engine frees it with its sized free FUN_141341b40(ptr, size):
+#   * size <= 0x400 (and a size-class bin exists) -> pushes ptr onto a small-block POOL freelist = pool
+#     bookkeeping corruption (our old cap-64 set was 264 bytes = this path);
+#   * larger -> HeapFree(engine heap, 0, ptr[-2]): the engine's large blocks carry a 16-byte header before the
+#     data {raw HeapAlloc ptr @-0x10, u32 0x10 @-0x08, u32 size @-0x04} (written by e.g. FUN_1455dcd10).
+# So our buffer imitates that header with raw = NULL and is always > 0x400 bytes (MIN_SET_CAP): the engine's
+# free becomes HeapFree(heap, 0, NULL) = a no-op (RtlFreeHeap returns TRUE for NULL). The restore on unload
+# stays the clean path; this makes LOSING that race harmless instead of a crash. Layout from the allocation
+# base: [SENTINEL_MAGIC 16][raw=0 u64][0x10 u32][size u32][set data ...] -> the include-set points at +0x20.
+ENGINE_HDR_SIZE = 0x10
+BUF_PREFIX = SENTINEL_SIZE + ENGINE_HDR_SIZE
+ENGINE_SMALL_FREE_MAX = 0x400
+MIN_SET_CAP = 256          # bitvector 32 + keys 1024 = 1056 bytes > ENGINE_SMALL_FREE_MAX
 
 # -- VirtualAllocEx plumbing (data alloc in the target; hook.py's _alloc_near is code-only) --
 _MEM_COMMIT = 0x1000
@@ -176,16 +203,16 @@ def set_hash(key: int, cap: int) -> int:
     return ((x >> 0x0C) ^ x) & (cap - 1)
 
 
-def _next_pow2_cap(n: int) -> int:
-    """Smallest power-of-two capacity that keeps the set under ~70% load (>=8)."""
-    cap = 8
+def _next_pow2_cap(n: int, min_cap: int = 8) -> int:
+    """Smallest power-of-two capacity >= min_cap that keeps the set under ~70% load."""
+    cap = min_cap
     need = max(1, n) * 10 // 7 + 1
     while cap < need:
         cap <<= 1
     return cap
 
 
-def build_int32_set(keys: Sequence[int]) -> "tuple[int, bytes]":
+def build_int32_set(keys: Sequence[int], min_cap: int = 8) -> "tuple[int, bytes]":
     """Build the in-memory image of an int32 open-addressing hash-set (occupancy bitvector + keys[]).
 
     Returns ``(capacity, blob)`` where ``blob`` is what lives at the set's buffer pointer (+0x18):
@@ -193,7 +220,7 @@ def build_int32_set(keys: Sequence[int]) -> "tuple[int, bytes]":
     Empty key slots are left 0; the bitvector is authoritative (matches the lookup, which stops at the
     first clear occupancy bit). Mirrors the game's insert path: hash -> linear probe -> first free slot."""
     uniq = list(dict.fromkeys(int(k) & 0xFFFFFFFF for k in keys))
-    cap = _next_pow2_cap(len(uniq))
+    cap = _next_pow2_cap(len(uniq), min_cap)
     bitvec_bytes = ((cap >> 3) + 7) & ~7         # 64-bit-word aligned, >= cap bits
     occ = bytearray(bitvec_bytes)
     table = [0] * cap
@@ -276,6 +303,8 @@ class _AutofillMarketGate:
     # per tick = visible game stutter. One wake per cooldown is plenty; listings persist for in-game months.
     _FILL_WAKE_COOLDOWN_S = 10.0
 
+    _kernel32 = _k32        # VirtualAllocEx/VirtualFreeEx provider (tests inject a fake per instance)
+
     def __init__(self, scanner, research=None, registry=None):
         self.scanner = scanner
         from .research import ResearchReader
@@ -301,16 +330,25 @@ class _AutofillMarketGate:
             self._mgr_cache = resolve_exchange_mgr(self.scanner, self._PARK_MGR)
         return self._mgr_cache
 
-    def scenario_mode(self) -> bool:
-        """True iff the market is in scenario mode (mode byte 0) - the autofill-driven mode the gate
-        restricts; also the AP-session mode_check (habitat gate)."""
+    def mode(self) -> Optional[int]:
+        """The manager's raw mode byte (MODE_*), or None if not in a loaded zoo / unreadable."""
         mgr = self.exchange_mgr()
         if mgr is None:
-            return False
+            return None
         try:
-            return self.scanner.read_bytes(mgr + self._MODE, 1)[0] == 0
+            return self.scanner.read_bytes(mgr + self._MODE, 1)[0]
         except Exception:
-            return False
+            return None
+
+    def scenario_mode(self) -> bool:
+        """True iff the market is in scenario mode (mode byte 0)."""
+        return self.mode() == MODE_SCENARIO
+
+    def gateable_mode(self) -> bool:
+        """True iff the market autofills through the include-set filter (scenario or challenge) - the
+        modes the allow-list gate controls. Franchise shares mode 2 but is excluded at the SESSION level
+        (SpeciesMarketGate.game_mode), so the gates never run in a franchise park."""
+        return self.mode() in GATEABLE_MODES
 
     def expire_blocked_listings(self, allowed_ids: Sequence[int]) -> int:
         """Force every LIVE listing whose species isn't in ``allowed_ids`` to expire on the next
@@ -378,27 +416,31 @@ class _AutofillMarketGate:
     # -- the gate --------------------------------------------------------------
 
     def _alloc_buffer(self, size: int) -> Optional[int]:
-        """(Re)allocate a target-process RW buffer for ``size`` DATA bytes, prefixed with SENTINEL_MAGIC.
-        Returns the DATA pointer (base + SENTINEL_SIZE) - what the include-set is repointed at; self._buffer
-        holds the allocation BASE (what we VirtualFreeEx). The sentinel lets a fresh client process detect
-        this buffer as OURS if a prior process was hard-killed without restoring. Frees a prior allocation."""
+        """(Re)allocate a target-process RW buffer for ``size`` DATA bytes behind the BUF_PREFIX (sentinel +
+        a NULL-raw engine large-block header, see ENGINE-FREE SAFETY). Returns the DATA pointer (base +
+        BUF_PREFIX) - what the include-set is repointed at; self._buffer holds the allocation BASE (what we
+        VirtualFreeEx). The sentinel lets a fresh client process detect this buffer as OURS if a prior
+        process was hard-killed without restoring. A too-small prior allocation is replaced: freed only
+        while the engine provably doesn't reference it (it is only ever re-pointed at the NEW buffer after
+        this returns, and a prior apply's pointer is overwritten in the same apply)."""
         handle = self.scanner.pm.process_handle
         if self._buffer and size > self._buffer_cap:
-            _k32.VirtualFreeEx(handle, ctypes.c_void_p(self._buffer), 0, _MEM_RELEASE)
+            self._kernel32.VirtualFreeEx(handle, ctypes.c_void_p(self._buffer), 0, _MEM_RELEASE)
             self._buffer = None
         if not self._buffer:
-            total = max(size + SENTINEL_SIZE, 0x1000)
-            got = _k32.VirtualAllocEx(handle, None, total, _MEM_COMMIT | _MEM_RESERVE, _PAGE_READWRITE)
+            total = max(size + BUF_PREFIX, 0x1000)
+            got = self._kernel32.VirtualAllocEx(handle, None, total, _MEM_COMMIT | _MEM_RESERVE, _PAGE_READWRITE)
             if not got:
                 logger.warning("market: VirtualAllocEx failed (err %d)", ctypes.get_last_error())
                 return None
             self._buffer = int(got)
-            self._buffer_cap = total - SENTINEL_SIZE
-            try:
-                self.scanner.write_bytes(self._buffer, SENTINEL_MAGIC)  # tag the base for orphan detection
-            except Exception:
-                pass
-        return self._buffer + SENTINEL_SIZE
+            self._buffer_cap = total - BUF_PREFIX
+        try:   # (re)write the prefix on every apply - cheap, and self-heals anything that touched it
+            self.scanner.write_bytes(self._buffer, SENTINEL_MAGIC + struct.pack(
+                "<QII", 0, ENGINE_HDR_SIZE, min(self._buffer_cap, 0xFFFFFFFF)))
+        except Exception:
+            pass
+        return self._buffer + BUF_PREFIX
 
     def use_default_whitelist(self) -> bool:
         """Route the autofill rebuild to the DEFAULT whitelist (the one apply_unlocked writes) by
@@ -427,7 +469,8 @@ class _AutofillMarketGate:
         mgr = self.exchange_mgr()
         if mgr is None:
             return False
-        cap, blob = build_int32_set(species_ids)
+        species_ids = self._pin_keys(species_ids)
+        cap, blob = build_int32_set(species_ids, MIN_SET_CAP)   # > ENGINE_SMALL_FREE_MAX, see ENGINE-FREE SAFETY
         buf = self._alloc_buffer(len(blob))
         if buf is None:
             return False
@@ -450,6 +493,29 @@ class _AutofillMarketGate:
             return False
         logger.info("market: allow-list set to %d species (cap=%d) @mgr 0x%X", len(species_ids), cap, mgr)
         return True
+
+    def _pin_keys(self, species_ids: Sequence[int]) -> List[int]:
+        """Pin every species symbol we're about to put in the include-set (RegistryResolver.pin): the
+        engine RELEASES one symbol reference per key when it destroys the set at park teardown, and our
+        keys were never AddRef'd -> over-release -> symbol freed -> crash (live 2026-11-13, symbol 0x3039,
+        FUN_141343010). Keys whose symbol is dead/invalid are dropped (releasing those crashes outright).
+        If the registry itself is unresolvable the ids pass through unpinned with a warning - the restore
+        on unload still covers the normal exit path."""
+        if self.registry is None:
+            from .registry import RegistryResolver
+            self.registry = RegistryResolver(self.scanner)
+        kept, dropped = [], []
+        for sid in species_ids:
+            ok = self.registry.pin(int(sid))
+            if ok is None:
+                logger.warning("market: symbol registry unresolvable - include-set keys left UNPINNED "
+                               "(a park teardown before the restore could crash)")
+                return list(species_ids)
+            (kept if ok else dropped).append(sid)
+        if dropped:
+            logger.warning("market: dropped %d species id(s) with a dead/invalid symbol from the allow-list: "
+                           "%s", len(dropped), [hex(int(s)) for s in dropped])
+        return kept
 
     def _resolve_handles(self, species_keys: Sequence[str]) -> List[int]:
         """Resolve species_keys -> current-session symbol ids via the research map (the proven, restart-
@@ -578,7 +644,8 @@ class _AutofillMarketGate:
             p = self.scanner.read_i64(inc + SET_BUFFER)
             if not p:
                 return
-            if self.scanner.read_bytes(p - SENTINEL_SIZE, len(SENTINEL_MAGIC)) != SENTINEL_MAGIC:
+            # current layout (magic BUF_PREFIX before the data) or the pre-2026-11-13 one (SENTINEL_SIZE)
+            if not any(self._magic_at(p - pre) for pre in (BUF_PREFIX, SENTINEL_SIZE)):
                 return  # a genuine engine buffer (or unreadable) - never touch it
             self.scanner.write_i64(inc + SET_BUFFER, 0)
             self.scanner.write_i64(inc + SET_CAP, 0)
@@ -591,6 +658,12 @@ class _AutofillMarketGate:
                            "neutralised to empty (the engine now frees nothing on Exit = no crash)", p)
         except Exception as e:
             logger.warning("market: orphan include-set check failed (%s) - continuing", e)
+
+    def _magic_at(self, addr: int) -> bool:
+        try:
+            return self.scanner.read_bytes(addr, len(SENTINEL_MAGIC)) == SENTINEL_MAGIC
+        except Exception:
+            return False
 
     def _capture_original(self, mgr: int, wl: int, inc: int) -> None:
         """Snapshot the manager's pre-gate include-set state ONCE (before the first apply overwrites it),
@@ -629,7 +702,11 @@ class _AutofillMarketGate:
         try:
             mgr = self.exchange_mgr()             # fresh resolve; None if the park already unloaded
             if mgr is None or mgr != self._orig.get("mgr"):
-                self._orig = None                 # park gone/changed - can't safely write; drop (buffer leak is benign)
+                # Park gone/changed - can't safely write. The engine may already have run its free on our
+                # buffer (a no-op by construction, see ENGINE-FREE SAFETY), so ABANDON it: never reuse it for
+                # the next park, never VirtualFreeEx it (a few KB per park load, reclaimed at game exit).
+                self._orig = None
+                self._abandon_buffer()
                 return False
             wl = mgr + self._DEFAULT_WL
             inc = wl + WL_INCLUDE_SET
@@ -655,31 +732,31 @@ class _AutofillMarketGate:
         free our buffer - but ONLY if the engine no longer points at it. Safe to call on park unload or
         process exit - restore() re-resolves the manager and skips if the park is already gone.
 
-        Free ONLY when it's provably safe: restore() succeeded (engine now points at its own buffer) OR the
-        park is gone (the manager + its include-set are already freed, so our buffer is unreferenced). If we
-        can't confirm either, we LEAK our buffer instead of freeing it: a leaked VirtualAllocEx page is
-        benign (reclaimed when the game exits), but freeing a buffer the engine still references leaves it a
-        dangling pointer -> the engine free()s it on park teardown -> crash on Exit. The leak is the safe side."""
+        Free ONLY when it's provably safe: restore() succeeded (the engine points at its own buffer again).
+        Otherwise - park already gone (the engine may have run its free on our buffer during teardown) or the
+        re-point unconfirmed - ABANDON it: a leaked VirtualAllocEx page is benign (reclaimed when the game
+        exits), while freeing memory the engine still references or has handed to its allocator = a crash."""
         restored = False
         try:
             restored = self.restore()
         except Exception:
             logger.exception("market: restore during shutdown failed")
         self._mgr_cache = None
-        park_gone = False
-        try:
-            park_gone = self.exchange_mgr() is None
-        except Exception:
-            park_gone = False
-        if self._buffer and self.scanner.attached and (restored or park_gone):
+        if self._buffer and self.scanner.attached and restored:
             try:
-                _k32.VirtualFreeEx(self.scanner.pm.process_handle,
+                self._kernel32.VirtualFreeEx(self.scanner.pm.process_handle,
                                    ctypes.c_void_p(self._buffer), 0, _MEM_RELEASE)
+                self._buffer = None
             except Exception:
                 pass
-        elif self._buffer:
-            logger.warning("market: include-set re-point unconfirmed - LEAKING our buffer 0x%X (benign, "
-                           "reclaimed on game exit) rather than risk a dangling free/crash", self._buffer)
+        self._abandon_buffer()
+
+    def _abandon_buffer(self) -> None:
+        """Forget our include-set buffer WITHOUT freeing it (see restore()/shutdown()): the next apply
+        allocates a fresh one."""
+        if self._buffer:
+            logger.info("market: leaving our old include-set buffer 0x%X allocated (unsafe to free once the "
+                        "park unloaded; reclaimed on game exit)", self._buffer)
         self._buffer = None
         self._buffer_cap = 0
         self._mgr_cache = None
@@ -708,6 +785,21 @@ class SpeciesMarketGate(_AutofillMarketGate):
     _FORCE_SPAWN = OFF_MGR_FORCE_SPAWN
     _BATCH_MIN = OFF_MGR_BATCH_MIN
     _BATCH_MAX = OFF_MGR_BATCH_MAX
+
+    def game_mode(self) -> Optional[str]:
+        """The park's game mode as the engine configured this market ('scenario' | 'challenge' |
+        'franchise' | 'sandbox' | 'off'), or None if no zoo is loaded. The AP-session detector's mode
+        source: scenario parks are matched by the park-name marker, challenge parks by the claim."""
+        mode = self.mode()
+        if mode is None:
+            return None
+        if mode == MODE_CHALLENGE:
+            try:
+                franchise = self.scanner.read_bytes(self.exchange_mgr() + OFF_MGR_FRANCHISE, 1)[0]
+            except Exception:
+                return None
+            return "franchise" if franchise else "challenge"
+        return {MODE_SCENARIO: "scenario", MODE_SANDBOX: "sandbox", MODE_OFF: "off"}.get(mode)
 
 
 class ExhibitMarketGate(_AutofillMarketGate):

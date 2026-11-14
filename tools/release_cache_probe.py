@@ -29,6 +29,28 @@ from pz_ap_client.memory.births import BirthDetector            # noqa: E402
 from pz_ap_client.memory.releases import ReleaseDetector        # noqa: E402
 
 
+def _print_new_cache_entries(births: BirthDetector, seen_cache: set) -> None:
+    """Print each handle -> species pair the insert-cache gained since the last tick."""
+    for h, k in births.handle_species.items():
+        if h not in seen_cache:
+            seen_cache.add(h)
+            print("  cached: handle 0x%X -> %s" % (h, k))
+
+
+def _report_release(cnt: int, releases: ReleaseDetector, births: BirthDetector) -> None:
+    """Attribute release #cnt to a species via the insert-cache, as the client does."""
+    handle = releases.last_released_handle()
+    if not handle:
+        print("RELEASE #%d but no handle captured (species hook not firing?)" % cnt)
+        return
+    key = births.handle_species.get(handle)
+    if key:
+        print("RELEASE #%d handle 0x%X -> CACHE HIT: %s   <== cr_%s would fire" % (cnt, handle, key, key))
+    else:
+        print("RELEASE #%d handle 0x%X -> not in cache (was it inserted while attached? "
+              "moving it into a habitat first populates the cache)" % (cnt, handle))
+
+
 def main() -> int:
     try:
         sys.stdout.reconfigure(line_buffering=True)
@@ -59,25 +81,12 @@ def main() -> int:
     try:
         t0 = time.monotonic()
         while time.monotonic() - t0 < secs:
-            born, acq = births.poll_events()      # drains inserts -> fills births.handle_species
-            for h, k in list(births.handle_species.items()):
-                if h not in seen_cache:
-                    seen_cache.add(h)
-                    print("  cached: handle 0x%X -> %s" % (h, k))
+            births.poll_events()      # drains inserts -> fills births.handle_species
+            _print_new_cache_entries(births, seen_cache)
             cnt = releases.count()
             if cnt > last_count:
                 last_count = cnt
-                handle = releases.last_released_handle()
-                if not handle:
-                    print("RELEASE #%d but no handle captured (species hook not firing?)" % cnt)
-                else:
-                    key = births.handle_species.get(handle)
-                    if key:
-                        print("RELEASE #%d handle 0x%X -> CACHE HIT: %s   <== cr_%s would fire"
-                              % (cnt, handle, key, key))
-                    else:
-                        print("RELEASE #%d handle 0x%X -> not in cache (was it inserted while attached? "
-                              "moving it into a habitat first populates the cache)" % (cnt, handle))
+                _report_release(cnt, releases, births)
             time.sleep(0.1)
     finally:
         releases.shutdown()

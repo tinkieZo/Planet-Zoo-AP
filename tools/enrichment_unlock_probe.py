@@ -37,6 +37,49 @@ ENRICH_RE = FAMILY_LEVEL_RE["exhibit_enrichment"]     # r'enrichmentl(\d+)'
 TYPE_ENRICH = FAMILY_TYPE["exhibit_enrichment"]       # 1
 
 
+MAX_ROWS = 80
+
+
+def _regex_label(mo) -> str:
+    return ("L%s" % mo.group(1)) if mo else "NO MATCH"
+
+
+def _report_naming(index: dict) -> None:
+    """(A) NAMING - every intern token containing 'enrich', with regex verdict, then the family
+    level-map reconcile would build (cid -> level)."""
+    enrich_names = sorted(n for n in index if "enrich" in n)
+    matched = [(n, ENRICH_RE.search(n)) for n in enrich_names]
+    n_match = sum(1 for _, mo in matched if mo)
+    print("\n=== (A) intern names containing 'enrich': %d total, %d match r'%s' ==="
+          % (len(enrich_names), n_match, ENRICH_RE.pattern))
+    for n, mo in matched[:MAX_ROWS]:
+        print("   %-48s id=0x%-6X  regex=%s" % (n, index[n], _regex_label(mo)))
+    if len(matched) > MAX_ROWS:
+        print("   ... (%d more)" % (len(matched) - MAX_ROWS))
+
+    levels = {cid: int(mo.group(1)) for name, cid in index.items() if (mo := ENRICH_RE.search(name))}
+    print("\nfamily level-map size (what reconcile sees): %d" % len(levels))
+    if not levels:
+        print("   >>> EMPTY -> reconcile_progressive_levels returns True WITHOUT writing = cause (A).")
+
+
+def _report_unlock_records(m: UnlockMap, reg: InternRegistry) -> None:
+    """(B) MATERIALIZATION - type-1 (enrichment) records in the live rs+0x148 unlock map."""
+    print("\n=== (B) rs+0x148 unlock records of type %d (enrichment) ===" % TYPE_ENRICH)
+    n_rec = n_unlocked = n_regex = 0
+    for _rec, cid, typ, flag in m.iter_records():
+        if typ != TYPE_ENRICH:
+            continue
+        n_rec += 1
+        n_unlocked += 1 if flag else 0
+        name = reg._name(cid) or "<unnamed>"
+        mo = ENRICH_RE.search(name.lower())
+        n_regex += 1 if mo else 0
+        if n_rec <= MAX_ROWS:
+            print("   cid=0x%-6X unlocked=%d  %-44s regex=%s" % (cid, flag, name, _regex_label(mo)))
+    print("   type-1 records: %d total, %d unlocked, %d match the enrichment regex" % (n_rec, n_unlocked, n_regex))
+
+
 def main() -> int:
     try:
         sys.stdout.reconfigure(line_buffering=True)
@@ -58,25 +101,8 @@ def main() -> int:
         return 1
     index = reg.build_index()   # {lowercased name: id}
     print("intern index: %d names" % len(index))
+    _report_naming(index)
 
-    # (A) NAMING - every intern token containing 'enrich', with regex verdict.
-    enrich_names = sorted(n for n in index if "enrich" in n)
-    matched = [(n, ENRICH_RE.search(n)) for n in enrich_names]
-    n_match = sum(1 for _, mo in matched if mo)
-    print("\n=== (A) intern names containing 'enrich': %d total, %d match r'%s' ==="
-          % (len(enrich_names), n_match, ENRICH_RE.pattern))
-    for n, mo in matched[:80]:
-        print("   %-48s id=0x%-6X  regex=%s" % (n, index[n], ("L%s" % mo.group(1)) if mo else "NO MATCH"))
-    if len(matched) > 80:
-        print("   ... (%d more)" % (len(matched) - 80))
-
-    # The family level-map reconcile would build (cid -> level), and want_unlocked for N=1.
-    levels = {cid: int(mo.group(1)) for name, cid in index.items() if (mo := ENRICH_RE.search(name))}
-    print("\nfamily level-map size (what reconcile sees): %d" % len(levels))
-    if not levels:
-        print("   >>> EMPTY -> reconcile_progressive_levels returns True WITHOUT writing = cause (A).")
-
-    # (B) MATERIALIZATION - type-1 records in the live unlock map.
     if not rs:
         print("\n(skip B: no research system)")
         return 0
@@ -85,21 +111,7 @@ def main() -> int:
     except Exception as e:
         print("\nFAIL: unlock map: %s" % e)
         return 1
-    print("\n=== (B) rs+0x148 unlock records of type %d (enrichment) ===" % TYPE_ENRICH)
-    n_rec = n_unlocked = n_regex = 0
-    for rec, cid, typ, flag in m.iter_records():
-        if typ != TYPE_ENRICH:
-            continue
-        n_rec += 1
-        n_unlocked += 1 if flag else 0
-        name = reg._name(cid) or "<unnamed>"
-        mo = ENRICH_RE.search(name.lower())
-        if mo:
-            n_regex += 1
-        if n_rec <= 80:
-            print("   cid=0x%-6X unlocked=%d  %-44s regex=%s"
-                  % (cid, flag, name, ("L%s" % mo.group(1)) if mo else "NO MATCH"))
-    print("   type-1 records: %d total, %d unlocked, %d match the enrichment regex" % (n_rec, n_unlocked, n_regex))
+    _report_unlock_records(m, reg)
     print("\nInterpretation:")
     print("  - many type-1 records but few/none regex-match  -> cause (A) naming: fix FAMILY_LEVEL_RE.")
     print("  - regex matches only the RESEARCHED animal's records -> cause (B): un-researched species'")

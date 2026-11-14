@@ -31,6 +31,7 @@ _PAGE_GUARD = 0x100
 _WRITABLE_PROT = {0x04, 0x08, 0x40, 0x80}  # READWRITE / WRITECOPY / EXEC_READWRITE / EXEC_WRITECOPY
 _SCAN_CHUNK = 0x1000000     # 16 MB read window for scan_heap_for_qword (bounds a single ReadProcessMemory)
 _SCAN_BUDGET = 0x100000000  # 4 GB whole-run cap: worst case (qword never found) can't sweep forever
+STILL_ACTIVE = 259          # GetExitCodeProcess: the process hasn't exited
 
 
 class _MBI(ctypes.Structure):
@@ -124,6 +125,21 @@ class MemoryScanner:
             self.module_size = module.SizeOfImage
         logger.info("Attached to %s (base 0x%X)", self.process_name, self.module_base or 0)
         return True
+
+    def is_alive(self) -> bool:
+        """False once the attached process has EXITED. pymem's handle stays valid after the game closes,
+        so reads/writes just start failing (GetLastError 5) and ``attached`` stays True forever - a game
+        restart was never picked up. Unknown (no handle API / query failed) -> assume alive."""
+        pm = self.pm
+        if pm is None:
+            return False
+        try:
+            k32 = ctypes.windll.kernel32
+            code = ctypes.c_ulong(0)
+            ok = k32.GetExitCodeProcess(ctypes.c_void_p(pm.process_handle), ctypes.byref(code))
+        except Exception:
+            return True
+        return not ok or code.value == STILL_ACTIVE
 
     def detach(self) -> None:
         if self.pm is not None:

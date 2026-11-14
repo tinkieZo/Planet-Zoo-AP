@@ -56,18 +56,60 @@ def _parse_len(buf: bytes) -> "tuple[int, int] | None":
         return None
 
 
-def main() -> int:
-    try:
-        sys.stdout.reconfigure(line_buffering=True)
-    except Exception:
-        pass
-    args = [a for a in sys.argv[1:]]
+def _parse_args(argv: "list[str]") -> "tuple[Path, list[str]]":
+    """(dump directory, lowercased source-name filter keywords)."""
+    args = argv[1:]                 # slicing already copies
     outdir = Path(__file__).resolve().parent / "_luadump"
     if "-o" in args:
         i = args.index("-o")
         outdir = Path(args[i + 1])
         del args[i:i + 2]
-    kws = [a.lower() for a in args]
+    return outdir, [a.lower() for a in args]
+
+
+def _dump_chunk(chunk: bytes, src: str, addr: int, outdir: Path) -> bool:
+    """Parse one matching chunk and write its exact bytes to outdir; True if dumped."""
+    res = _parse_len(chunk)
+    if res is None:
+        print("   %-52s @0x%X  PARSE FAILED (truncated by region end?)" % (src, addr))
+        return False
+    consumed, nfn = res
+    outdir.mkdir(parents=True, exist_ok=True)
+    safe = "".join(c if c.isalnum() or c in "._-" else "_" for c in src)[:80]
+    out = outdir / ("%s_%X.lua.bin" % (safe, addr))
+    out.write_bytes(chunk[:consumed])
+    print("   %-52s @0x%X  %d bytes, %d fns -> %s" % (src, addr, consumed, nfn, out))
+    return True
+
+
+def _scan_region(data: bytes, rb: int, kws: "list[str]", outdir: Path, seen: dict) -> int:
+    """Record every chunk in one region under its source name; dump filter matches. Returns #dumped."""
+    dumped = 0
+    i = data.find(SIG)
+    while i != -1:
+        addr = rb + i
+        src = _source_of(data[i:i + NAME_WINDOW]) or "<unreadable>"
+        seen.setdefault(src, []).append(addr)
+        if kws and any(k in src.lower() for k in kws):
+            dumped += _dump_chunk(data[i:i + PARSE_CAP], src, addr, outdir)
+        i = data.find(SIG, i + 1)
+    return dumped
+
+
+def _print_summary(seen: dict) -> None:
+    print("\n%d distinct chunk sources (%d instances):" % (
+        len(seen), sum(len(v) for v in seen.values())))
+    for src in sorted(seen):
+        print("   %-64s x%d  @%s" % (src, len(seen[src]),
+                                     ",".join("0x%X" % a for a in seen[src][:4])))
+
+
+def main() -> int:
+    try:
+        sys.stdout.reconfigure(line_buffering=True)
+    except Exception:
+        pass
+    outdir, kws = _parse_args(sys.argv)
 
     s = MemoryScanner("PlanetZoo.exe")
     if not s.attach():
@@ -83,30 +125,9 @@ def main() -> int:
             data = s.read_bytes(rb, rs)
         except Exception:
             continue
-        i = data.find(SIG)
-        while i != -1:
-            addr = rb + i
-            src = _source_of(data[i:i + NAME_WINDOW]) or "<unreadable>"
-            seen.setdefault(src, []).append(addr)
-            if kws and any(k in src.lower() for k in kws):
-                res = _parse_len(data[i:min(i + PARSE_CAP, rs)])
-                if res is None:
-                    print("   %-52s @0x%X  PARSE FAILED (truncated by region end?)" % (src, addr))
-                else:
-                    consumed, nfn = res
-                    outdir.mkdir(parents=True, exist_ok=True)
-                    safe = "".join(c if c.isalnum() or c in "._-" else "_" for c in src)[:80]
-                    out = outdir / ("%s_%X.lua.bin" % (safe, addr))
-                    out.write_bytes(data[i:i + consumed])
-                    dumped += 1
-                    print("   %-52s @0x%X  %d bytes, %d fns -> %s" % (src, addr, consumed, nfn, out))
-            i = data.find(SIG, i + 1)
+        dumped += _scan_region(data, rb, kws, outdir, seen)
 
-    print("\n%d distinct chunk sources (%d instances):" % (
-        len(seen), sum(len(v) for v in seen.values())))
-    for src in sorted(seen):
-        print("   %-64s x%d  @%s" % (src, len(seen[src]),
-                                     ",".join("0x%X" % a for a in seen[src][:4])))
+    _print_summary(seen)
     if kws:
         print("\ndumped %d chunk(s) matching %s to %s" % (dumped, kws, outdir))
     return 0

@@ -83,13 +83,13 @@ def variant54(n: int) -> bytes:
     K8=constant 1 (RK 0x108), continuation at pc49."""
     if n <= 0:      # all locked
         ins = [_abc(3, 8, 0, 0), _jmp(0), _jmp(0), _jmp(0), _jmp(0)]
-    elif n == 1:    # R8 = (R7 == 1)
+    elif n == 1:    # unlocked only when level R7 equals 1 (result in R8)
         ins = [_abc(31, 1, 7, 0x108),    # EQ 1 R7 K8      ; != -> skip JMP
                _jmp(1),                  # -> true branch (pc47)
                _abc(3, 8, 0, 1),         # LOADBOOL R8,false, skip next
                _abc(3, 8, 1, 0),         # LOADBOOL R8,true
                _jmp(0)]                  # pad -> pc49
-    elif n == 2:    # R8 = 1+1; R8 = (R7 <= R8)
+    elif n == 2:    # build 2 in R8, then unlocked when level R7 is at most 2 (result in R8)
         ins = [_abc(13, 8, 0x108, 0x108),  # ADD R8 = K8+K8 = 2
                _abc(33, 1, 7, 8),          # LE 1 R7 R8    ; false -> skip JMP
                _jmp(1),                    # -> true branch (pc48)
@@ -106,11 +106,11 @@ def variant32(n: int) -> bytes:
     (RK 0x104). Locked path = JMP to pc132 (allUnlocked=false + loop break), continue = pc89."""
     if n <= 0:      # all locked: unconditional -> 132
         ins = [_jmp(45), _jmp(0), _jmp(0)]
-    elif n == 1:    # R15 = 1
+    elif n == 1:    # threshold 1 loaded into R15
         ins = [_abc(1, 15, 0, 4),          # LOADK R15 = K4 = 1
                _abc(33, 0, 14, 15),        # LE 0 R14 R15  ; <= -> skip JMP -> pc89
                _jmp(43)]                   # -> locked path (pc132)
-    elif n == 2:    # R15 = 1+1
+    elif n == 2:    # threshold 2 built in R15 (constant 1 added to itself)
         ins = [_abc(13, 15, 0x104, 0x104),  # ADD R15 = K4+K4 = 2
                _abc(33, 0, 14, 15),         # LE 0 R14 R15  ; <= -> skip JMP -> pc89
                _jmp(43)]                    # -> locked path (pc132)

@@ -300,6 +300,7 @@ class PZContext(CommonContext):
         self._claim_candidate: "Optional[tuple]" = None
         self._claim_prompted: "Optional[tuple]" = None
         self._claim_fresh_pending = False
+        self._pending_rebind: "Optional[dict]" = None  # renamed claimed zoo's new binding, stored on the loop
         self._ovl_job_running = False  # one ovl install/restore at a time (see run_ovl_job)
         self._initial_applied: "Optional[int]" = None  # high-water mark at session start (drives re-award)
         self._fresh_wait_ticks = 0  # ticks spent holding item apply for the park-age (fresh) signal to land
@@ -641,6 +642,8 @@ class PZContext(CommonContext):
         """The synchronous poll body. Runs in a worker thread (see poll_loop) and does only memory I/O -
         detection, item application, gate installs/reconciles - NO server sends (checks are queued via
         _collect_check). Each step is isolated so one failure doesn't abort the rest of the tick."""
+        if self._game_exited():
+            return
         if not self._session_active():
             if self._session_was_active:
                 # The AP park just unloaded (Exit-to-Menu / loaded another save). Restore the market gates
@@ -651,6 +654,7 @@ class PZContext(CommonContext):
                 self._on_park_unload()
             return
         self._session_was_active = True
+        self._queue_rebind(getattr(self._session, "renamed", None))
         steps = (
             # preflight FIRST, before anything installs its detours: it's a read-only health check of the
             # game's PRISTINE code sites (orig bytes / AOB). Running it after our own hooks install made it
@@ -710,7 +714,55 @@ class PZContext(CommonContext):
                     logger.exception("poll loop tick failed")
                 while self._pending_checks:
                     self.report_check(self._pending_checks.pop(0))
+                if self._pending_rebind is not None:
+                    binding, self._pending_rebind = self._pending_rebind, None
+                    self._store_zoo_binding(binding)
             await asyncio.sleep(self.poll_interval)
+
+    def _queue_rebind(self, renamed) -> None:
+        """Poll thread: the claimed Challenge zoo was renamed in-game (session.renamed). Queue the claim
+        update to the new name - same zoo, same globe-pin mark, original claim time - for poll_loop to
+        store on the event loop (the server Set must not be sent from this thread). Without it the renamed
+        zoo would stop matching its claim on the next load and never be tracked again."""
+        if renamed is None:
+            return
+        binding = renamed.to_binding()
+        old = self._zoo_binding() or {}
+        if "claimed_at" in old:
+            binding["claimed_at"] = old["claimed_at"]
+        if binding != self._pending_rebind:
+            self._pending_rebind = binding
+
+    def _game_exited(self) -> bool:
+        """Planet Zoo closed under the attached client (quit, crash, or a restart). Every hook, cached
+        address and buffer belongs to the dead process, and the scanner would keep its stale handle
+        forever (live 2026-11-13 beta report: after a game restart the client never re-attached - no
+        checks, items held "for the fresh-save signal" - until the client itself was restarted). Rebuild
+        the memory layer from scratch so the next tick attaches to the new process like a fresh start."""
+        scanner = self._scanner
+        alive = getattr(scanner, "is_alive", None)
+        if scanner is None or not getattr(scanner, "attached", False) or alive is None or alive():
+            return False
+        logger.info("Planet Zoo closed - the client reconnects to it automatically when the game is "
+                    "started again.")
+        try:
+            scanner.detach()
+        except Exception:
+            pass
+        self.enable_memory(poll_interval=self.poll_interval)
+        self._first_tick_done = False
+        self._preflight_done = False
+        self._session_was_active = False
+        self._market_last_allowed = None
+        self._market_last_applied_ids = frozenset()
+        self._fresh_park_verdict = None
+        self._fresh_reset_done = False
+        self._claim_candidate = None
+        self._claim_prompted = None
+        self._fresh_wait_ticks = 0
+        self._paused_at_idx = None
+        self._cum_warned = set()
+        return True
 
     # -- AP connection handshake ----------------------------------------------
 

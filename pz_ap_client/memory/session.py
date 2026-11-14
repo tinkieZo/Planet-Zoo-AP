@@ -133,6 +133,7 @@ class ParkNameReader:
         self._cached = None                      # park-info instance addresses
         self._last_scan: Optional[float] = None
         self._last_val: Optional[str] = None
+        self.last_addr: Optional[int] = None     # instance the last read() name came from
 
     def invalidate(self) -> None:
         """Forget cached instances, the last value, AND the scan throttle. Call on park unload: freed
@@ -142,6 +143,7 @@ class ParkNameReader:
         self._cached = None
         self._last_val = None
         self._last_scan = None
+        self.last_addr = None
 
     def _target(self) -> Optional[int]:
         base = getattr(self.scanner, "module_base", None)
@@ -161,6 +163,7 @@ class ParkNameReader:
         for a in self._cached:
             name = self._name_at(a, target)
             if name:
+                self.last_addr = a
                 return name
         return None
 
@@ -188,16 +191,18 @@ class ParkNameReader:
             hits = self.scanner.scan_heap_for_qword(target, max_hits=64)
         except Exception:
             hits = []
-        addrs, val = [], None
+        addrs, val, val_addr = [], None, None
         for h in hits:
             try:
                 name = self._name_at(h, target)
             except Exception:
                 continue
             addrs.append(h)
-            val = val or name
+            if name and not val:
+                val, val_addr = name, h
         self._cached = addrs or None
         self._last_val = val
+        self.last_addr = val_addr
         return val
 
     def read_identity(self) -> Optional[ParkIdentity]:
@@ -277,30 +282,64 @@ class ApSessionDetector:
         self.kind: Optional[str] = None                 # active session kind, None when idle
         self.mode: Optional[str] = None                 # last read game mode
         self.identity: Optional[ParkIdentity] = None    # last read identity of a challenge park
+        # The claimed Challenge zoo was renamed in-game and is still loaded: its new identity, for the
+        # client to re-bind the claim to (None otherwise). Set by is_ap_session().
+        self.renamed: Optional[ParkIdentity] = None
+        # The park the session is active in: (mode, park-info instance, globe pin, name), else None.
+        self._active: Optional[tuple] = None
+
+    def _same_park(self, mode, name, addr, pin) -> bool:
+        """The park the session is active in is still the one loaded, possibly RENAMED in-game: same game
+        mode, same park-info instance, same globe pin. Loading another park passes through a no-zoo tick
+        (mode None -> session idle -> latch cleared), so a new name on the latched instance is a rename -
+        live 2026-11-13 (beta report): renaming the AP zoo turned the client off mid-session, which
+        reopened the full market and dropped every check until the next load."""
+        a = self._active
+        return a is not None and bool(name) and addr is not None and (mode, addr, pin) == a[:3]
 
     def is_ap_session(self) -> bool:
         name = self.names.read()
+        addr = getattr(self.names, "last_addr", None)
         mode = self._game_mode() if self._game_mode is not None else "scenario"
-        identity, kind = None, None
-        if mode == "scenario":
-            if name == AP_PARK_NAME:
-                kind = "scenario"
-        elif mode == "challenge" and name:
-            identity = self.names.read_identity()
-            if identity is not None and self._claim_match is not None and self._claim_match(identity):
-                kind = "challenge"
-        self.mode, self.identity, self.kind = mode, identity, kind
+        identity = self.names.read_identity() if name and mode in ("scenario", "challenge") else None
+        pin = (identity.continent, identity.lat, identity.lon) if identity is not None else None
+        same = self._same_park(mode, name, addr, pin)
+        kind = self._classify(mode, name, identity, same)
+        if kind is not None and same and name != self._active[3]:
+            logger.info("The AP zoo was renamed to %r - it is still tracked as the AP zoo%s.", name,
+                        " (the scenario names it %r again on its next load)" % AP_PARK_NAME
+                        if kind == "scenario" else "; updating this slot's claim to the new name")
+        self._active = (mode, addr, pin, name) if kind is not None else None
+        self.mode, self.identity, self.kind = mode, (identity if mode == "challenge" else None), kind
         if kind != self._last_state:
             self._last_state = kind
-            if kind == "scenario":
-                logger.info("AP session detected (park name %r, scenario mode) - client active.", name)
-            elif kind == "challenge":
-                logger.info("AP session detected (claimed Challenge zoo %s) - client active.",
-                            identity.describe())
-            else:
-                logger.info("No AP session (park name %r, mode %s) - client idle until the AP zoo loads: "
-                            "the AP career scenario, or a Challenge zoo claimed with /pz_claim. If this IS "
-                            "the AP scenario, the Main.ovl in play predates the SetParkName marker or the "
-                            "park-info vtable RVA is stale; set PZAP_NO_SESSION_GATE=1 to bypass detection "
-                            "while debugging.", name, mode)
+            self._log_transition(kind, name, mode, identity)
         return kind is not None
+
+    def _classify(self, mode, name, identity, same) -> Optional[str]:
+        """Session kind for this read ('scenario' | 'challenge' | None); sets ``renamed`` when the claimed
+        Challenge zoo is only still recognised because it is the same (renamed) park."""
+        self.renamed = None
+        if mode == "scenario":
+            return "scenario" if name == AP_PARK_NAME or same else None
+        if mode != "challenge" or identity is None:
+            return None
+        if self._claim_match is not None and self._claim_match(identity):
+            return "challenge"
+        if same:
+            self.renamed = identity
+            return "challenge"
+        return None
+
+    @staticmethod
+    def _log_transition(kind, name, mode, identity) -> None:
+        if kind == "scenario":
+            logger.info("AP session detected (park name %r, scenario mode) - client active.", name)
+        elif kind == "challenge":
+            logger.info("AP session detected (claimed Challenge zoo %s) - client active.", identity.describe())
+        else:
+            logger.info("No AP session (park name %r, mode %s) - client idle until the AP zoo loads: "
+                        "the AP career scenario, or a Challenge zoo claimed with /pz_claim. If this IS "
+                        "the AP scenario, the Main.ovl in play predates the SetParkName marker or the "
+                        "park-info vtable RVA is stale; set PZAP_NO_SESSION_GATE=1 to bypass detection "
+                        "while debugging.", name, mode)

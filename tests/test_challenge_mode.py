@@ -384,3 +384,124 @@ def test_park_is_fresh_ignores_ap_gate_items(tmp_path):
     ctx._park_years = lambda: 2
     del snap[0][101]
     assert PZContext._park_is_fresh(ctx) is False           # past Year 1
+
+
+# -- in-game rename + game restart (beta report 2026-11-13) ---------------------------------------
+
+class _RenamableNames:
+    """A loaded park whose name the player can change in-game; ``addr`` is its park-info instance."""
+
+    def __init__(self, name, addr=0x5000, pin=(1, 49.0, 23.0)):
+        self.name, self.last_addr, self.pin = name, addr, pin
+
+    def read(self):
+        return self.name
+
+    def read_identity(self):
+        if not self.name:
+            return None
+        c, lat, lon = self.pin
+        return ParkIdentity(name=self.name, continent=c, lat=lat, lon=lon)
+
+
+def _rename_detector(name, mode="scenario", claimed=None):
+    det = ApSessionDetector(None, game_mode=lambda: mode[0],
+                            claim_match=lambda ident: claimed is not None and ident.matches(claimed))
+    det.names = _RenamableNames(name)
+    return det
+
+
+def test_renamed_scenario_zoo_stays_active():
+    """Renaming the AP zoo in-game turned the client off (full market, no checks) until the next load."""
+    mode = ["scenario"]
+    det = _rename_detector(AP_PARK_NAME, mode)
+    assert det.is_ap_session()
+    det.names.name = "Send Monkeys"
+    assert det.is_ap_session()
+    assert det.kind == "scenario"
+    assert det.is_ap_session(), "stays active on later ticks under the new name"
+
+
+def test_rename_latch_needs_the_same_park():
+    mode = ["scenario"]
+    det = _rename_detector(AP_PARK_NAME, mode)
+    assert det.is_ap_session()
+    det.names.name, det.names.last_addr = "Other Zoo", 0x9000          # a different park-info instance
+    assert not det.is_ap_session()
+    det = _rename_detector(AP_PARK_NAME, mode)
+    assert det.is_ap_session()
+    det.names.name, det.names.pin = "Other Zoo", (2, 10.0, 5.0)         # same slot reused, other globe pin
+    assert not det.is_ap_session()
+
+
+def test_park_switch_through_menu_clears_the_latch():
+    """Loading another park passes through a no-zoo tick; a same-address park after it is not the AP zoo."""
+    mode = ["scenario"]
+    det = _rename_detector(AP_PARK_NAME, mode)
+    assert det.is_ap_session()
+    mode[0] = None
+    det.names.name = None
+    assert not det.is_ap_session()
+    mode[0] = "scenario"
+    det.names.name = "Goodwin House"
+    assert not det.is_ap_session()
+
+
+def test_renamed_challenge_zoo_stays_active_and_flags_rebind():
+    mode = ["challenge"]
+    claimed = {"name": "Temperate Zoo", "continent": 1, "lat": 49.0, "lon": 23.0}
+    det = _rename_detector("Temperate Zoo", mode, claimed)
+    assert det.is_ap_session()
+    assert det.renamed is None
+    det.names.name = "Monkey Town"
+    assert det.is_ap_session()
+    assert det.kind == "challenge"
+    assert det.renamed is not None
+    assert det.renamed.name == "Monkey Town"
+
+
+def test_rename_rebinds_the_claim_keeping_claim_time(tmp_path):
+    ctx = _ctx(tmp_path)
+    ctx._store_zoo_binding({"name": "Temperate Zoo", "continent": 1, "lat": 49.0, "lon": 23.0,
+                            "claimed_at": 123})
+    renamed = ParkIdentity(name="Monkey Town", continent=1, lat=49.0, lon=23.0)
+    ctx._queue_rebind(renamed)
+    assert ctx._pending_rebind == {"name": "Monkey Town", "continent": 1, "lat": 49.0, "lon": 23.0,
+                                   "claimed_at": 123}
+    ctx._store_zoo_binding(ctx._pending_rebind)
+    assert renamed.matches(ctx._zoo_binding()), "the renamed zoo matches its claim after a reload"
+    ctx._pending_rebind = None
+    ctx._queue_rebind(None)
+    assert ctx._pending_rebind is None
+
+
+class _DeadScanner:
+    def __init__(self, alive):
+        self.alive, self.detached = alive, False
+
+    attached = True
+
+    def is_alive(self):
+        return self.alive
+
+    def detach(self):
+        self.detached = True
+
+
+def test_game_exit_rebuilds_the_memory_layer(tmp_path):
+    """After a game restart the client kept the dead process handle forever (no checks, items held)."""
+    ctx = _ctx(tmp_path)
+    rebuilt = []
+    ctx.enable_memory = lambda poll_interval: rebuilt.append(poll_interval)
+    ctx._scanner = _DeadScanner(alive=True)
+    assert ctx._game_exited() is False
+    assert rebuilt == []
+    dead = _DeadScanner(alive=False)
+    ctx._scanner = dead
+    ctx._first_tick_done = ctx._preflight_done = ctx._session_was_active = True
+    assert ctx._game_exited() is True
+    assert dead.detached
+    assert rebuilt == [ctx.poll_interval]
+    assert not ctx._first_tick_done
+    assert not ctx._preflight_done
+    assert not ctx._session_was_active
